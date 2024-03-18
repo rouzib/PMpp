@@ -8,8 +8,6 @@ parameterized by a b-spline with parameters specified by a small neural network.
 The file also includes the implementations of helpful utility functions like `fftk` which computes
 the discrete Fast Fourier Transform of shape and `_deBoorVectorized` which computes De Boor's algorithm
 for B-splines in a vectorized manner.
-
-The script is primarily used for handling and processing image data in Fourier space.
 """
 import jax.numpy as jnp
 from jaxpm.kernels import fftk

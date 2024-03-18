@@ -43,12 +43,12 @@ def read_pks(sims: range, n_mesh: int = 64):
     pks = {}
     simulations = []
     for i in sims:
-        if os.path.exists("Pk/" + f"pk_LH{i}_{n_mesh}.pkl"):
-            with open("Pk/" + f"pk_LH{i}_{n_mesh}.pkl", 'rb') as file:
+        if os.path.exists("../pk/" + f"pk_LH{i}_{n_mesh}.pkl"):
+            with open("../pk/" + f"pk_LH{i}_{n_mesh}.pkl", 'rb') as file:
                 pks = {**pks, **pickle.load(file)}
             simulations.append(i)
         else:
-            print("Pk/" + f"pk_LH{i}_{n_mesh}.pkl does not exist.")
+            print("../pk/" + f"pk_LH{i}_{n_mesh}.pkl does not exist.")
     return pks, simulations
 
 
@@ -62,11 +62,11 @@ def read_ccs(sims: range, n_mesh: int = 64):
     """
     ccs = {}
     for i in sims:
-        if os.path.exists("Pk/" + f"cc_LH{i}_{n_mesh}.pkl"):
-            with open("Pk/" + f"cc_LH{i}_{n_mesh}.pkl", 'rb') as file:
+        if os.path.exists("../pk/" + f"cc_LH{i}_{n_mesh}.pkl"):
+            with open("../pk/" + f"cc_LH{i}_{n_mesh}.pkl", 'rb') as file:
                 ccs = {**ccs, **pickle.load(file)}
         else:
-            print("Pk/" + f"cc_LH{i}_{n_mesh}.pkl does not exist.")
+            print("../pk/" + f"cc_LH{i}_{n_mesh}.pkl does not exist.")
     return ccs
 
 
@@ -95,7 +95,7 @@ def main(i):
     boxSize = [25.0, 25.0, 25.0]
 
     # Load training data
-    targetP, targetV, z, cosmology = load_lh([i], boxSize, nMesh, path="CamelsSims", normalize=False, debug=True)
+    targetP, targetV, z, cosmology = load_lh([i], boxSize, nMesh, path="../CamelsSims", normalize=False, debug=True)
     # Normalize position and velocity by mesh size
     targetP, targetV = targetP[0], targetV[0]
     targetP, targetV = normalize_by_mesh(targetP, targetV, boxSize[0], nMesh)

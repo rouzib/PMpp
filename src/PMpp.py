@@ -243,8 +243,8 @@ def run_sim_with_model(initial_pos: jnp.ndarray, initial_vel: jnp.ndarray, redsh
     model, _ = initialize_model(n_mesh=n_mesh, model_name=modelName, n_knots=nKnots, latent_size=latentSize)
 
     # Load model parameters
-    modelPaths = ["Model/MyModel_nMesh64_LH100-149_Lr0.001_regularization/model499.pkl",
-                  "Model/MyModel_nMesh32_LH100-499_Lr0.001_regularization_vel/model395.pkl"]
+    modelPaths = ["../Model/MyModel_nMesh64_LH100-149_Lr0.001_regularization/model499.pkl",
+                  "../Model/MyModel_nMesh32_LH100-499_Lr0.001_regularization_vel/model395.pkl"]
     paramsList = []
     for modelPath in modelPaths:
         with open(modelPath, 'rb') as file:
@@ -300,7 +300,7 @@ if __name__ == '__main__':
     boxSize = [25.0, 25.0, 25.0]  # Simulation box size
 
     # Load Latin Hypercube simulation data
-    targetP, targetV, z, cosmology = load_lh([sim], boxSize, nMesh, path="CamelsSims", debug=True)
+    targetP, targetV, z, cosmology = load_lh([sim], boxSize, nMesh, path="../CamelsSims", debug=True)
     targetP, targetV = targetP[0], targetV[0]  # Get target positions and velocities
     initialP, initialV = targetP[0], targetV[0]  # Initializing position & velocity
     cosmology = cosmology[0]  # Get the cosmology
@@ -327,7 +327,9 @@ if __name__ == '__main__':
                                              start=start, end=end, display_onez=display_onez, new_nmesh=new_nMesh,
                                              cutoff=cutoff)
 
+    """
     # Store the simulation velocities result in a file
-    with open("Pk/" + f"vels_LH{sim}_{nMesh}.pkl", 'wb') as file:
+    with open("../pk/" + f"vels_LH{sim}_{nMesh}.pkl", 'wb') as file:
         # We perform the dumping of the 'velocities' outcomes in a file, so that we can retrieve it conveniently.
         pickle.dump({f"LH_{sim}": [targetV, pm_vel, pm_vel_corr]}, file)
+    """

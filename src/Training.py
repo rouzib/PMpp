@@ -87,7 +87,7 @@ def check_for_pk(lh_index: int, n_mesh: int, data_pos: Optional[np.ndarray] = No
 
     """
     # Defining the base path for data and create it if necessary
-    BASE_PATH = "pk" if LOCAL else "/home/rouzib/scratch"
+    BASE_PATH = "../pk" if LOCAL else "/home/rouzib/scratch"
     if not os.path.exists(BASE_PATH):
         os.makedirs(BASE_PATH, exist_ok=True)
 
@@ -115,7 +115,8 @@ def check_for_pk(lh_index: int, n_mesh: int, data_pos: Optional[np.ndarray] = No
         # If position data not provided, load it from file
         if data_pos is None:
             print(f"Loaded {lh_index} because it was not passed")
-            data_pos = load_lh([lh_index], BOX_SIZE, n_mesh, path=BASE_PATH, cpu_memory=True, debug=False)[0][0]
+            data_pos = load_lh([lh_index], BOX_SIZE, n_mesh, path="../CamelsSims" if LOCAL else "/home/rouzib/scratch",
+                               cpu_memory=True, debug=False)[0][0]
 
         # Transfer data to GPU
         data_pos = jax.device_put(data_pos, gpus[0])
@@ -265,13 +266,13 @@ def get_model(model_name, model_path=""):
 
 
 if __name__ == '__main__':
-    model_path = f"Model/{MODEL_NAME}_nMesh{N_MESH}_LH{TEST_IDX[0]}-{TEST_IDX[-1]}" \
+    model_path = f"../Model/{MODEL_NAME}_nMesh{N_MESH}_LH{TEST_IDX[0]}-{TEST_IDX[-1]}" \
                  f"_Lr{LEARNING_RATE}_nKnots{N_KNOTS}_ls{LATENT_SIZE}{'_regularization' if REGULARIZATION else ''}" \
                  f"{'_vel' if VELOCITY_LOSS else ''}{'_pk' if PK_LOSS else ''}/"
 
     # load LH sims
     target_pos, target_vel, z, planck_cosmology = load_lh(TEST_IDX, BOX_SIZE, N_MESH,
-                                                          path="CamelsSims" if LOCAL else "/home/rouzib/scratch",
+                                                          path="../CamelsSims" if LOCAL else "/home/rouzib/scratch",
                                                           normalize=True, cpu_memory=True, debug=DEBUG)
 
     scale_factors = 1 / (1 + jnp.array(z))
@@ -355,7 +356,7 @@ if __name__ == '__main__':
                 print(shuffledIndexes[startIdx:endIdx])
             target_pos, target_vel, z, planck_cosmology = load_lh(TEST_IDX[shuffledIndexes[startIdx:endIdx]], BOX_SIZE,
                                                                   N_MESH,
-                                                                  path="CamelsSims" if LOCAL else "/home/rouzib/scratch",
+                                                                  path="../CamelsSims" if LOCAL else "/home/rouzib/scratch",
                                                                   normalize=True, cpu_memory=True,
                                                                   debug=DEBUG)
             tempPlanckCosmology = planck_cosmology
@@ -397,7 +398,7 @@ if __name__ == '__main__':
         for i in range(len(VAL_IDX)):
             # load validation sim
             tempPos, tempVel, z, tempPlanckCosmology = load_lh([VAL_IDX[i]], BOX_SIZE, N_MESH,
-                                                               path="CamelsSims" if LOCAL else "/home/rouzib/scratch",
+                                                               path="../CamelsSims" if LOCAL else "/home/rouzib/scratch",
                                                                normalize=True, cpu_memory=False, debug=DEBUG)
 
             # load the power spectra onto the gpu if necessary
@@ -407,8 +408,9 @@ if __name__ == '__main__':
                 tempPks = jnp.array([])
 
             # compute validation loss
-            val_loss, _ = loss_fn_compiled(params, tempPlanckCosmology, tempPos, tempVel, scale_factors, tempPks, BOX_SIZE[0],
-                              N_MESH, model, VELOCITY_LOSS, PK_LOSS, REGULARIZATION)
+            val_loss, _ = loss_fn_compiled(params, tempPlanckCosmology, tempPos, tempVel, scale_factors, tempPks,
+                                           BOX_SIZE[0],
+                                           N_MESH, model, VELOCITY_LOSS, PK_LOSS, REGULARIZATION)
 
             tot_val_loss += val_loss
 

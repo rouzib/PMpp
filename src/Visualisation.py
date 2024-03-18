@@ -292,17 +292,17 @@ if __name__ == "__main__":
 
     # Initialize model
     model, _ = initialize_model(n_mesh=nMesh, model_name="Default", n_knots=32, latent_size=64)
-    modelPath = "Model/MyModel_nMesh32_LH100-499_Lr0.001_regularization_vel/model395.pkl"
+    modelPath = "../Model/MyModel_nMesh32_LH100-499_Lr0.001_regularization_vel/model395.pkl"
     with open(modelPath, 'rb') as file:
         params = pickle.load(file)
 
     # Load Latin Hypercube simulation data
-    targetP, targetV, z, cosmology = load_lh([sim], boxSize, nMesh, path="CamelsSims", debug=True)
+    targetP, targetV, z, cosmology = load_lh([sim], boxSize, nMesh, path="../CamelsSims", debug=True)
     scale_factors = 1 / (1 + jnp.array(z))
 
     # Visualize PM data without correction
-    visualize(targetP, targetV, cosmology, sim, nMesh, 256, scale_factors, save=True, path="Results")
+    visualize(targetP, targetV, cosmology, sim, nMesh, 256, scale_factors, save=True, path="../Results")
 
     # Visualize PM data with correction
     visualize_with_correction(targetP, targetV, cosmology, sim, nMesh, 256, scale_factors, model, params,
-                              save=True, path="Results")
+                              save=True, path="../Results")

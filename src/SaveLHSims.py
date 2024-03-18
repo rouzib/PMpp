@@ -117,4 +117,4 @@ if __name__ == '__main__':
 
     # read and save the CAMELS snapshot data for the test indices
     read_camels_lh_set(lh_index_list=list(sim_ids), downsampling_factor=n_mesh, data_dir="../Camels",
-                       save_dir="CamelsSims", seed=0)
+                       save_dir="../CamelsSims", seed=0)
