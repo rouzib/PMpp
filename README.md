@@ -18,7 +18,7 @@ Before starting, ensure that you have [Python 3.10](https://www.python.org/downl
 1. Clone this repository to your local machine.
 
     ```bash
-    git clone https://github.com/YourGithubUsername/PMpp.git
+    git clone https://github.com/rouzib/PMpp.git
     ```
 
 2. Navigate to the project directory.
