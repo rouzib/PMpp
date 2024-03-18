@@ -265,7 +265,7 @@ def get_model(model_name, model_path=""):
 
 
 if __name__ == '__main__':
-    model_path = f"Models/{MODEL_NAME}_nMesh{N_MESH}_LH{TEST_IDX[0]}-{TEST_IDX[-1]}" \
+    model_path = f"Model/{MODEL_NAME}_nMesh{N_MESH}_LH{TEST_IDX[0]}-{TEST_IDX[-1]}" \
                  f"_Lr{LEARNING_RATE}_nKnots{N_KNOTS}_ls{LATENT_SIZE}{'_regularization' if REGULARIZATION else ''}" \
                  f"{'_vel' if VELOCITY_LOSS else ''}{'_pk' if PK_LOSS else ''}/"
 
