@@ -15,8 +15,8 @@ import jax.numpy as jnp
 import numpy as np
 from matplotlib import pyplot as plt
 
-from PMpp import load_lh, run_sim_with_model, run_pm
-from camels_utils import normalize_by_mesh
+from src.PMpp import load_lh, run_sim_with_model, run_pm
+from src.CamelsUtils import normalize_by_mesh
 from jaxpm.painting import cic_paint, compensate_cic
 from jaxpm.utils import power_spectrum, cross_correlation_coefficients
 

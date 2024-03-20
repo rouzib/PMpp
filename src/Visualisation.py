@@ -26,8 +26,8 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
-from Models import initialize_model
-from PMpp import run_pm_with_correction, run_pm, load_lh
+from src.Models import initialize_model
+from src.PMpp import run_pm_with_correction, run_pm, load_lh
 from jaxpm.painting import cic_paint
 
 

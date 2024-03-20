@@ -28,8 +28,8 @@ import optax
 from jax.experimental.ode import odeint
 from tqdm import tqdm
 
-from Models import initialize_model
-from PMpp import load_lh
+from src.Models import initialize_model
+from src.PMpp import load_lh
 from jaxpm.painting import cic_paint, compensate_cic
 from jaxpm.pm import make_neural_ode_fn
 from jaxpm.utils import power_spectrum

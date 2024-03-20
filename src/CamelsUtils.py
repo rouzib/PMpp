@@ -32,12 +32,28 @@ from tqdm import tqdm
 DEFAULT_CAMELS_DATA_DIR = Path("../../data/CAMELS/Sims/IllustrisTNG_DM")
 
 
+def get_snapshot_filename(data_type: str, data_dir: Path, cv_index: int, snapshot: int) -> str:
+    """
+    Forms the snapshot filename based on data type (e.g. CV or LH), data directory, cross-validation (CV) index,
+    and the snapshot number.
+
+    :param data_type: Type of the data (e.g. CV or LH)
+    :param data_dir: The directory where the data is stored
+    :param cv_index: The cross-validation index
+    :param snapshot: The snapshot number
+    :return: Formed filename as a string
+    """
+    return str(f"{data_dir}/{data_type}_{cv_index}/snap_{str(snapshot).zfill(3)}.hdf5")
+
+
 def read_camels(snapshot: int, cv_index: int = 0, downsampling_factor: int = 32,
-                data_dir: Path = DEFAULT_CAMELS_DATA_DIR, cv_or_lh: bool = False, seed: int = 0) \
+                data_dir: Path = DEFAULT_CAMELS_DATA_DIR, cv_or_lh: bool = False, seed: int = 0,
+                mesh_downsampling: bool = False) \
         -> Tuple[jnp.ndarray, jnp.ndarray, float, float, float]:
     """
     Reads and processes CAMELS data for a given snapshot.
 
+    :param mesh_downsampling: If the downsampling should be done on a mesh (default is False)
     :param snapshot: The snapshot number.
     :param cv_index: The cross-validation index (default is 0).
     :param downsampling_factor: The downsampling factor for the data (default is 32).
@@ -48,11 +64,11 @@ def read_camels(snapshot: int, cv_index: int = 0, downsampling_factor: int = 32,
         The position array contains positions in Mpc/h units, velocity array contains velocities in km/s,
         and the redshift, Omega_m, and Omega_l values correspond to the header information from the snapshot file.
     """
-    # Determine the snapshot filename based on cv_index and type (CV or LH)
-    if not cv_or_lh:
-        snapshot_filename = str(f"{data_dir}/CV_{cv_index}/snap_{str(snapshot).zfill(3)}.hdf5")
-    else:
-        snapshot_filename = str(f"{data_dir}/LH_{cv_index}/snap_{str(snapshot).zfill(3)}.hdf5")
+    # Choose the data type
+    data_type = "CV" if not cv_or_lh else "LH"
+
+    # Get the correct snapshot filename
+    snapshot_filename = get_snapshot_filename(data_type, data_dir, cv_index, snapshot)
 
     # Read the header file
     header = readgadget.header(snapshot_filename)
@@ -73,13 +89,24 @@ def read_camels(snapshot: int, cv_index: int = 0, downsampling_factor: int = 32,
 
     # Do downsampling if downsampling_factor provided
     if downsampling_factor is not None:
-        downsampling_factor = len(pos) // downsampling_factor ** 3
-        # Generate random indices for downsampling
-        key = jax.random.PRNGKey(seed)
-        permuted_indices = jax.random.permutation(key, len(pos))
-        selected_indices = permuted_indices[: len(pos) // downsampling_factor]
-        pos = jnp.take(pos, selected_indices, axis=0)
-        vel = jnp.take(vel, selected_indices, axis=0)
+        if not mesh_downsampling:
+            downsampling_factor = len(pos) // downsampling_factor ** 3
+            # Generate random indices for downsampling
+            key = jax.random.PRNGKey(seed)
+            permuted_indices = jax.random.permutation(key, len(pos))
+            selected_indices = permuted_indices[: len(pos) // downsampling_factor]
+            pos = jnp.take(pos, selected_indices, axis=0)
+            vel = jnp.take(vel, selected_indices, axis=0)
+        else:
+            # If mesh_downsampling is True, reshape the position and velocity arrays based on the provided
+            # downsampling factor
+            downsampling = int(256 / downsampling_factor)
+
+            pos = pos.reshape(4, 4, 4, 64, 64, 64, 3).transpose(0, 3, 1, 4, 2, 5, 6).reshape(-1, 3)
+            pos = pos.reshape([256, 256, 256, 3])[::downsampling, ::downsampling, ::downsampling, :].reshape([-1, 3])
+
+            vel = vel.reshape(4, 4, 4, 64, 64, 64, 3).transpose(0, 3, 1, 4, 2, 5, 6).reshape(-1, 3)
+            vel = vel.reshape([256, 256, 256, 3])[::downsampling, ::downsampling, ::downsampling, :].reshape([-1, 3])
     return pos, vel, redshift, Omega_m, Omega_l
 
 

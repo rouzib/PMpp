@@ -1,7 +1,6 @@
 .idea/
 *.iml
 /Results/
-/Models/
 /CamelsSims/LH_0_pos_64.npy
 /CamelsSims/LH_0_vel_64.npy
 /CamelsSims/LH_0_z_64.npy
@@ -15,3 +14,4 @@
 /CamelsSims/LH_100_z_128.npy
 /CamelsSims/LH_100_z_256.npy
 /pk/
+/Tests/
