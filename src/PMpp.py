@@ -46,6 +46,7 @@ from jaxpm.painting import cic_paint
 from jaxpm.pm import make_ode_fn, make_neural_ode_fn_multiple, make_neural_ode_fn
 from src.CamelsUtils import normalize_by_mesh
 from src.Models import initialize_model
+from src.Utils import SimInfo
 
 # Avoiding preallocation for Python's XLA client
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -124,6 +125,77 @@ def load_lh(indexes: List[int], box_size: List[float], n_mesh: int, path: str = 
     # Normalize the positions and velocities by mesh
     if normalize:
         p, v = normalize_by_mesh(jnp.array(p), jnp.array(v), box_size[0], n_mesh)
+
+    # Move the data to GPU or CPU
+    if not cpu_memory:
+        p, v = jax.device_put(p, gpus[0]), jax.device_put(v, gpus[0])
+    return p, v, z, cosmo
+
+
+def load_lh_sims(sims: List[SimInfo] | Array, box_size: List[float], normalize: bool = True, cpu_memory: bool = False,
+                 debug: bool = False) -> tuple[Any, Any, list[Any] | Array, list[Any]]:
+    """
+    Load LH data from files with a list of SimInfo objects.
+
+    :param sims: The list of the SimInfo objects to load
+    :param box_size: Box size of the simulation.
+    :param normalize: Boolean indicating whether to normalize by the mesh the positions and velocities. Default is True.
+    :param cpu_memory: Boolean indicating whether to keep the data in cpu memory. Default is False.
+    :param debug: Boolean indicating whether to print debug statements. Default is False.
+
+    :return: Tuple containing the loaded LH data: (p, v, z, cosmo).
+            - p: Normalized target positions as a NumPy array.
+            - v: Normalized target velocities as a NumPy array.
+            - z: Redshift values as a NumPy array.
+            - cosmo: List of cosmologies as Jax cosmology objects.
+    """
+
+    def read_single_cosmo(c):
+        # Creates a jax cosmology object with planck15 parameters
+        jax_cosmology = jc.Planck15(Omega_c=float(c[0]) - 0.049, Omega_b=0.049, n_s=0.9624, h=0.671,
+                                    sigma8=float(c[1]))
+        return jax_cosmology
+
+    # Initialize data arrays
+    p, v, z, cosmo = [], [], [], []
+    # Iterate over indexes to load simulation data
+    for sim in sims:
+        try:
+            if debug:
+                print(f"loading LH_{sim.idx}_{sim.seed}")
+            # Load data
+            target_pos = jnp.load(sim.get_pos_path())
+            target_vel = jnp.load(sim.get_vel_path())
+            z = jnp.load(sim.get_redshift_path())
+            planck_cosmology = read_single_cosmo(jnp.load(sim.get_cosmo_path()))
+
+            # Move the data to CPU
+            target_pos = jax.device_put(target_pos, cpus[0])
+            target_vel = jax.device_put(target_vel, cpus[0])
+
+            # Append to lists
+            p.append(target_pos)
+            v.append(target_vel)
+            cosmo.append(planck_cosmology)
+
+            """
+            Some code to use jnp.ndarray instead of lists to avoid copying twice the data in memory
+
+            if p is None:
+                p = jnp.expand_dims(target_pos, axis=0).copy()
+            else:
+                p = jnp.append(p, jnp.expand_dims(target_pos, axis=0), axis=0)
+            if v is None:
+                v = jnp.expand_dims(target_vel, axis=0).copy()
+            else:
+                v = jnp.append(v, jnp.expand_dims(target_vel, axis=0), axis=0)
+            """
+        except Exception as e:
+            print(e)
+
+    # Normalize the positions and velocities by mesh
+    if normalize:
+        p, v = normalize_by_mesh(jnp.array(p), jnp.array(v), box_size[0], sims[0].n_mesh)
 
     # Move the data to GPU or CPU
     if not cpu_memory:

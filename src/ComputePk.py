@@ -123,8 +123,7 @@ def main(i):
     # ----- PM WITH CORRECTION -----
     # Run PM with correction
     pmPosCorr, pmVelCorr = run_sim_with_model(initial_pos=initialP, initial_vel=initialV, redshifts=z,
-                                              cosmo=cosmology,
-                                              n_mesh=nMesh)
+                                              cosmo=cosmology, n_mesh=nMesh)
 
     # ----- PM WITHOUT CORRECTION -----
     # Run PM without correction

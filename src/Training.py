@@ -80,7 +80,7 @@ def check_for_pk(lh_index: int, n_mesh: int, data_pos: Optional[np.ndarray] = No
     and `n_mesh`. If the data is not found, it will calculate the power spectrum from `data_pos` or load
     the position data from file if `data_pos` is None.
 
-    :param lh_index: The index of the LH (Large Halo) for which to check the power spectrum.
+    :param lh_index: The index of the LH (Latin Hypercube) for which to check the power spectrum.
     :param n_mesh: The number of mesh points along each dimension.
     :param data_pos: Optional. The position data of the LH. If not provided, it will be loaded from a file using the `lh_index`.
     :return: The wave numbers (`k`) and the power spectrum (`pk_nbody`) of the LH.

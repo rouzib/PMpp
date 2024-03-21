@@ -103,10 +103,12 @@ def read_camels(snapshot: int, cv_index: int = 0, downsampling_factor: int = 32,
             downsampling = int(256 / downsampling_factor)
 
             pos = pos.reshape(4, 4, 4, 64, 64, 64, 3).transpose(0, 3, 1, 4, 2, 5, 6).reshape(-1, 3)
-            pos = pos.reshape([256, 256, 256, 3])[::downsampling, ::downsampling, ::downsampling, :].reshape([-1, 3])
+            pos = pos.reshape([256, 256, 256, 3])[seed::downsampling, seed::downsampling, seed::downsampling,
+                  :].reshape([-1, 3])
 
             vel = vel.reshape(4, 4, 4, 64, 64, 64, 3).transpose(0, 3, 1, 4, 2, 5, 6).reshape(-1, 3)
-            vel = vel.reshape([256, 256, 256, 3])[::downsampling, ::downsampling, ::downsampling, :].reshape([-1, 3])
+            vel = vel.reshape([256, 256, 256, 3])[seed::downsampling, seed::downsampling, seed::downsampling,
+                  :].reshape([-1, 3])
     return pos, vel, redshift, Omega_m, Omega_l
 
 
