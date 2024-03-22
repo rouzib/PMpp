@@ -278,6 +278,8 @@ if __name__ == '__main__':
     scale_factors = 1 / (1 + jnp.array(z))
 
     # Get power spectra for all the training simulations
+    # TODO: There is an error in the saving/loading of the pks, it should be of size [34,15]. Now it is [34, 1]
+    # TODO: Fix: use a vmap when saving
     if PK_LOSS:
         if DEBUG:
             print("Loading pk")
