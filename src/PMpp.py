@@ -27,7 +27,6 @@ corrections). It generates and displays the density fields of simulations.
 
 It finally stores the simulated velocities result in a file.
 """
-
 import os
 from functools import partial
 from typing import List, Tuple, Union, Callable, Optional, Any
@@ -44,7 +43,7 @@ from matplotlib import pyplot as plt
 
 from jaxpm.painting import cic_paint
 from jaxpm.pm import make_ode_fn, make_neural_ode_fn_multiple, make_neural_ode_fn
-from src.CamelsUtils import normalize_by_mesh
+from src.CamelsUtils import normalize_by_mesh, DownsamplingMethod
 from src.Models import initialize_model
 from src.Utils import SimInfo
 
@@ -57,7 +56,8 @@ gpus = jax.devices("gpu")
 
 
 def load_lh(indexes: List[int], box_size: List[float], n_mesh: int, path: str = "CamelsSims", normalize: bool = True,
-            cpu_memory: bool = False, use_mesh_downsampling: bool = False, seed: int = 0, debug: bool = False) -> tuple[
+            cpu_memory: bool = False, downsampling_method: str = DownsamplingMethod.RANDOM, seed: int = 0,
+            debug: bool = False) -> tuple[
     Any, Any, list[Any] | Array, list[Any]]:
     """
     Load LH data from files.
@@ -69,7 +69,7 @@ def load_lh(indexes: List[int], box_size: List[float], n_mesh: int, path: str = 
     :param normalize: Boolean indicating whether to normalize by the mesh the positions and velocities. Default is True.
     :param cpu_memory: Boolean indicating whether to keep the data in cpu memory. Default is False.
     :param seed: The seed value for random number generation. Default is 0.
-    :param use_mesh_downsampling: If the downsampling should be done on a mesh (default is False)
+    :param downsampling_method: The downsampling method to use. Default is DownsamplingMethod.RANDOM.
     :param debug: Boolean indicating whether to print debug statements. Default is False.
 
     :return: Tuple containing the loaded LH data: (p, v, z, cosmo).
@@ -91,10 +91,12 @@ def load_lh(indexes: List[int], box_size: List[float], n_mesh: int, path: str = 
     for i in indexes:
         try:
             if debug:
-                print(f"loading LH_{i}")
+                print(f"loading LH_{i} seed={seed}")
             # Load data
-            target_pos = jnp.load(f"{path}/LH_{i}_pos_{n_mesh}{'_mesh' if use_mesh_downsampling else ''}_{seed}.npy")
-            target_vel = jnp.load(f"{path}/LH_{i}_vel_{n_mesh}{'_mesh' if use_mesh_downsampling else ''}_{seed}.npy")
+            target_pos = jnp.load(f"{path}/LH_{i}_pos_{n_mesh}"
+                                  f"{'_' + downsampling_method if downsampling_method != DownsamplingMethod.RANDOM else ''}_{seed}.npy")
+            target_vel = jnp.load(f"{path}/LH_{i}_vel_{n_mesh}"
+                                  f"{'_' + downsampling_method if downsampling_method != DownsamplingMethod.RANDOM else ''}_{seed}.npy")
             z = jnp.load(f"{path}/LH_{i}_z_{n_mesh}.npy")
             planck_cosmology = read_single_cosmo(jnp.load(f"{path}/LH_{i}_cosmo.npy"))
 

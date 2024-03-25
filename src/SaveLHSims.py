@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import jax.profiler
 from tqdm import tqdm
 
-from src.CamelsUtils import read_camels
+from src.CamelsUtils import read_camels, DownsamplingMethod
 
 # disable memory preallocation to conserve memory
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -34,14 +34,14 @@ gpus = jax.devices("gpu")
 
 
 def read_camels_snapshots_lh(snapshot_list, lh_index: int = 0, downsampling_factor=32,
-                             mesh_downsampling: bool = False, data_dir: Path = "", seed=0):
+                             downsampling_method: str = DownsamplingMethod.RANDOM, data_dir: Path = "", seed=0):
     """
     Read CAMELS snapshots for a specific LH index.
 
     :param snapshot_list: A list of snapshot names.
     :param lh_index: The index of the Luminosity Halo to read. Default is 0.
     :param downsampling_factor: The downsampling factor for the data. Default is 32.
-    :param mesh_downsampling: If the downsampling should be done on a mesh. Default is False.
+    :param downsampling_method: The downsampling method to use. Default is DownsamplingMethod.RANDOM
     :param data_dir: The directory where the data is stored. Default is an empty string.
     :param seed: The seed value for random number generation. Default is 0.
     :return: A tuple containing three NumPy arrays: pos, vel, and redshift.
@@ -52,7 +52,7 @@ def read_camels_snapshots_lh(snapshot_list, lh_index: int = 0, downsampling_fact
     for s in tqdm(snapshot_list):
         # read the snapshot data
         p, v, z, _, _ = read_camels(
-            snapshot=s, cv_index=lh_index, downsampling_factor=downsampling_factor, mesh_downsampling=mesh_downsampling,
+            snapshot=s, cv_index=lh_index, downsampling_factor=downsampling_factor, downsampling_method=downsampling_method,
             data_dir=data_dir, cv_or_lh=True, seed=seed)
         # append positions, velocities, and redshifts to respective lists
         pos.append(p)
@@ -64,7 +64,7 @@ def read_camels_snapshots_lh(snapshot_list, lh_index: int = 0, downsampling_fact
 
 
 def read_camels_lh_set(lh_index_list=None, snapshot_list=range(34), downsampling_factor: int = 32,
-                       use_mesh_downsampling: bool = False, data_dir: Union[str, Path] = "",
+                       downsampling_method: str = DownsamplingMethod.RANDOM, data_dir: Union[str, Path] = "",
                        save_dir: Union[str, Path] = "/home/rouzib/scratch/",
                        seed: int = 0):
     """
@@ -76,7 +76,7 @@ def read_camels_lh_set(lh_index_list=None, snapshot_list=range(34), downsampling
     :param data_dir: The directory where the data is stored. Default is an empty string.
     :param save_dir: The directory in which to save the data. Default is "/home/rouzib/scratch/"
     :param seed: The seed value for random number generation. Default is 0.
-    :param use_mesh_downsampling: If the downsampling should be done on a mesh (default is False)
+    :param downsampling_method: The downsampling method to use. Default is DownsamplingMethod.RANDOM
     :return: A tuple containing four members: a position array, a velocity array, the redshift, and a cosmology factor.
     """
     # mutable argument
@@ -99,15 +99,15 @@ def read_camels_lh_set(lh_index_list=None, snapshot_list=range(34), downsampling
             # read and save the snapshot data for this LH index
             p, v, redshift = read_camels_snapshots_lh(snapshot_list=snapshot_list, lh_index=lh_index,
                                                       downsampling_factor=downsampling_factor, data_dir=Path(data_dir),
-                                                      mesh_downsampling=use_mesh_downsampling, seed=seed)
+                                                      downsampling_method=downsampling_method, seed=seed)
             pos.append(p)
             vel.append(v)
 
             # save the read values to numpy files in the save directory
             jnp.save(f"{save_dir}/LH_{lh_index}_pos_{downsampling_factor}"
-                     f"{'_mesh' if use_mesh_downsampling else ''}_{seed}.npy", p)
+                     f"{'_' + downsampling_method if downsampling_method != DownsamplingMethod.RANDOM else ''}_{seed}.npy", p)
             jnp.save(f"{save_dir}/LH_{lh_index}_vel_{downsampling_factor}"
-                     f"{'_mesh' if use_mesh_downsampling else ''}_{seed}.npy", v)
+                     f"{'_' + downsampling_method if downsampling_method != DownsamplingMethod.RANDOM else ''}_{seed}.npy", v)
             jnp.save(f"{save_dir}/LH_{lh_index}_z_{downsampling_factor}.npy", redshift)
             jnp.save(f"{save_dir}/LH_{lh_index}_cosmo.npy", jnp.array([float(values[0]), float(values[1])]))
 

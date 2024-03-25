@@ -20,6 +20,7 @@ according to a given mesh size, useful for certain types of cosmological simulat
 
 All functions return processed data in the form of JAX arrays.
 """
+from enum import Enum
 from typing import List, Tuple, Optional
 import numpy as np
 from pathlib import Path
@@ -30,6 +31,25 @@ from tqdm import tqdm
 
 # The default directory path for the CAMELS data set
 DEFAULT_CAMELS_DATA_DIR = Path("../../data/CAMELS/Sims/IllustrisTNG_DM")
+
+
+class DownsamplingMethod(Enum):
+    """
+    The `DownsamplingMethod` class is an enumeration that represents different downsampling methods.
+
+    Attributes:
+        RANDOM (str): The "random" downsampling method.
+        MESH (str): The "mesh" downsampling method.
+        WINDOW (str): The "window" downsampling method.
+
+    Usage:
+        Use `DownsamplingMethod.RANDOM` to refer to the "random" downsampling method.
+        Use `DownsamplingMethod.MESH` to refer to the "mesh" downsampling method.
+        Use `DownsamplingMethod.WINDOW` to refer to the "window" downsampling method.
+    """
+    RANDOM = "random"
+    MESH = "mesh"
+    WINDOW = "window"
 
 
 def get_snapshot_filename(data_type: str, data_dir: Path, cv_index: int, snapshot: int) -> str:
@@ -48,12 +68,12 @@ def get_snapshot_filename(data_type: str, data_dir: Path, cv_index: int, snapsho
 
 def read_camels(snapshot: int, cv_index: int = 0, downsampling_factor: int = 32,
                 data_dir: Path = DEFAULT_CAMELS_DATA_DIR, cv_or_lh: bool = False, seed: int = 0,
-                mesh_downsampling: bool = False) \
+                downsampling_method: str = DownsamplingMethod.RANDOM) \
         -> Tuple[jnp.ndarray, jnp.ndarray, float, float, float]:
     """
     Reads and processes CAMELS data for a given snapshot.
 
-    :param mesh_downsampling: If the downsampling should be done on a mesh (default is False)
+    :param downsampling_method: The downsampling method to use (default: RANDOM)
     :param snapshot: The snapshot number.
     :param cv_index: The cross-validation index (default is 0).
     :param downsampling_factor: The downsampling factor for the data (default is 32).
@@ -89,7 +109,7 @@ def read_camels(snapshot: int, cv_index: int = 0, downsampling_factor: int = 32,
 
     # Do downsampling if downsampling_factor provided
     if downsampling_factor is not None:
-        if not mesh_downsampling:
+        if downsampling_method == DownsamplingMethod.RANDOM:
             downsampling_factor = len(pos) // downsampling_factor ** 3
             # Generate random indices for downsampling
             key = jax.random.PRNGKey(seed)
@@ -97,7 +117,7 @@ def read_camels(snapshot: int, cv_index: int = 0, downsampling_factor: int = 32,
             selected_indices = permuted_indices[: len(pos) // downsampling_factor]
             pos = jnp.take(pos, selected_indices, axis=0)
             vel = jnp.take(vel, selected_indices, axis=0)
-        else:
+        elif downsampling_method == DownsamplingMethod.MESH:
             # If mesh_downsampling is True, reshape the position and velocity arrays based on the provided
             # downsampling factor
             downsampling = int(256 / downsampling_factor)
@@ -109,6 +129,10 @@ def read_camels(snapshot: int, cv_index: int = 0, downsampling_factor: int = 32,
             vel = vel.reshape(4, 4, 4, 64, 64, 64, 3).transpose(0, 3, 1, 4, 2, 5, 6).reshape(-1, 3)
             vel = vel.reshape([256, 256, 256, 3])[seed::downsampling, seed::downsampling, seed::downsampling,
                   :].reshape([-1, 3])
+        elif downsampling_method == DownsamplingMethod.WINDOW:
+            pass
+        else:
+            raise NotImplementedError('Downsampling method not implemented')
     return pos, vel, redshift, Omega_m, Omega_l
 
 
