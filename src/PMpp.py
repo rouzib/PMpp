@@ -56,7 +56,7 @@ gpus = jax.devices("gpu")
 
 
 def load_lh(indexes: List[int], box_size: List[float], n_mesh: int, path: str = "CamelsSims", normalize: bool = True,
-            cpu_memory: bool = False, downsampling_method: str = DownsamplingMethod.RANDOM, seed: int = 0,
+            cpu_memory: bool = False, downsampling_method: DownsamplingMethod = DownsamplingMethod.RANDOM, seed: int = 0,
             debug: bool = False) -> tuple[
     Any, Any, list[Any] | Array, list[Any]]:
     """
@@ -94,9 +94,9 @@ def load_lh(indexes: List[int], box_size: List[float], n_mesh: int, path: str = 
                 print(f"loading LH_{i} seed={seed}")
             # Load data
             target_pos = jnp.load(f"{path}/LH_{i}_pos_{n_mesh}"
-                                  f"{'_' + downsampling_method if downsampling_method != DownsamplingMethod.RANDOM else ''}_{seed}.npy")
+                                  f"{'_' + downsampling_method.value if downsampling_method != DownsamplingMethod.RANDOM else ''}_{seed}.npy")
             target_vel = jnp.load(f"{path}/LH_{i}_vel_{n_mesh}"
-                                  f"{'_' + downsampling_method if downsampling_method != DownsamplingMethod.RANDOM else ''}_{seed}.npy")
+                                  f"{'_' + downsampling_method.value if downsampling_method != DownsamplingMethod.RANDOM else ''}_{seed}.npy")
             z = jnp.load(f"{path}/LH_{i}_z_{n_mesh}.npy")
             planck_cosmology = read_single_cosmo(jnp.load(f"{path}/LH_{i}_cosmo.npy"))
 

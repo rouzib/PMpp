@@ -68,7 +68,7 @@ def get_snapshot_filename(data_type: str, data_dir: Path, cv_index: int, snapsho
 
 def read_camels(snapshot: int, cv_index: int = 0, downsampling_factor: int = 32,
                 data_dir: Path = DEFAULT_CAMELS_DATA_DIR, cv_or_lh: bool = False, seed: int = 0,
-                downsampling_method: str = DownsamplingMethod.RANDOM) \
+                downsampling_method: DownsamplingMethod = DownsamplingMethod.RANDOM) \
         -> Tuple[jnp.ndarray, jnp.ndarray, float, float, float]:
     """
     Reads and processes CAMELS data for a given snapshot.

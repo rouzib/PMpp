@@ -13,6 +13,8 @@ simulation information and the associated data paths.
 """
 from pathlib import Path
 
+from src.CamelsUtils import DownsamplingMethod
+
 
 class SimInfo:
     """
@@ -30,7 +32,7 @@ class SimInfo:
     :type base_path: str | Path
     """
 
-    def __init__(self, idx: int, seed: int, n_mesh: int, downsampling_method: str = "mesh",
+    def __init__(self, idx: int, seed: int, n_mesh: int, downsampling_method: str = DownsamplingMethod.MESH,
                  base_path: str | Path = "CamelsSims"):
         """
         Initializes an instance of the class.
@@ -54,7 +56,8 @@ class SimInfo:
         :return: The downsampling method, with a leading underscore if it is not empty, otherwise an empty string.
         :rtype: str
         """
-        return ("_" + self.downsampling_method) if self.downsampling_method != "" else ""
+        return ("_" + self.downsampling_method) if self.downsampling_method not in ["",
+                                                                                    DownsamplingMethod.RANDOM] else ""
 
     def get_pos_path(self):
         """

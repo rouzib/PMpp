@@ -34,7 +34,7 @@ gpus = jax.devices("gpu")
 
 
 def read_camels_snapshots_lh(snapshot_list, lh_index: int = 0, downsampling_factor=32,
-                             downsampling_method: str = DownsamplingMethod.RANDOM, data_dir: Path = "", seed=0):
+                             downsampling_method: DownsamplingMethod = DownsamplingMethod.RANDOM, data_dir: Path = "", seed=0):
     """
     Read CAMELS snapshots for a specific LH index.
 
@@ -64,7 +64,7 @@ def read_camels_snapshots_lh(snapshot_list, lh_index: int = 0, downsampling_fact
 
 
 def read_camels_lh_set(lh_index_list=None, snapshot_list=range(34), downsampling_factor: int = 32,
-                       downsampling_method: str = DownsamplingMethod.RANDOM, data_dir: Union[str, Path] = "",
+                       downsampling_method: DownsamplingMethod = DownsamplingMethod.RANDOM, data_dir: Union[str, Path] = "",
                        save_dir: Union[str, Path] = "/home/rouzib/scratch/",
                        seed: int = 0):
     """
@@ -105,9 +105,9 @@ def read_camels_lh_set(lh_index_list=None, snapshot_list=range(34), downsampling
 
             # save the read values to numpy files in the save directory
             jnp.save(f"{save_dir}/LH_{lh_index}_pos_{downsampling_factor}"
-                     f"{'_' + downsampling_method if downsampling_method != DownsamplingMethod.RANDOM else ''}_{seed}.npy", p)
+                     f"{'_' + downsampling_method.value if downsampling_method != DownsamplingMethod.RANDOM else ''}_{seed}.npy", p)
             jnp.save(f"{save_dir}/LH_{lh_index}_vel_{downsampling_factor}"
-                     f"{'_' + downsampling_method if downsampling_method != DownsamplingMethod.RANDOM else ''}_{seed}.npy", v)
+                     f"{'_' + downsampling_method.value if downsampling_method != DownsamplingMethod.RANDOM else ''}_{seed}.npy", v)
             jnp.save(f"{save_dir}/LH_{lh_index}_z_{downsampling_factor}.npy", redshift)
             jnp.save(f"{save_dir}/LH_{lh_index}_cosmo.npy", jnp.array([float(values[0]), float(values[1])]))
 
