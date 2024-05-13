@@ -56,7 +56,8 @@ gpus = jax.devices("gpu")
 
 
 def load_lh(indexes: List[int], box_size: List[float], n_mesh: int, path: str = "CamelsSims", normalize: bool = True,
-            cpu_memory: bool = False, downsampling_method: DownsamplingMethod = DownsamplingMethod.RANDOM, seed: int = 0,
+            cpu_memory: bool = False, downsampling_method: DownsamplingMethod = DownsamplingMethod.RANDOM,
+            seed: int = 0,
             debug: bool = False) -> tuple[
     Any, Any, list[Any] | Array, list[Any]]:
     """
@@ -240,25 +241,32 @@ def run_pm(initial_pos: jnp.ndarray, initial_vel: jnp.ndarray, redshifts: List[f
 
 
 @partial(jax.jit, static_argnames=["n_mesh", "model"])
-def run_pm_model(pos: jnp.ndarray, vels: jnp.ndarray, scale_factors: jnp.ndarray, cosmo: Union[dict, "Cosmology"],
-                 n_mesh: int, model: Callable, params: List, weights: Optional[jnp.array] = None):
+def run_pm_model(pos: jnp.ndarray, vels: jnp.ndarray, redshifts: jnp.ndarray, cosmo: Union[dict, "Cosmology"],
+                 n_mesh: int, model: Callable, params: List, weights: Optional[jnp.array] = None,
+                 use_redshifts: bool = True) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Run the PM simulation with initial conditions pos and vel with the NN passed in model and params. This code handles
     multiple models with a list of parameters.
 
     :param pos: The initial positions of the particles.
     :param vels: The initial velocities of the particles.
-    :param scale_factors: The scale factors at which the solution is desired.
+    :param redshifts: The redshift values at which the simulation is run. This is a 1D array of shape (n_redshifts,),
+     where n_redshifts is the number of desired redshifts.
     :param cosmo: The cosmological parameters.
     :param n_mesh: The number of grid cells per dimension.
     :param model: The neural network model for the PM model.
     :param params: The model parameters.
     :param weights: The weights for the neural network model (optional).
+    :param use_redshifts: Boolean indicating whether redshifts or scale factors are used.
 
     :return: The solution obtained by integrating the PM model using the provided parameters.
-    :rtype: numpy.ndarray
 
     """
+    if use_redshifts:
+        scale_factors = 1 / (1 + jnp.array(redshifts))
+    else:
+        scale_factors = redshifts
+
     mesh_shape = [n_mesh, n_mesh, n_mesh]
     return odeint(make_neural_ode_fn_multiple(model, mesh_shape, weights=weights), [pos, vels],
                   jnp.array(scale_factors), cosmo, params, rtol=1e-5, atol=1e-5)
@@ -323,16 +331,19 @@ def run_sim_with_model(initial_pos: jnp.ndarray, initial_vel: jnp.ndarray, redsh
     modelPaths = ["../Model/MyModel_nMesh64_LH100-149_Lr0.001_regularization/model499.pkl",
                   "../Model/MyModel_nMesh32_LH100-499_Lr0.001_regularization_vel/model395.pkl"]
     paramsList = []
+
+    working_dir = os.getcwd()
+    os.chdir(os.path.dirname(os.path.realpath(__file__)))
     for modelPath in modelPaths:
         with open(modelPath, 'rb') as file:
             params = pickle.load(file)
         paramsList.append(params)
+    os.chdir(working_dir)
 
-    scale_factors = 1 / (1 + jnp.array(redshifts))  # Convert redshift to scale factor
     # Run the PM simulation with the model
     if debug:
         print("Running PM corrected Simulation")
-    posPmCorr, velPmCorr = run_pm_model(pos=initial_pos, vels=initial_vel, scale_factors=scale_factors, cosmo=cosmo,
+    posPmCorr, velPmCorr = run_pm_model(pos=initial_pos, vels=initial_vel, scale_factors=redshifts, cosmo=cosmo,
                                         n_mesh=n_mesh, model=model, params=paramsList, weights=weights)
 
     return posPmCorr, velPmCorr
