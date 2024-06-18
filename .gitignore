@@ -5,10 +5,10 @@
 /CamelsSims/LH_0_vel_64.npy
 /CamelsSims/LH_0_z_64.npy
 /CamelsSims/LH_100_pos_64.npy
-/CamelsSims/LH_100_pos_128.npy
+/CamelsSims/LH_100_pos_128_0.npy
 /CamelsSims/LH_100_pos_256.npy
 /CamelsSims/LH_100_vel_64.npy
-/CamelsSims/LH_100_vel_128.npy
+/CamelsSims/LH_100_vel_128_0.npy
 /CamelsSims/LH_100_vel_256.npy
 /CamelsSims/LH_100_z_64.npy
 /CamelsSims/LH_100_z_128.npy
@@ -18,3 +18,13 @@
 /cc.png
 /pk.png
 /DensityFields.png
+/Log.ipynb
+/Quijote/
+/wn/
+/LoadWN.py
+/pmwd/
+/Model/example.pkl
+/Model/example_only_vel.pkl
+/Model/example_pos_only.pkl
+/Model/quijote_128.pkl
+/jaxDecomp/
