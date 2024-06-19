@@ -75,7 +75,7 @@ def distribute_array_on_gpus(array: np.ndarray, compute_mesh: Mesh, partition: P
     array_parts = split_array_for_gpus(array, num_gpus, partition.index(axis_name))
     with compute_mesh:
         # Distribute the array parts across different GPUs
-        array_parts_device = [jax.device_put(part, device) for part, device in zip(array_parts, devices)]
+        array_parts_device = [jax.device_put(part, device) for part, device in zip(array_parts, compute_mesh.devices)]
         array_distributed = jax.make_array_from_single_device_arrays(array.shape,
                                                                      NamedSharding(compute_mesh, partition),
                                                                      array_parts_device)

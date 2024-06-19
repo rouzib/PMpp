@@ -48,7 +48,7 @@ from src.Models import initialize_model
 from src.Utils import SimInfo
 
 # Avoiding preallocation for Python's XLA client
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 # Defining the devices for computation
 cpus = jax.devices("cpu")
@@ -286,7 +286,6 @@ def run_pm_with_correction(pos: jnp.ndarray, vels: jnp.ndarray, scale_factors: j
     :param n_mesh: The number of grid cells per dimension.
     :param model: The neural network model for the PM model.
     :param params: The model parameters.
-    :param weights: The weights for the neural network model (optional).
 
     :return: The solution obtained by integrating the PM model using the provided parameters.
     :rtype: numpy.ndarray
@@ -343,7 +342,7 @@ def run_sim_with_model(initial_pos: jnp.ndarray, initial_vel: jnp.ndarray, redsh
     # Run the PM simulation with the model
     if debug:
         print("Running PM corrected Simulation")
-    posPmCorr, velPmCorr = run_pm_model(pos=initial_pos, vels=initial_vel, scale_factors=redshifts, cosmo=cosmo,
+    posPmCorr, velPmCorr = run_pm_model(pos=initial_pos, vels=initial_vel, redshifts=redshifts, cosmo=cosmo,
                                         n_mesh=n_mesh, model=model, params=paramsList, weights=weights)
 
     return posPmCorr, velPmCorr

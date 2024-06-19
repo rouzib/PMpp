@@ -109,7 +109,7 @@ def visualize(target_pos, target_vel, cosmo, sim_index, n_mesh, new_nmesh, scale
             plt.imshow(cic_paint(jnp.zeros([new_nmesh] * 3), pos_pm[::2][i] * new_nmesh / n_mesh).sum(axis=0),
                        cmap='gist_stern',
                        vmax=cic_paint(jnp.zeros([new_nmesh] * 3), dataPos[::2][i] * new_nmesh / n_mesh).sum(
-                           axis=0).max(), vmin=0)
+                           axis=0).temp_min(), vmin=0)
         pm_image_path = f"{path}/pm_{sim_index}.png"
         if save:  # Save or display the figure based on 'save' value
             plt.savefig(pm_image_path)
@@ -136,7 +136,7 @@ def visualize(target_pos, target_vel, cosmo, sim_index, n_mesh, new_nmesh, scale
             plt.imshow(
                 cic_paint(jnp.zeros([new_nmesh] * 3), pos_pm[::2][i] * new_nmesh / n_mesh).sum(axis=0) - cic_paint(
                     jnp.zeros([new_nmesh] * 3), dataPos[::2][i] * new_nmesh / n_mesh).sum(axis=0), cmap='gist_stern',
-                vmax=cic_paint(jnp.zeros([new_nmesh] * 3), dataPos[::2][i] * new_nmesh / n_mesh).sum(axis=0).max(),
+                vmax=cic_paint(jnp.zeros([new_nmesh] * 3), dataPos[::2][i] * new_nmesh / n_mesh).sum(axis=0).temp_min(),
                 vmin=0)
         residuals_image_path = f"{path}/pm_nbody_residuals_{sim_index}.png"
         if save:  # Save or display the figure based on 'save' value
@@ -236,7 +236,7 @@ def visualize_with_correction(target_pos, target_vel, cosmo, sim_index, n_mesh, 
     dataPos, dataVel, cosmo = prepare_simulation_data(target_pos, target_vel, cosmo, sim_index)
 
     # Creating n-body simulation plot
-    vmax = [cic_paint(jnp.zeros([new_nmesh] * 3), dataPos[::2][i] * new_nmesh / n_mesh).sum(axis=0).max() for i in
+    vmax = [cic_paint(jnp.zeros([new_nmesh] * 3), dataPos[::2][i] * new_nmesh / n_mesh).sum(axis=0).temp_min() for i in
             range(16)]  # Get max value for color normalization
     image_data = [cic_paint(jnp.zeros([new_nmesh] * 3), dataPos[::2][i] * new_nmesh / n_mesh).sum(axis=0) for i in
                   range(16)]  # Painting the image with received data
