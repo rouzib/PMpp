@@ -21,8 +21,11 @@ Note: The script expects a computing environment with multiple GPUs available.
 
 import numpy as np
 from typing import Callable, Tuple
+from functools import partial
 
 import jax
+from jax import lax
+from jax import custom_vjp
 from jax.experimental import mesh_utils
 from jax.experimental.custom_partitioning import custom_partitioning
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
@@ -47,7 +50,7 @@ def split_array_for_gpus(array: np.ndarray, num_gpus: int, axis: int = 1) -> np.
     The caller must ensure that `num_gpus` evenly divides the second dimension of `array`.
     """
     # Split the array equally along the second dimension for each GPU
-    return np.array(np.array_split(array, num_gpus, axis=axis))
+    return jnp.array(jnp.array_split(array, num_gpus, axis=axis))
 
 
 def distribute_array_on_gpus(array: np.ndarray, compute_mesh: Mesh, partition: P,
@@ -172,6 +175,8 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
         set up to perform their computations with input data that are distributed across devices depending on the
         `compute_mesh`. This is performed by making use of the earlier defined sharded FFT functions.
 
+        Among the returned functions, `rfftn` and `irfftn` functions are differentiable while `fftn` and `ifftn` are not.
+
     """
     # Creating sharded versions of FFT and IFFT functions for specific GPU sharding
     fftn_first_pass = create_sharded_fft(_fftn_first_pass, P(None, None, "gpus"))
@@ -181,41 +186,99 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
     ifftn_second_pass = create_sharded_fft(_ifftn_second_pass, P(None, "gpus"))
     irfftn_second_pass = create_sharded_fft(_irfftn_second_pass, P(None, "gpus"))
 
-    def fftn(x):
+    def _fftn(x):
         """ Perform a forward FFT. """
         x = fftn_second_pass(x)
         x = fftn_first_pass(x)
         return x
 
-    def ifftn(x):
+    def _ifftn(x):
         """ Perform an inverse FFT. """
         x = ifftn_first_pass(x)
         x = ifftn_second_pass(x)
         return x
 
-    def rfftn(x):
+    def _rfftn(x):
         """ Perform a real-valued forward FFT. """
         x = rfftn_second_pass(x)
         x = fftn_first_pass(x)
         return x
 
-    def irfftn(x):
+    def _irfftn(x):
         """ Perform a real-valued inverse FFT. """
         x = ifftn_first_pass(x)
         x = irfftn_second_pass(x)
         return x
 
     # Creating jitted versions of FFT and IFFT functions for specific GPU sharding
-    rfftn_jit = jax.jit(rfftn, in_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))),
-                        out_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))))
-    irfftn_jit = jax.jit(irfftn, in_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))),
+    _rfftn_jit = jax.jit(_rfftn, in_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))),
                          out_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))))
-    fftn_jit = jax.jit(fftn, in_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))),
-                       out_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))))
-    ifftn_jit = jax.jit(ifftn, in_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))),
+    _irfftn_jit = jax.jit(_irfftn, in_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))),
+                          out_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))))
+    _fftn_jit = jax.jit(_fftn, in_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))),
                         out_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))))
+    _ifftn_jit = jax.jit(_ifftn, in_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))),
+                         out_shardings=(NamedSharding(compute_mesh, P(None, "gpus"))))
 
-    return rfftn_jit, irfftn_jit, fftn_jit, ifftn_jit
+    @custom_vjp
+    def rfftn(x):
+        """
+        Perform a real-valued forward FFT with custom VJP (vector-Jacobian product) defined.
+
+        Note:
+            This function is differentiable and the derivative is defined using VJP.
+        """
+        return _rfftn_jit(x)
+
+    def rfftn_fwd(x):
+        """ Forward pass for custom VJP of real-valued forward FFT """
+        return _rfftn_jit(x), x.shape
+
+    def rfftn_bwd(x_shape, g):
+        """ Backward pass for custom VJP of real-valued forward FFT """
+        g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
+        g = _ifftn_jit(g.conj()).real
+        # the previous code is equivalent to jnp.fft.ifftn(g.conj(), s=x_shape).real
+        g *= jnp.prod(jnp.array(x_shape))
+        return (g,)
+
+    rfftn.defvjp(rfftn_fwd, rfftn_bwd)
+
+    @custom_vjp
+    def irfftn(x):
+        """
+        Perform a real-valued inverse FFT with custom VJP (vector-Jacobian product) defined.
+
+        Note:
+            This function is differentiable and the derivative is defined using VJP.
+        """
+        return _irfftn_jit(x)
+
+    def irfftn_fwd(x):
+        """ Forward pass for custom VJP of real-valued inverse FFT """
+        return _irfftn_jit(x), x.shape
+
+    def irfftn_bwd(res, g):
+        """ Backward pass for custom VJP of real-valued inverse FFT """
+        fft_lengths = jnp.array(g.shape)
+        # Compute the RFFT of the gradient
+        x = _rfftn_jit(g)
+        # Apply the scaling factor and mask
+        n = x.shape[-1]
+        is_odd = fft_lengths[-1] % 2
+        full = partial(lax.full_like, g, dtype=x.dtype)
+        mask = lax.concatenate(
+            [full(1.0, shape=(1,)),
+             full(2.0, shape=(n - 2 + is_odd,)),
+             full(1.0, shape=(1 - is_odd,))],
+            dimension=0)
+        scale = 1 / jnp.prod(fft_lengths)
+        out = scale * lax.expand_dims(mask, range(x.ndim - 1)) * x
+        return (out,)
+
+    irfftn.defvjp(irfftn_fwd, irfftn_bwd)
+
+    return rfftn, irfftn, _fftn_jit, _ifftn_jit
 
 
 def test_functions(distributed_func_jit: Callable, reference_func: Callable, array: np.ndarray, mesh: Mesh) -> Tuple[
