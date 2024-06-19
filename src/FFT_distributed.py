@@ -237,6 +237,7 @@ def create_ffts(compute_mesh: Mesh, max_n:int) -> Tuple[Callable, Callable, Call
 
     def rfftn_bwd(x_shape, g):
         """ Backward pass for custom VJP of real-valued forward FFT """
+        # TODO: Weird behaviour when x_shape is not a power of 2
         g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
         g = _ifftn_jit(g.conj()).real
         # the previous code is equivalent to jnp.fft.ifftn(g.conj(), s=x_shape).real
@@ -261,7 +262,7 @@ def create_ffts(compute_mesh: Mesh, max_n:int) -> Tuple[Callable, Callable, Call
 
     def create_mask(n, is_odd, dtype):
         # Create a large enough static mask
-        assert n <= max_n: f"max_n provided is not big enough for array size of {n}"
+        assert n <= max_n, f"max_n provided ({max_n}) is not big enough for array size of {n}."
         mask = jnp.ones(max_n, dtype=dtype)
         mask = mask.at[1:max_n - 1].set(2.0)  # Set the middle values to 2.0
         mask = mask.at[max_n - 1].set(1.0 - is_odd)  # Adjust the last value based on odd/even
