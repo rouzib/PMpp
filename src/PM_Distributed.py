@@ -55,6 +55,7 @@ def make_neural_ode_fn_sharded(model, mesh_shape, compute_mesh):
                                    out_shardings=NamedSharding(compute_mesh, P("gpus")))
 
     # initialise an array across multiple GPUs
+    # TODO: extract `distribute_array_on_gpus` calls from the `make_neural_ode_fn_sharded` func
     init_mesh = distribute_array_on_gpus(jnp.zeros(mesh_shape), compute_mesh, P(None, None, "gpus"))
 
     # pre-compute some values on cpu
@@ -64,6 +65,7 @@ def make_neural_ode_fn_sharded(model, mesh_shape, compute_mesh):
     longrange_kernel_computed = longrange_kernel(kvec, r_split=0)
 
     # distribute pre-computed arrays across GPUs
+    # TODO: extract `distribute_array_on_gpus` calls from the `make_neural_ode_fn_sharded` func
     kk = distribute_array_on_gpus(kk, compute_mesh, P("gpus", None, None))
     laplace_kernel_computed = distribute_array_on_gpus(laplace_kernel_computed, compute_mesh, P("gpus", None, None))
 
@@ -303,7 +305,7 @@ def run_pm_with_correction_sharded(pos: jnp.ndarray, vels: jnp.ndarray, scale_fa
 
         mesh_shape = [n_mesh, n_mesh, n_mesh]
 
-        warmup([pos, vels], cosmo, params, model, mesh_shape, compute_mesh)
+        # warmup([pos, vels], cosmo, params, model, mesh_shape, compute_mesh)
         return odeint(make_neural_ode_fn_sharded(model, mesh_shape, compute_mesh), [pos, vels], scale_factors, cosmo,
                       params, rtol=rtol, atol=atol, mxstep=mxstep)
 
@@ -336,5 +338,5 @@ def run_pm_sharded(pos: jnp.ndarray, vels: jnp.ndarray, scale_factors: jnp.ndarr
 
         mesh_shape = [n_mesh, n_mesh, n_mesh]
 
-        return odeint(make__ode_fn_sharded(mesh_shape, compute_mesh), [pos, vels], scale_factors, cosmo,
+        return odeint(make_ode_fn_sharded(mesh_shape, compute_mesh), [pos, vels], scale_factors, cosmo,
                       rtol=rtol, atol=atol, mxstep=mxstep)
