@@ -155,7 +155,7 @@ def _irfftn_second_pass(x):
     return jnp.fft.irfft(x, axis=2)
 
 
-def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Callable]:
+def create_ffts(compute_mesh: Mesh, max_n:int) -> Tuple[Callable, Callable, Callable, Callable]:
     """
     Create a set of Fourrier Transform functions that distribute computation across a provided compute mesh (a logical
     grouping of devices for parallel computation).  It returns a tuple of functions: `rfftn_jit`, `irfftn_jit`, `fftn_jit`,
@@ -163,6 +163,7 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
 
     Args:
         compute_mesh (Mesh): The compute mesh defining the layout of devices for parallel computation.
+        max_n (int): The maximum size of elements along the largest dimensions of the input arrays.
 
     Returns:
         tuple: The forward and inverse FFT functions including real and complex variants. These functions are JIT
@@ -258,6 +259,14 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
         """ Forward pass for custom VJP of real-valued inverse FFT """
         return _irfftn_jit(x), x.shape
 
+    def create_mask(n, is_odd, dtype):
+        # Create a large enough static mask
+        assert n <= max_n: f"max_n provided is not big enough for array size of {n}"
+        mask = jnp.ones(max_n, dtype=dtype)
+        mask = mask.at[1:max_n - 1].set(2.0)  # Set the middle values to 2.0
+        mask = mask.at[max_n - 1].set(1.0 - is_odd)  # Adjust the last value based on odd/even
+        return mask[:n]  # Slice the mask to the desired size dynamically
+
     def irfftn_bwd(res, g):
         """ Backward pass for custom VJP of real-valued inverse FFT """
         fft_lengths = jnp.array(g.shape)
@@ -266,12 +275,16 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
         # Apply the scaling factor and mask
         n = x.shape[-1]
         is_odd = fft_lengths[-1] % 2
-        full = partial(lax.full_like, g, dtype=x.dtype)
+
+        # for jax.jit computation, the mask needs to be static. The commented code is more intuitive, but dynamic
+        """full = partial(lax.full_like, g, dtype=x.dtype)
         mask = lax.concatenate(
             [full(1.0, shape=(1,)),
              full(2.0, shape=(n - 2 + is_odd,)),
              full(1.0, shape=(1 - is_odd,))],
-            dimension=0)
+            dimension=0)"""
+        mask = create_mask(n, is_odd, g.dtype)
+
         scale = 1 / jnp.prod(fft_lengths)
         out = scale * lax.expand_dims(mask, range(x.ndim - 1)) * x
         return (out,)
