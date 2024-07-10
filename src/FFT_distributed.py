@@ -155,7 +155,7 @@ def _irfftn_second_pass(x):
     return jnp.fft.irfft(x, axis=2)
 
 
-def create_ffts(compute_mesh: Mesh, max_n:int) -> Tuple[Callable, Callable, Callable, Callable]:
+def create_ffts(compute_mesh: Mesh, max_n: int) -> Tuple[Callable, Callable, Callable, Callable]:
     """
     Create a set of Fourrier Transform functions that distribute computation across a provided compute mesh (a logical
     grouping of devices for parallel computation).  It returns a tuple of functions: `rfftn_jit`, `irfftn_jit`, `fftn_jit`,
@@ -238,6 +238,14 @@ def create_ffts(compute_mesh: Mesh, max_n:int) -> Tuple[Callable, Callable, Call
     def rfftn_bwd(x_shape, g):
         """ Backward pass for custom VJP of real-valued forward FFT """
         # TODO: Weird behaviour when x_shape is not a power of 2
+        # TODO: See FFT shift
+        # TODO: Fix is maybe cropping before padding to ensure size on last dimension
+        #  if fft_type == xla_client.FftType.IRFFT:
+        #       in_s[-1] = (in_s[-1] // 2 + 1)
+        #     # Cropping
+        #     arr = arr[tuple(map(slice, in_s))]
+        #     # Padding
+        #     arr = jnp.pad(arr, [(0, x - y) for x, y in zip(in_s, arr.shape)])
         g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
         g = _ifftn_jit(g.conj()).real
         # the previous code is equivalent to jnp.fft.ifftn(g.conj(), s=x_shape).real
@@ -271,10 +279,11 @@ def create_ffts(compute_mesh: Mesh, max_n:int) -> Tuple[Callable, Callable, Call
     def irfftn_bwd(res, g):
         """ Backward pass for custom VJP of real-valued inverse FFT """
         fft_lengths = jnp.array(g.shape)
-        # Compute the RFFT of the gradient
-        x = _rfftn_jit(g)
+        dtype = g.dtype
+        # Compute the RFFT of the gradient (changes the size of g)
+        g = _rfftn_jit(g).conj()  # jnp.fft.rfftn(g) # _rfftn_jit(g)
         # Apply the scaling factor and mask
-        n = x.shape[-1]
+        n = g.shape[-1]
         is_odd = fft_lengths[-1] % 2
 
         # for jax.jit computation, the mask needs to be static. The commented code is more intuitive, but dynamic
@@ -284,10 +293,10 @@ def create_ffts(compute_mesh: Mesh, max_n:int) -> Tuple[Callable, Callable, Call
              full(2.0, shape=(n - 2 + is_odd,)),
              full(1.0, shape=(1 - is_odd,))],
             dimension=0)"""
-        mask = create_mask(n, is_odd, g.dtype)
+        mask = create_mask(n, is_odd, dtype)
 
         scale = 1 / jnp.prod(fft_lengths)
-        out = scale * lax.expand_dims(mask, range(x.ndim - 1)) * x
+        out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
         return (out,)
 
     irfftn.defvjp(irfftn_fwd, irfftn_bwd)
