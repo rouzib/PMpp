@@ -60,17 +60,21 @@ class Header:
         self.nall = nall
 
 
-def write_hdf5(filename, header_data, ptype, array_pos, array_vel, array_id):
+def write_hdf5(filename, header_data, ptype, array_pos, array_vel, array_id, compression_json):
     """
-    Writes data to an HDF5 file.
-
-    :param filename: Name of the HDF5 file.
-    :param header_data: Header data object that contains information about the data.
-    :param ptype: Particle type.
-    :param array_pos: Array of particle positions.
-    :param array_vel: Array of particle velocities.
-    :param array_id: Array of particle IDs.
+    :param filename: The name of the HDF5 file to be created. (str)
+    :param header_data: A dictionary containing the header data to be assigned as attributes to the 'Header' group. (dict)
+    :param ptype: The particle type. (int)
+    :param array_pos: An array of coordinates for the particle type. (array)
+    :param array_vel: An array of velocities for the particle type. (array)
+    :param array_id: An array of particle IDs for the particle type. (array)
+    :param compression_json: The json giving the compression information. (str)
     :return: None
+
+    This method creates a new HDF5 file, creates a 'Header' group, and assigns attributes to the 'Header' group from
+    the provided header_data dictionary. It then creates groups for various blocks based on the particle type and
+    creates datasets for the coordinates, velocities, and particle IDs if they do not already exist. Finally, it closes
+    the HDF5 file.
     """
     # Create a new HDF5 file
     file = h5py.File(filename, 'w')
@@ -79,16 +83,10 @@ def write_hdf5(filename, header_data, ptype, array_pos, array_vel, array_id):
     hdr_group = file.create_group("Header")
 
     # Assign attributes to the 'Header' group
-    hdr_group.attrs['Time'] = header_data.time
-    hdr_group.attrs['Redshift'] = header_data.redshift
-    hdr_group.attrs['NumPart_ThisFile'] = header_data.npart
-    hdr_group.attrs['NumPart_Total'] = header_data.nall
-    hdr_group.attrs['NumFilesPerSnapshot'] = header_data.filenum
-    hdr_group.attrs['MassTable'] = header_data.massarr
-    hdr_group.attrs['BoxSize'] = header_data.boxsize
-    hdr_group.attrs['Omega0'] = header_data.omega_m
-    hdr_group.attrs['OmegaLambda'] = header_data.omega_l
-    hdr_group.attrs['HubbleParam'] = header_data.hubble
+    for attr, value in header_data.items():
+        hdr_group.attrs[attr] = value
+
+    file.create_group("CompressionInfo").attrs["json"] = compression_json
 
     # Prefix for the particle type
     prefix = 'PartType%d/' % ptype
@@ -107,24 +105,28 @@ def write_hdf5(filename, header_data, ptype, array_pos, array_vel, array_id):
     file.close()
 
 
-def copy_camels_hdf5(filename, header, pos, vel, ids):
+def copy_camels_hdf5(filename, file_ref, pos, vel, ids):
     """
-    Copy the CAMELs HDF5 data to a new file.
+    Copy data from the specified HDF5 file to a new file.
 
-    :param filename: The name of the new file.
-    :param header: The header information of the original file.
-    :param pos: The position array of the original file.
-    :param vel: The velocity array of the original file.
-    :param ids: The ID array of the original file.
-    :return: The name of the new file.
+    :param filename: The name of the output HDF5 file.
+    :param file_ref: The reference to the input HDF5 file.
+    :param pos: The position data.
+    :param vel: The velocity data.
+    :param ids: The ID data.
+    :return: The name of the output HDF5 file.
     """
-    new_header = Header(header.time, header.redshift, header.boxsize, header.filenum, header.omega_m, header.omega_l,
-                        header.hubble, header.massarr, header.npart, header.nall)
+    with h5py.File(file_ref, "r") as f:
+        header_attrs = f["Header"].attrs
+        header_dict = {attr: header_attrs[attr] for attr in header_attrs}
+        compression_info = f["CompressionInfo"].attrs["json"]
+
     resorted_ids = np.argsort(ids)
-    write_hdf5(filename, new_header, ptype=1,
+    write_hdf5(filename, header_dict, ptype=1,
                array_pos=pos[resorted_ids] * 1e3,
-               array_vel=vel[resorted_ids] * 100 * (1.0 + header.redshift) / np.sqrt(header.time),
-               array_id=resorted_ids + 1)
+               array_vel=vel[resorted_ids] * 100 * (1.0 + header_dict["Redshift"]) / np.sqrt(header_dict["Time"]),
+               array_id=resorted_ids + 1,
+               compression_json=compression_info)
     return filename
 
 
