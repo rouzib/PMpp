@@ -14,7 +14,7 @@ the large scale structure of the universe.
 
 import jax
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding, SingleDeviceSharding
-from jax.experimental.ode import odeint
+# from jax.experimental.ode import odeint
 import jax.numpy as jnp
 
 from typing import List, Callable
@@ -25,6 +25,41 @@ from jaxpm.kernels import fftk, gradient_kernel, laplace_kernel, longrange_kerne
 from jaxpm.painting import cic_paint, cic_read
 
 from src.FFT_distributed import create_ffts, distribute_array_on_gpus
+from src.custom_ode import odeint
+
+
+def save_at_scale_factors(y_results, target_t):
+    """
+    This function is used to save the simulation results at each scale factor in a .npy file.
+    The results are saved in the "Sim_results" directory with the filenames being "PM_Corr_" appended
+    with the scale factor.
+
+    Parameters:
+    y_results: jnp.ndarray
+        The simulation results array which needs to be saved.
+    target_t: scalar
+        The scale factor at which the y_results were calculated.
+
+    Returns:
+    None. The function saves the 'y_results' as a numpy file and doesn't return anything.
+
+    Example:
+    This function can be used as custom_func in the function run_pm_with_correction_sharded().
+    It will save results of the simulation at each scale factor.
+
+        run_pm_with_correction_sharded(pos, vels, scale_factors, cosmo, n_mesh, model, params,
+        compute_mesh, custom_func=save_at_scale_factors)
+
+    This will run the particle-mesh simulation and save results at each timestep using the
+    save_at_scale_factors function. The result of each timestep will be saved as a numpy file
+    in the "Sim_results" directory.
+    """
+
+    def callback(y_results, target_t):
+        jnp.save(f"Sim_results/PM_Corr_{target_t}.npy", y_results / 2) # / 2 to account for super_res = 2
+        return y_results, target_t
+
+    jax.experimental.io_callback(callback, (y_results, target_t), y_results, target_t)
 
 
 def make_neural_ode_fn_sharded(model, mesh_shape, compute_mesh, super_res):
@@ -282,7 +317,7 @@ def make_ode_fn_sharded(mesh_shape, compute_mesh, super_res):
 def run_pm_with_correction_sharded(pos: jnp.ndarray, vels: jnp.ndarray, scale_factors: jnp.ndarray, cosmo: jc.Cosmology,
                                    n_mesh: int, model: Callable, params: List, compute_mesh: Mesh, super_res: int = 1,
                                    rtol: float = 1e-5, atol: float = 1e-5, mxstep: int = jnp.inf,
-                                   previous_sharding=False):
+                                   previous_sharding=False, custom_func=None):
     """
     Runs a Particle-Mesh (PM) simulation with model correction using sharded distributed computation. This function
     executes the simulation on multiple GPUs, distributing the system's particles across the available GPUs.
@@ -303,10 +338,17 @@ def run_pm_with_correction_sharded(pos: jnp.ndarray, vels: jnp.ndarray, scale_fa
         atol (float, optional): The absolute tolerance parameter for the ODE solver. Defaults to 1e-5.
         mxstep (int, optional): Maximum number of steps taken by the solver in total. Defaults to infinite.
         previous_sharding (bool, optional): If the initial sharding of the data should be preserved. Defaults to False.
+        custom_func (Callable, optional): Function called on each positions and velocities for all scale_factors.
+                                          Defaults to None
+
+    Notes:
+        When custom_func is not None, this function returns the initial positions and velocities other results should be
+        handled in the custom_func call.
 
     Returns:
         jnp.ndarray: Array containing the positions and velocities of the particles at each scale factor specified,
-                     computed using the PM simulation with model corrections.
+                     computed using the PM simulation with model corrections. **If custom_func is not None, returns pos
+                     and vel.**
     """
     with compute_mesh:
         if not previous_sharding and (type(pos.sharding) == SingleDeviceSharding or pos.sharding.mesh != compute_mesh):
@@ -318,12 +360,16 @@ def run_pm_with_correction_sharded(pos: jnp.ndarray, vels: jnp.ndarray, scale_fa
         pos *= super_res
         vels *= super_res
         n_mesh *= super_res
-
         mesh_shape = [n_mesh, n_mesh, n_mesh]
+
+        # not called during computation so called here instead
+        if custom_func is not None:
+            custom_func([pos, vels], scale_factors[0])
 
         # warmup([pos, vels], cosmo, params, model, mesh_shape, compute_mesh)
         results = odeint(make_neural_ode_fn_sharded(model, mesh_shape, compute_mesh, super_res), [pos, vels],
-                         scale_factors, cosmo, params, rtol=rtol, atol=atol, mxstep=mxstep)
+                         scale_factors, cosmo, params, rtol=rtol, atol=atol, mxstep=mxstep, custom_func=custom_func)
+
         results[0] /= super_res
         results[1] /= super_res
         return results
@@ -331,7 +377,7 @@ def run_pm_with_correction_sharded(pos: jnp.ndarray, vels: jnp.ndarray, scale_fa
 
 def run_pm_sharded(pos: jnp.ndarray, vels: jnp.ndarray, scale_factors: jnp.ndarray, cosmo: jc.Cosmology, n_mesh: int,
                    compute_mesh: Mesh, super_res: int = 1, rtol: float = 1e-5, atol: float = 1e-5,
-                   mxstep: int = jnp.inf):
+                   mxstep: int = jnp.inf, custom_func=None):
     """
     Runs a Particle-Mesh (PM) simulation using sharded distributed computation across multiple GPUs.
 
@@ -348,10 +394,16 @@ def run_pm_sharded(pos: jnp.ndarray, vels: jnp.ndarray, scale_factors: jnp.ndarr
         rtol (float, optional): The relative tolerance parameter for the ODE solver. Defaults to 1e-5.
         atol (float, optional): The absolute tolerance parameter for the ODE solver. Defaults to 1e-5.
         mxstep (int, optional): Maximum number of steps taken by the solver in total. Defaults to infinite.
+        custom_func (Callable, optional): Function called on each positions and velocities for all scale_factors.
+                                          For an example, refer to `save_at_scale_factors`. Defaults to None.
+
+    Notes:
+        When custom_func is not None, this function returns the initial positions and velocities other results should be
+        handled in the custom_func call. See `save_at_scale_factors` for more details on how to implement `custom_func`.
 
     Returns:
         jnp.ndarray: Array containing the positions and velocities of the particles at each scale factor specified,
-                     computed using the basic PM simulation.
+                     computed using the basic PM simulation. **If custom_func is not None, returns pos and vel.**
     """
     with compute_mesh:
         pos = distribute_array_on_gpus(pos * super_res, compute_mesh, P("gpus", None))
@@ -360,8 +412,13 @@ def run_pm_sharded(pos: jnp.ndarray, vels: jnp.ndarray, scale_factors: jnp.ndarr
         n_mesh *= super_res
         mesh_shape = [n_mesh, n_mesh, n_mesh]
 
+        # not called during computation so called here instead
+        if custom_func is not None:
+            custom_func([pos, vels], scale_factors[0])
+
         results = odeint(make_ode_fn_sharded(mesh_shape, compute_mesh, super_res), [pos, vels], scale_factors, cosmo,
-                         rtol=rtol, atol=atol, mxstep=mxstep)
+                         rtol=rtol, atol=atol, mxstep=mxstep, custom_func=custom_func)
+
         results[0] /= super_res
         results[1] /= super_res
         return results
