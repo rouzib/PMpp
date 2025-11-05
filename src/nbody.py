@@ -4,10 +4,11 @@ import jax
 import jax.numpy as jnp
 from jax import custom_vjp, lax
 from jax.tree_util import tree_map
+from jax.sharding import PartitionSpec as P, NamedSharding
 
 from .scatter import scatter
 from .steps import force, integrate, force_adj, integrate_adj
-from .utils import wraparound_slice
+from .utils import wraparound_slice, AXIS_NAME
 
 
 def nbody_init(a, ptcl, cosmo, conf):
@@ -52,7 +53,7 @@ def nbody(ptcl, cosmo, conf, reverse=False):
 
     # Create a pytree with the same structure as ptcl to store the saved states.
     # The leading dimension's size is the number of timesteps to save.
-    saved_maps = jnp.zeros((len(conf.to_save_a),) + (conf.nMesh, conf.nMesh), dtype=conf.float_dtype)
+    saved_maps = jnp.zeros((len(conf.to_save_a), 3) + (conf.nMesh, conf.nMesh), dtype=conf.float_dtype)
     to_save_a = jnp.array(conf.to_save_a)
 
     max_slice_width = conf.max_slice_width
@@ -73,18 +74,12 @@ def nbody(ptcl, cosmo, conf, reverse=False):
 
         def save_op(saved_state):
             # If a match is found, update the corresponding slice of the saved_maps pytree.
-            dens = scatter(ptcl, conf)
-            dens = wraparound_slice(dens, conf.slice_to_save[match_index], conf.slice_to_save[match_index + 1],
-                                    max_slice_width, axis=0)
-            dens = jnp.sum(dens, axis=0)
-            temp = jnp.ones((128, 128, 128), dtype=jnp.int16)
-            temp = wraparound_slice(temp, conf.slice_to_save[match_index], conf.slice_to_save[match_index + 1],
-                                    max_slice_width, axis=0)
-            jax.debug.print(
-                "at a={x} (index)={index}, saving density: {y} , temp.sum(axis=0).shape={z}, positions={i}, {j}",
-                x=to_save_a[match_index], index=match_index,
-                y=temp.sum(axis=0)[0, 0], z=temp.sum(axis=0).shape, i=conf.slice_to_save[match_index],
-                j=conf.slice_to_save[match_index + 1])
+            dens_tot = scatter(ptcl, conf)
+            dens = jnp.stack([jnp.sum(
+                wraparound_slice(dens_tot, conf.slice_to_save[match_index], conf.slice_to_save[match_index + 1],
+                                 max_slice_width, axis=axis), axis=axis) for axis in range(3)], axis=0)
+            # dens = jax.lax.with_sharding_constraint(dens, NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)))
+
             return jax.tree_util.tree_map(
                 lambda s, p: s.at[match_index].set(p), saved_state, dens
             )
