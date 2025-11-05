@@ -2,6 +2,7 @@ import jaxlib
 import jax.numpy as jnp
 from jax.experimental import io_callback
 from matplotlib import pyplot as plt
+from jax.typing import ArrayLike
 
 
 def plot_particle_distribution_on_gpus(particles, force_mGPU=False):
@@ -114,7 +115,7 @@ def plot_particle_bins(pos, nMesh, title=None, mask=None):
         particles = pos[mask]
     else:
         particles = pos
-    if type(title) is jaxlib.xla_extension.ArrayImpl:
+    if type(title) is ArrayLike:
         title = resolve_title(title.item())
     elif type(title) is not str:
         title = resolve_title(title)

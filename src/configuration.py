@@ -12,7 +12,7 @@ from mcfit import TophatVar
 
 from .FFT_distributed import create_ffts
 from .fft import fftfreq
-from .gather import initialize_mGPU_gather
+from .gather_old import initialize_mGPU_gather
 from .particles import Particles
 from .scatter import initialize_mGPU_scatter
 from .utils import pytree_dataclass, build_ring_permutations
@@ -144,6 +144,7 @@ class Configuration:
     lpt_order: int = 2
 
     a_start: float = 1 / 64
+    a_start: float = 1 / 64
     a_stop: float = 1
     a_lpt_maxstep: float = 1 / 128
     a_nbody_maxstep: float = 1 / 64
@@ -151,6 +152,9 @@ class Configuration:
     symp_splits: Tuple[Tuple[float, float], ...] = ((0, 0.5), (1, 0.5))
 
     chunk_size: int = 2 ** 24
+
+    to_save_z: List[int] = None
+    to_save_a: List[int] = None
 
     # mGPU setup
     use_mGPU: bool = False
@@ -227,6 +231,19 @@ class Configuration:
                                fftfreq(self.ptcl_grid_shape, self.ptcl_spacing, dtype=self.float_dtype))
 
         object.__setattr__(self, "nMesh", self.mesh_shape[0])
+
+        if self.to_save_z is None:
+            object.__setattr__(self, "to_save_z", None)
+
+        if self.to_save_a is None and self.to_save_z is not None:
+            object.__setattr__(self, "to_save_a", list(1 / (1 + z) for z in self.to_save_z))
+
+        # with jax.ensure_compile_time_eval():
+        #     object.__setattr__(
+        #         self,
+        #         'var_tophat',
+        #         TophatVar(self.transfer_k[1:], lowring=True, backend='jax'),
+        #     )
 
         # mGPU setup
         if self.compute_mesh is not None:
@@ -429,4 +446,10 @@ class Configuration:
 
     @property
     def var_tophat(self):
-        return TophatVar(self.transfer_k[1:], lowring=True, backend='jax')
+        with jax.ensure_compile_time_eval():
+            return TophatVar(self.transfer_k[1:], lowring=True, backend='jax')
+
+    @property
+    def varlin_R(self):
+        """Linear matter overdensity variance in a top-hat window of radius R in [L], of ``cosmo_dtype``."""
+        return self.var_tophat.y

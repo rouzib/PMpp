@@ -13,6 +13,7 @@ from jax.experimental.shard_map import shard_map
 from jax.typing import ArrayLike
 from jax.sharding import PartitionSpec as P
 
+from .plotting_utils import plot_particle_bins_callback
 from .utils import pytree_dataclass, is_float0_array, raise_error, distribute_array_on_gpus, AXIS_NAME
 
 
@@ -349,8 +350,6 @@ class Particles:
                 gpu_id = conf.devices_index[i]  # jax.lax.axis_index('gpus')
                 pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask, indices = cls.distribute_ptcl_pos(
                     pmid, disp, vel, acc, conf, gpu_id)
-
-                print(pmid_sliced.shape, pmid_sliced.device)
 
                 pmid_sliced_list.append(pmid_sliced)
                 disp_sliced_list.append(disp_sliced)
@@ -867,7 +866,7 @@ class Particles:
 
         exited_halo = previous_halo_mask & ~particles_in_halo  # Particles that exited the halo_slice
         entered_halo = particles_in_halo & ~previous_halo_mask  # Particles that entered the halo_slice
-        stayed_in_halo = ~(particles_in_halo ^ previous_halo_mask)  # Particles that stayed in the halo_slice
+        stayed_in_halo = particles_in_halo == previous_halo_mask  # Particles that stayed in the halo_slice
         # to_keep = (diff == -1) & in_gpu_slice  # do nothing with this
         to_share_and_remove = stayed_in_halo & (~in_gpu_slice) & ~dummy_mask & ~particles_in_halo
         to_remove = (

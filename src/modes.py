@@ -1,7 +1,7 @@
 from functools import partial
 
 import jax
-from jax import checkpoint, custom_vjp, NamedSharding
+from jax import checkpoint, custom_vjp, NamedSharding, jit
 from jax import random
 import jax.numpy as jnp
 from jax._src.numpy.fft import _fft_norm

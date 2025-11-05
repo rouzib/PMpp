@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from .configuration import Configuration
 from .fft import fftfwd, fftinv, fftfreq
 from .scatter import scatter
-from .gather import gather
+from .gather_old import gather
 
 
 @custom_vjp
@@ -54,7 +54,7 @@ def gravity(a, ptcl, cosmo, conf: Configuration):
     """Gravitational accelerations of particles in [H_0^2], solved on a mesh with FFT."""
     kvec = conf.kvec # fftfreq(conf.ptcl_grid_shape, conf.ptcl_spacing, dtype=conf.float_dtype)
 
-    gather_cp = jax.checkpoint(gather, static_argnums=(1,))
+    # gather_cp = jax.checkpoint(gather, static_argnums=(1,))
 
     dens = scatter(ptcl, conf)
     dens -= 1
@@ -73,7 +73,8 @@ def gravity(a, ptcl, cosmo, conf: Configuration):
 
         grad = grad.astype(conf.float_dtype)  # no jnp.complex32
 
-        grad = gather_cp(ptcl, conf, grad)
+        # grad = gather_cp(ptcl, conf, grad)
+        grad = gather(ptcl, conf, grad)
 
         acc.append(grad)
     acc = jnp.stack(acc, axis=-1)

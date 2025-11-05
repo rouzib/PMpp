@@ -45,7 +45,7 @@ def drift(a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configuration):
 
     pmid, disp, vel, acc, particle_indices, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
         ptcl.pmid, disp, ptcl.vel, ptcl.acc, ptcl.idx, conf.halo_start, conf.halo_end,
-        ptcl.halo_mask, ptcl.unused_index, False)
+        ptcl.halo_mask, ptcl.unused_index, conf.num_devices == 2)
     return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, idx=particle_indices, halo_mask=halo_mask,
                         unused_index=unused_indexes)
 
