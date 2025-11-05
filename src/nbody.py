@@ -5,7 +5,9 @@ import jax.numpy as jnp
 from jax import custom_vjp, lax
 from jax.tree_util import tree_map
 
+from .scatter import scatter
 from .steps import force, integrate, force_adj, integrate_adj
+from .utils import wraparound_slice
 
 
 def nbody_init(a, ptcl, cosmo, conf):
@@ -50,13 +52,13 @@ def nbody(ptcl, cosmo, conf, reverse=False):
 
     # Create a pytree with the same structure as ptcl to store the saved states.
     # The leading dimension's size is the number of timesteps to save.
-    saved_ptcls = jax.tree_util.tree_map(
-        lambda x: jnp.zeros((len(conf.to_save_a),) + x.shape, dtype=x.dtype), ptcl
-    )
+    saved_maps = jnp.zeros((len(conf.to_save_a),) + (conf.nMesh, conf.nMesh), dtype=conf.float_dtype)
     to_save_a = jnp.array(conf.to_save_a)
 
+    max_slice_width = conf.max_slice_width
+
     def body(carry, ab):
-        ptcl, saved_ptcls = carry
+        ptcl, saved_state = carry
         a_prev, a_next = ab
         ptcl = nbody_step(a_prev, a_next, ptcl, cosmo, conf)
 
@@ -69,27 +71,39 @@ def nbody(ptcl, cosmo, conf, reverse=False):
         match_indices = jnp.where(is_close, size=1, fill_value=-1)[0]
         match_index = match_indices[0]
 
-        def save_op(saved_ptcls):
-            # If a match is found, update the corresponding slice of the saved_ptcls pytree.
+        def save_op(saved_state):
+            # If a match is found, update the corresponding slice of the saved_maps pytree.
+            dens = scatter(ptcl, conf)
+            dens = wraparound_slice(dens, conf.slice_to_save[match_index], conf.slice_to_save[match_index + 1],
+                                    max_slice_width, axis=0)
+            dens = jnp.sum(dens, axis=0)
+            temp = jnp.ones((128, 128, 128), dtype=jnp.int16)
+            temp = wraparound_slice(temp, conf.slice_to_save[match_index], conf.slice_to_save[match_index + 1],
+                                    max_slice_width, axis=0)
+            jax.debug.print(
+                "at a={x} (index)={index}, saving density: {y} , temp.sum(axis=0).shape={z}, positions={i}, {j}",
+                x=to_save_a[match_index], index=match_index,
+                y=temp.sum(axis=0)[0, 0], z=temp.sum(axis=0).shape, i=conf.slice_to_save[match_index],
+                j=conf.slice_to_save[match_index + 1])
             return jax.tree_util.tree_map(
-                lambda s, p: s.at[match_index].set(p), saved_ptcls, ptcl
+                lambda s, p: s.at[match_index].set(p), saved_state, dens
             )
 
-        def no_op(saved_ptcls):
-            # If no match, return the saved_ptcls pytree as is.
-            return saved_ptcls
+        def no_op(saved_state):
+            # If no match, return the saved_maps pytree as is.
+            return saved_state
 
         # Conditionally apply the save operation.
-        saved_ptcls = lax.cond(match_index > -1, save_op, no_op, saved_ptcls)
+        saved_maps = lax.cond(match_index > -1, save_op, no_op, saved_state)
 
-        return (ptcl, saved_ptcls), None
+        return (ptcl, saved_maps), None
 
     # The initial carry for the scan includes the initial particle state and the empty
     # structure for the saved states.
-    (ptcl, saved_ptcls), _ = lax.scan(body, (ptcl, saved_ptcls), (a[:-1], a[1:]))
+    (_, saved_maps), _ = lax.scan(body, (ptcl, saved_maps), (a[:-1], a[1:]))
 
-    # The function now returns the final state of ptcl and the pytree with the saved states.
-    return ptcl, saved_ptcls
+    # The function now returns the saved states.
+    return saved_maps
 
 
 @jax.jit

@@ -148,6 +148,7 @@ class Configuration:
     a_stop: float = 1
     a_lpt_maxstep: float = 1 / 128
     a_nbody_maxstep: float = 1 / 64
+    a_custom: Optional[List[float]] = None
 
     symp_splits: Tuple[Tuple[float, float], ...] = ((0, 0.5), (1, 0.5))
 
@@ -155,6 +156,8 @@ class Configuration:
 
     to_save_z: List[int] = None
     to_save_a: List[int] = None
+    slice_to_save: List[int] = None
+    max_slice_width: int = None
 
     # mGPU setup
     use_mGPU: bool = False
@@ -212,6 +215,9 @@ class Configuration:
         if not jnp.issubdtype(self.float_dtype, jnp.floating):
             raise ValueError('float_dtype must be floating point numbers')
 
+        if self.a_custom is not None:
+            object.__setattr__(self, 'a_custom', jnp.array(self.a_custom))
+
         # ~ 1.5e-8 for float64, 3.5e-4 for float32
         growth_tol = math.sqrt(jnp.finfo(self.cosmo_dtype).eps)
         if self.growth_rtol is None:
@@ -237,6 +243,10 @@ class Configuration:
 
         if self.to_save_a is None and self.to_save_z is not None:
             object.__setattr__(self, "to_save_a", list(1 / (1 + z) for z in self.to_save_z))
+
+        if self.slice_to_save is not None:
+            object.__setattr__(self, "slice_to_save", jnp.array(self.slice_to_save))
+
 
         # with jax.ensure_compile_time_eval():
         #     object.__setattr__(
@@ -436,6 +446,8 @@ class Configuration:
     @property
     def a_nbody(self):
         """N-body time integration scale factor steps, including ``a_start``, of ``cosmo_dtype``."""
+        if self.a_custom is not None:
+            return self.a_custom
         return jnp.linspace(self.a_start, self.a_stop, num=1 + self.a_nbody_num,
                             dtype=self.cosmo_dtype)
 

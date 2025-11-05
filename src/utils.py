@@ -1,9 +1,11 @@
 import dataclasses
 from dataclasses import field
+from functools import partial
 from pprint import pformat
 import numpy as np
 
 import jax
+import jax.numpy as jnp
 from jax import Array, float0
 from jax.tree_util import register_pytree_node, tree_leaves, tree_map
 from jax.experimental import mesh_utils
@@ -180,7 +182,7 @@ def create_compute_mesh(devices):
         Mesh: A `Mesh` object representing the created compute
         mesh using the provided devices.
     """
-    device_mesh = mesh_utils.create_device_mesh((len(devices), ), devices=devices)
+    device_mesh = mesh_utils.create_device_mesh((len(devices),), devices=devices)
     return Mesh(device_mesh, axis_names=(AXIS_NAME,))  # "gpus" is necessary for all other
 
 
@@ -219,7 +221,7 @@ def build_ring_permutations(num_devices):
     return left_perm, right_perm
 
 
-def measure_execution_time(func, repetitions=5, number=5):
+def measure_execution_time(func, repetitions=5, number: int = 5):
     """
     Measure the execution time of a function and compute the average and standard deviation.
 
@@ -242,3 +244,131 @@ def measure_execution_time(func, repetitions=5, number=5):
     std_dev_time = np.std(total_times) / number  # Standard deviation per call
 
     return average_time, std_dev_time
+
+
+def get_a_schedule(target_z, conf):
+    """
+    Calculates a schedule of ascending scale factors based on given target redshifts and configuration parameters.
+
+    This function generates an optimized schedule of scale factors through interpolation
+    and inclusion of necessary intermediary values to ensure spacing thresholds are respected.
+    It also incorporates additional predefined configurations into the schedule. The resulting
+    schedule satisfies specific numerical needs for an astrophysical simulation.
+
+    :param target_z: The array of target redshift values to use in the calculation.
+    :type target_z: jnp.ndarray
+    :param conf: Configuration object containing attributes that specify simulation parameters,
+        such as `a_nbody_maxstep` and `a_nbody`.
+    :type conf: Any
+    :return: An array of scale factor values in ascending order computed from given redshifts,
+        accounting for intermediary redshift values (if necessary).
+    :rtype: jnp.ndarray
+    """
+    spacing_threshold = conf.a_nbody_maxstep  # in scale_factor
+
+    def get_intermediary_z(target_z):
+        """
+        Generate a schedule of intermediary redshift (z) values based on the provided target redshift
+        and configuration. This function ensures the schedule is appropriately spaced to meet a
+        spacing threshold.
+
+        :param target_z: A sequence of target redshift values to include in the schedule.
+            Must be unique and sorted in ascending order.
+        :type target_z: jnp.ndarray
+        :param conf: Configuration dictionary or object providing settings for generating
+            the schedule, including parameters such as spacing threshold.
+        :type conf: dict
+        :return: Array of intermediary redshift (z) values not originally in the input
+            `target_z`. The function respects spacing constraints and ensures unique
+            redshift entries.
+        :rtype: jnp.ndarray
+        """
+        # Ensure unique, sorted redshifts (lowest z last, so a ascending)
+        target_z = jnp.unique(target_z)
+        target_a = 1 / (1 + target_z)
+        target_a = jnp.sort(target_a)
+
+        diffs = jnp.diff(target_a)
+        n_steps = jnp.ceil(diffs / spacing_threshold).astype(int)
+
+        all_a = [target_a[0]]
+
+        for i, steps in enumerate(n_steps):
+            steps = int(steps)
+            if steps < 1:
+                steps = 1  # In case of floating fp error or very small interval
+
+            if steps == 1:
+                # No interpolation needed, just add next point
+                all_a.append(target_a[i + 1])
+            else:
+                # Create intermediate values, excluding the first since it's already in all_a
+                sub_a = jnp.linspace(target_a[i], target_a[i + 1], steps + 1)[1:]
+                all_a.extend(sub_a)
+
+        all_a = jnp.array(all_a)
+        all_z = 1 / all_a - 1
+
+        # Only return those not in the original target_z (to match previous expectations)
+        mask = ~jnp.isin(jnp.round(all_z, 8), jnp.round(target_z, 8))
+        intermediary_z = all_z[mask]
+
+        return intermediary_z
+
+    # Find any necessary intermediary redshifts
+    intermediary_z = get_intermediary_z(target_z)
+
+    # Prepare the usual_pm_z array, filtered as before
+    usual_pm_z = (1 / conf.a_nbody - 1)
+    usual_pm_z = jnp.array([usual_pm_z[i] for i in range(len(usual_pm_z)) if jnp.max(target_z) < usual_pm_z[i]])
+
+    # Concatenate all sources, sort in descending order (high z to low z)
+    new_pm_z = jnp.concatenate((target_z, usual_pm_z, intermediary_z))
+    new_pm_z = jnp.sort(new_pm_z)[::-1]  # descending order
+
+    return 1 / (1 + new_pm_z)
+
+
+@partial(jax.jit, static_argnames=['max_slice_len', 'axis'])
+def wraparound_slice(array, start, stop, max_slice_len, axis=0):
+    """
+    Performs a jittable, padded wraparound slice on a JAX array.
+
+    This function always returns an array of size `max_slice_len`.
+
+    Args:
+      array: The input array.
+      start: The starting index of the slice (can be a JAX tracer).
+      stop: The stopping index of the slice (can be a JAX tracer).
+      max_slice_len: The maximum possible length of any slice.
+                     This MUST be a static, compile-time constant.
+      axis: The axis along which to slice.
+
+    Returns:
+      The sliced portion of the array, padded with zeros to `max_slice_len`.
+    """
+    # Determine the size of the dimension being sliced
+    n = array.shape[axis]
+
+    # Calculate the actual length of this specific slice
+    true_len = stop - start
+
+    # Generate a full-size sequence of potential indices starting from `start`
+    # This works because `max_slice_len` is static.
+    indices = jnp.arange(max_slice_len) + start
+
+    # Apply the modulo operator to wrap the indices around the dimension size
+    wrapped_indices = jnp.mod(indices, n)
+
+    # Gather the elements from the input array using the wrapped indices.
+    # This result will always have a shape determined by `max_slice_len`.
+    padded_result = jnp.take(array, wrapped_indices, axis=axis)
+
+    # Create a mask to zero out the elements that are just padding
+    mask = jnp.arange(max_slice_len) < true_len
+    rank = array.ndim
+    new_shape = [1] * rank
+    new_shape[axis] = max_slice_len
+    reshaped_mask = mask.reshape(new_shape)
+
+    return padded_result * reshaped_mask
