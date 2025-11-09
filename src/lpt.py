@@ -2,6 +2,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+from jax._src.numpy.fft import _fft_norm
 from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .cosmo import E2
@@ -32,7 +33,8 @@ def _strain(kvec, i, j, pot, conf):
 
     strain = -k_i * k_j * pot
 
-    strain = fftinv(strain, shape=conf.ptcl_grid_shape)
+    strain = conf.mGPU_irfftn(strain)
+    strain *= _fft_norm(s=jnp.array(conf.ptcl_grid_shape, dtype=strain.dtype), func_name="rfftn", norm="ortho")
     strain = strain.astype(conf.float_dtype)  # no jnp.complex32
 
     return strain
@@ -115,7 +117,7 @@ def lpt(modes, cosmo, conf):
     if conf.lpt_order > 0:
         src_1 = modes
 
-        pot_1 = laplace(kvec, src_1, cosmo)
+        pot_1 = laplace(kvec, src_1, conf, cosmo)
         pot.append(pot_1)
 
     if conf.lpt_order > 1:
@@ -123,7 +125,7 @@ def lpt(modes, cosmo, conf):
 
         src_2 = conf.mGPU_rfftn(src_2)
 
-        pot_2 = laplace(kvec, src_2, cosmo)
+        pot_2 = laplace(kvec, src_2, conf, cosmo)
         pot.append(pot_2)
 
     if conf.lpt_order > 2:
@@ -159,7 +161,5 @@ def lpt(modes, cosmo, conf):
         ptcl.pmid, disp, vel, ptcl.acc, ptcl.idx, conf.halo_start, conf.halo_end,
         ptcl.halo_mask, ptcl.unused_index, True)
 
-    ptcl = ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, idx=particle_indices, halo_mask=halo_mask,
+    return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, idx=particle_indices, halo_mask=halo_mask,
                         unused_index=unused_indexes)
-
-    return ptcl

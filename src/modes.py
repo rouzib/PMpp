@@ -72,7 +72,35 @@ def _safe_sqrt_bwd(y, y_cot):
 _safe_sqrt.defvjp(_safe_sqrt_fwd, _safe_sqrt_bwd)
 
 
-# @partial(jit, static_argnums=4)
+def get_k_magnitude(kvec, conf):
+    kx, ky, kz = [jnp.squeeze(a) for a in kvec]
+
+    @partial(jax.jit,
+             in_shardings=(
+                     NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
+                     NamedSharding(conf.compute_mesh, P(None)),
+                     NamedSharding(conf.compute_mesh, P(None)),
+             ),
+             out_shardings=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None))
+             )
+    def create_k_magnitude_sharded(kx_sharded, ky_replicated, kz_replicated):
+        """
+        Creates the magnitude of the k-vector in a JIT-compatible and
+        memory-efficient, sharded manner.
+
+        Each device runs this same code, but on its own piece of the data.
+        """
+        kx_b = kx_sharded[:, None, None]
+        ky_b = ky_replicated[None, :, None]
+        kz_b = kz_replicated[None, None, :]
+
+        local_shard = jnp.sqrt(kx_b ** 2 + ky_b ** 2 + kz_b ** 2)
+        return local_shard.astype(conf.float_dtype)
+
+    return create_k_magnitude_sharded(kx, ky, kz)
+
+
+@partial(jit, static_argnums=4)
 # @partial(checkpoint, static_argnums=4)
 def linear_modes(modes, cosmo, conf, a=None, real=False):
     """Linear matter overdensity Fourier or real modes.
@@ -103,40 +131,7 @@ def linear_modes(modes, cosmo, conf, a=None, real=False):
 
     """
     kvec = conf.kvec_spacing
-
-    # @partial(
-    #     jax.jit,
-    #     in_shardings=(NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
-    #                   NamedSharding(conf.compute_mesh, P()),
-    #                   NamedSharding(conf.compute_mesh, P())),
-    #     out_shardings=NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
-    # )
-    # def sharded_sum(*kparts):
-    #     bparts = jnp.broadcast_arrays(*kparts)
-    #     return jnp.linalg.norm(jnp.stack(bparts, axis=0), axis=0)
-    #
-    # k = sharded_sum(*kvec)
-    # print(k.shape)
-
-    kx, ky, kz = [jnp.squeeze(a) for a in kvec]  # shapes: (Nx,), (Ny,), (Nz,)
-    shape = (len(kx), len(ky), len(kz))  # (Nx, Ny, Nz)
-    out_sharding = NamedSharding(conf.compute_mesh, P(AXIS_NAME))  # match your layout
-
-    def fill_shard(index):
-        # index is a tuple of slices for this shard: (sx, sy, sz)
-        sx, sy, sz = index
-        kx_s = kx[sx]  # (nx,)
-        ky_s = ky[sy]  # (ny,)
-        kz_s = kz[sz]  # (nz,)
-
-        # Local (small) broadcasts happen *inside* the shard only:
-        kx_b = kx_s[:, None, None]  # (nx,1,1)
-        ky_b = ky_s[None, :, None]  # (1,ny,1)
-        kz_b = kz_s[None, None, :]  # (1,1,nz)
-        return jnp.sqrt(kx_b * kx_b + ky_b * ky_b + kz_b * kz_b).astype(conf.float_dtype)
-
-    # Each device calls fill_shard with its own slice; allocation is on-device.
-    k = jax.make_array_from_callback(shape, out_sharding, fill_shard)
+    k = get_k_magnitude(kvec, conf)
 
     if a is not None:
         a = jnp.asarray(a, dtype=conf.float_dtype)

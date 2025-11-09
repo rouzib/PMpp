@@ -3,26 +3,55 @@ from functools import partial
 import jax
 from jax import custom_vjp
 import jax.numpy as jnp
+from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .configuration import Configuration
-from .fft import fftfwd, fftinv, fftfreq
 from .scatter import scatter
 from .gather_old import gather
+from .utils import AXIS_NAME
+
+
+def get_k_squared(kvec, conf):
+    kx, ky, kz = [jnp.squeeze(a) for a in kvec]
+
+    @partial(jax.jit,
+             in_shardings=(
+                     NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
+                     NamedSharding(conf.compute_mesh, P(None)),
+                     NamedSharding(conf.compute_mesh, P(None)),
+             ),
+             out_shardings=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None))
+             )
+    def create_k_magnitude_sharded(kx_sharded, ky_replicated, kz_replicated):
+        """
+        Creates the magnitude of the k-vector in a JIT-compatible and
+        memory-efficient, sharded manner.
+
+        Each device runs this same code, but on its own piece of the data.
+        """
+        kx_b = kx_sharded[:, None, None]
+        ky_b = ky_replicated[None, :, None]
+        kz_b = kz_replicated[None, None, :]
+
+        local_shard = jnp.array(kx_b ** 2 + ky_b ** 2 + kz_b ** 2)
+        return local_shard.astype(conf.float_dtype)
+
+    return create_k_magnitude_sharded(kx, ky, kz)
 
 
 @custom_vjp
-def laplace(kvec, src, cosmo=None):
+def laplace(kvec, src, conf, cosmo=None):
     """Laplace kernel in Fourier space."""
-    k2 = sum(k ** 2 for k in kvec)
+    k2 = get_k_squared(kvec, conf)
 
     pot = jnp.where(k2 != 0, - src / k2, 0)
 
     return pot
 
 
-def laplace_fwd(kvec, src, cosmo):
-    pot = laplace(kvec, src, cosmo)
-    return pot, (kvec, cosmo)
+def laplace_fwd(kvec, src, conf, cosmo):
+    pot = laplace(kvec, src, conf, cosmo)
+    return pot, (kvec, conf, cosmo)
 
 
 def laplace_bwd(res, pot_cot):
@@ -32,9 +61,9 @@ def laplace_bwd(res, pot_cot):
         https://jax.readthedocs.io/en/latest/faq.html#gradients-contain-nan-where-using-where
 
     """
-    kvec, cosmo = res
-    src_cot = laplace(kvec, pot_cot, cosmo)
-    return None, src_cot, None
+    kvec, conf, cosmo = res
+    src_cot = laplace(kvec, pot_cot, conf, cosmo)
+    return None, src_cot, None, None
 
 
 laplace.defvjp(laplace_fwd, laplace_bwd)
@@ -52,7 +81,7 @@ def neg_grad(k, pot, spacing):
 
 def gravity(a, ptcl, cosmo, conf: Configuration):
     """Gravitational accelerations of particles in [H_0^2], solved on a mesh with FFT."""
-    kvec = conf.kvec # fftfreq(conf.ptcl_grid_shape, conf.ptcl_spacing, dtype=conf.float_dtype)
+    kvec = conf.kvec  # fftfreq(conf.ptcl_grid_shape, conf.ptcl_spacing, dtype=conf.float_dtype)
 
     # gather_cp = jax.checkpoint(gather, static_argnums=(1,))
 
@@ -62,8 +91,7 @@ def gravity(a, ptcl, cosmo, conf: Configuration):
 
     dens = conf.mGPU_rfftn(dens)
 
-
-    pot = laplace(kvec, dens, cosmo)
+    pot = laplace(kvec, dens, conf, cosmo)
 
     acc = []
     for k in kvec:
