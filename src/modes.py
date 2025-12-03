@@ -11,7 +11,6 @@ from .utils import AXIS_NAME
 from .boltzmann import linear_power
 
 
-# TODO follow pmesh to fill the modes in Fourier space
 @partial(jax.jit, static_argnames=('real', 'unit_abs'))
 def white_noise(seed, conf, real=False, unit_abs=False):
     """White noise Fourier or real modes.
@@ -37,7 +36,7 @@ def white_noise(seed, conf, real=False, unit_abs=False):
 
     # sample linear modes on Lagrangian particle grid
     modes = random.normal(key, shape=conf.ptcl_grid_shape, dtype=conf.float_dtype)
-    # modes = jax.lax.with_sharding_constraint(modes, NamedSharding(conf.compute_mesh, P(AXIS_NAME)))
+    modes = jax.lax.with_sharding_constraint(modes, NamedSharding(conf.compute_mesh, P(AXIS_NAME)))
 
     if real and not unit_abs:
         return modes
