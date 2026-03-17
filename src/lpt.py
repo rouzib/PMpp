@@ -81,7 +81,7 @@ def _L(kvec, pot_m, pot_n, conf):
 
 
 @partial(jax.jit, static_argnames=('conf',))
-# @partial(jax.checkpoint, static_argnums=(2,))
+@partial(jax.checkpoint, static_argnums=(2,))
 def lpt(modes, cosmo, conf):
     """Lagrangian perturbation theory at ``conf.lpt_order``.
 

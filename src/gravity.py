@@ -82,7 +82,9 @@ def neg_grad(k, pot, spacing):
 
 def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration):
     grad_meshes = _gravity_mesh_fields_from_density(dens, cosmo.Omega_m, conf)
-    acc = [gather(ptcl, conf, grad) for grad in grad_meshes]
+    disp = _gather_disp_with_duplicate_reduction(ptcl.pmid, ptcl.disp, ptcl.unused_index, conf)
+    gather_ptcl = ptcl.replace(disp=disp)
+    acc = [gather(gather_ptcl, conf, grad) for grad in grad_meshes]
     return jnp.stack(acc, axis=-1)
 
 
@@ -104,7 +106,7 @@ def _gravity_mesh_fields_from_density(dens, omega_m, conf: Configuration):
     return tuple(grad_meshes)
 
 
-def _reduce_gather_disp_cot(ptcl, disp_cot, conf: Configuration):
+def _reduce_gather_disp_cot(pmid, disp, unused_index, disp_cot, conf: Configuration):
     if not conf.use_mGPU:
         return disp_cot
 
@@ -127,11 +129,32 @@ def _reduce_gather_disp_cot(ptcl, disp_cot, conf: Configuration):
 
     unused_index = (
         jnp.zeros(disp_cot.shape[0], dtype=jnp.bool_)
-        if ptcl.unused_index is None
-        else jax.lax.stop_gradient(ptcl.unused_index)
+        if unused_index is None
+        else jax.lax.stop_gradient(unused_index)
     )
-    pmid = jax.lax.stop_gradient(ptcl.pmid)
-    return reduce_local(disp_cot, pmid, unused_index, ptcl.disp, conf)
+    pmid = jax.lax.stop_gradient(pmid)
+    return reduce_local(disp_cot, pmid, unused_index, disp, conf)
+
+
+@partial(custom_vjp, nondiff_argnums=(3,))
+def _gather_disp_with_duplicate_reduction(pmid, disp, unused_index, conf):
+    return disp
+
+
+def _gather_disp_with_duplicate_reduction_fwd(pmid, disp, unused_index, conf):
+    return disp, (pmid, disp, unused_index)
+
+
+def _gather_disp_with_duplicate_reduction_bwd(conf, res, disp_cot):
+    pmid, disp, unused_index = res
+    disp_cot = _reduce_gather_disp_cot(pmid, disp, unused_index, disp_cot, conf)
+    return None, disp_cot, None
+
+
+_gather_disp_with_duplicate_reduction.defvjp(
+    _gather_disp_with_duplicate_reduction_fwd,
+    _gather_disp_with_duplicate_reduction_bwd,
+)
 
 
 def duplicate_slot_counts(ptcl, conf: Configuration):
@@ -165,77 +188,7 @@ def duplicate_slot_counts(ptcl, conf: Configuration):
     return jnp.where(counts != 0, counts, 1)
 
 
-def _float0_zeros_like(x):
-    return jnp.zeros(x.shape, dtype=jax.dtypes.float0)
-
-
-def _particle_cotangent(disp_cot, ptcl):
-    return ptcl.replace(
-        pmid=_float0_zeros_like(ptcl.pmid),
-        disp=disp_cot,
-        vel=None if ptcl.vel is None else jnp.zeros_like(ptcl.vel),
-        acc=None if ptcl.acc is None else jnp.zeros_like(ptcl.acc),
-        unused_index=None if ptcl.unused_index is None else _float0_zeros_like(ptcl.unused_index),
-        halo_mask=None if ptcl.halo_mask is None else _float0_zeros_like(ptcl.halo_mask),
-        attr=None if ptcl.attr is None else jax.tree_util.tree_map(jnp.zeros_like, ptcl.attr),
-    )
-
-
-def _cosmo_cotangent(omega_m_cot, cosmo):
-    cosmo_cot = jax.tree_util.tree_map(
-        lambda x: None if x is None else jnp.zeros_like(x),
-        cosmo,
-    )
-    return cosmo_cot.replace(Omega_m=omega_m_cot)
-
-
-@custom_vjp
 def gravity(a, ptcl, cosmo, conf: Configuration):
     """Gravitational accelerations of particles in [H_0^2], solved on a mesh with FFT."""
     dens = scatter(ptcl, conf)
     return _gravity_from_density(dens, ptcl, cosmo, conf)
-
-
-def gravity_fwd(a, ptcl, cosmo, conf):
-    dens = scatter(ptcl, conf)
-    acc = _gravity_from_density(dens, ptcl, cosmo, conf)
-    return acc, (a, ptcl, cosmo, conf, dens)
-
-
-def gravity_bwd(res, acc_cot):
-    a, ptcl, cosmo, conf, dens = res
-
-    grad_meshes = _gravity_mesh_fields_from_density(dens, cosmo.Omega_m, conf)
-
-    mesh_cots = []
-    gather_disp_cot_raw = jnp.zeros_like(ptcl.disp)
-    for axis, grad_mesh in enumerate(grad_meshes):
-        _, gather_vjp = jax.vjp(
-            lambda mesh_input, disp_input: gather(ptcl.replace(disp=disp_input), conf, mesh_input),
-            grad_mesh,
-            ptcl.disp,
-        )
-        mesh_cot_axis, disp_cot_axis = gather_vjp(acc_cot[..., axis])
-        mesh_cots.append(mesh_cot_axis)
-        gather_disp_cot_raw = gather_disp_cot_raw + disp_cot_axis
-
-    _, density_to_mesh_vjp = jax.vjp(
-        lambda dens_input, omega_m_input: _gravity_mesh_fields_from_density(
-            dens_input, omega_m_input, conf
-        ),
-        dens,
-        cosmo.Omega_m,
-    )
-    dens_cot, omega_m_cot = density_to_mesh_vjp(tuple(mesh_cots))
-
-    _, scatter_vjp = jax.vjp(lambda disp_input: scatter(ptcl.replace(disp=disp_input), conf), ptcl.disp)
-    scatter_disp_cot, = scatter_vjp(dens_cot)
-
-    gather_disp_cot = _reduce_gather_disp_cot(ptcl, gather_disp_cot_raw, conf)
-    ptcl_cot = _particle_cotangent(scatter_disp_cot + gather_disp_cot, ptcl)
-    cosmo_cot = _cosmo_cotangent(omega_m_cot, cosmo)
-
-    return jnp.zeros_like(a), ptcl_cot, cosmo_cot, None
-
-
-gravity.defvjp(gravity_fwd, gravity_bwd)
