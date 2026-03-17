@@ -127,10 +127,20 @@ def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False):
     ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force = nbody_adj_init(
         a_nbody[-1], ptcl, ptcl_cot, cosmo, conf
     )
-    for a_prev, a_next in zip(a_nbody[:0:-1], a_nbody[-2::-1]):
-        ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force = nbody_adj_step(
+
+    def body(carry, ab):
+        ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force = carry
+        a_prev, a_next = ab
+        carry = nbody_adj_step(
             a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, cosmo_cot_force, conf
         )
+        return carry, None
+
+    (ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force), _ = lax.scan(
+        body,
+        (ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force),
+        (a_nbody[:0:-1], a_nbody[-2::-1]),
+    )
     return ptcl, ptcl_cot, cosmo_cot
 
 
