@@ -309,7 +309,7 @@ class Configuration:
                 object.__setattr__(self, "right_perm", right_perm)
 
                 # initialization of mGPU functions
-                rfftn_jit, irfftn_jit, _, _ = create_ffts(self.compute_mesh, self.mesh_shape[0])
+                rfftn_jit, irfftn_jit, _, _ = create_ffts(self.compute_mesh)
                 object.__setattr__(self, "mGPU_rfftn", rfftn_jit)
                 object.__setattr__(self, "mGPU_irfftn", irfftn_jit)
                 object.__setattr__(self, "mGPU_halo_moving", Particles.initialize_mGPU_halo_movement(self))

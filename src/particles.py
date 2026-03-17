@@ -7,11 +7,10 @@ from typing import Optional, Any
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax import NamedSharding
 from jax.tree_util import tree_map
 from jax.experimental.shard_map import shard_map
 from jax.typing import ArrayLike
-from jax.sharding import PartitionSpec as P
+from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .plotting_utils import plot_particle_bins_callback
 from .utils import pytree_dataclass, is_float0_array, raise_error, distribute_array_on_gpus, AXIS_NAME
@@ -60,7 +59,6 @@ class Particles:
     # mGPU attributes
     unused_index: Optional[ArrayLike] = None
     halo_mask: Optional[ArrayLike] = None
-    idx: Optional[ArrayLike] = None
 
     attr: Any = None
 
@@ -73,8 +71,6 @@ class Particles:
                 return conf.float_dtype
             elif (name == "unused_index") | (name == "halo_mask"):
                 return jnp.bool
-            elif name == "idx":
-                return jnp.int32
             else:
                 return conf.float_dtype
 
@@ -309,9 +305,8 @@ class Particles:
 
         unused_index.astype(jnp.bool)
         halo_mask.astype(jnp.bool)
-        indices.astype(jnp.int32)
 
-        return pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask, indices
+        return pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask
 
     @classmethod
     def from_pos(cls, conf, pos, vel=None, acc=None, wrap=True):
@@ -339,16 +334,16 @@ class Particles:
         if wrap:
             pmid %= jnp.array(conf.mesh_shape, dtype=conf.pmid_dtype)
 
-        unused_index, halo_mask, indices = None, None, None
+        unused_index, halo_mask = None, None
         if conf.use_mGPU:
             def stack_and_shard(array: ArrayLike, dtype=jnp.float32):
                 return distribute_array_on_gpus(jnp.concatenate(array, axis=0, dtype=dtype), conf.compute_mesh,
                                                 P(AXIS_NAME))
 
-            pmid_sliced_list, disp_sliced_list, vel_sliced_list, acc_sliced_list, unused_index_list, halo_mask_list, indices_list = [], [], [], [], [], [], []
+            pmid_sliced_list, disp_sliced_list, vel_sliced_list, acc_sliced_list, unused_index_list, halo_mask_list = [], [], [], [], [], []
             for i in range(conf.num_devices):
                 gpu_id = conf.devices_index[i]  # jax.lax.axis_index('gpus')
-                pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask, indices = cls.distribute_ptcl_pos(
+                pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask = cls.distribute_ptcl_pos(
                     pmid, disp, vel, acc, conf, gpu_id)
 
                 pmid_sliced_list.append(pmid_sliced)
@@ -357,20 +352,18 @@ class Particles:
                 acc_sliced_list.append(acc_sliced)
                 unused_index_list.append(unused_index)
                 halo_mask_list.append(halo_mask)
-                indices_list.append(indices)
 
             pmid = stack_and_shard(pmid_sliced_list, conf.pmid_dtype)
             disp = stack_and_shard(disp_sliced_list, conf.float_dtype)
             unused_index = stack_and_shard(unused_index_list, jnp.bool)
             halo_mask = stack_and_shard(halo_mask_list, jnp.bool)
-            indices = stack_and_shard(indices_list, jnp.int32)
 
             if vel is not None:
                 vel = stack_and_shard(vel_sliced_list, conf.float_dtype)
             if acc is not None:
                 acc = stack_and_shard(acc_sliced_list, conf.float_dtype)
 
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask, idx=indices)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
 
     @classmethod
     def from_pos_sharded(cls, conf, pos, vel=None, acc=None, wrap=True):
@@ -386,7 +379,7 @@ class Particles:
         if wrap:
             pmid %= jnp.array(conf.mesh_shape, dtype=conf.pmid_dtype)
 
-        unused_index, halo_mask, indices = None, None, None
+        unused_index, halo_mask = None, None
         if conf.use_mGPU:
             @partial(shard_map, mesh=conf.compute_mesh, in_specs=(
                     P(None, None),
@@ -399,15 +392,14 @@ class Particles:
                           P(AXIS_NAME),
                           P(AXIS_NAME),
                           P(AXIS_NAME),
-                          P(AXIS_NAME),
                           P(AXIS_NAME)
             ))
             def sharded_slicing(pmid, disp, vel, acc, conf):
                 gpu_id = jax.lax.axis_index(AXIS_NAME)
                 return cls.distribute_ptcl_pos(pmid, disp, vel, acc, conf, gpu_id)
 
-            pmid, disp, vel, acc, unused_index, halo_mask, indices = sharded_slicing(pmid, disp, vel, acc, conf)
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask, idx=indices)
+            pmid, disp, vel, acc, unused_index, halo_mask = sharded_slicing(pmid, disp, vel, acc, conf)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
 
     @classmethod
     def from_pmid(cls, conf, pmid, disp, vel=None, acc=None):
@@ -427,16 +419,16 @@ class Particles:
         pmid = jnp.asarray(pmid)
         disp = jnp.asarray(disp)
 
-        unused_index, halo_mask, indices = None, None, None
+        unused_index, halo_mask = None, None
         if conf.use_mGPU:
             def stack_and_shard(array: ArrayLike, dtype=jnp.float32):
                 return distribute_array_on_gpus(jnp.concatenate(array, axis=0, dtype=dtype), conf.compute_mesh,
                                                 P(AXIS_NAME))
 
-            pmid_sliced_list, disp_sliced_list, vel_sliced_list, acc_sliced_list, unused_index_list, halo_mask_list, indices_list = [], [], [], [], [], [], []
+            pmid_sliced_list, disp_sliced_list, vel_sliced_list, acc_sliced_list, unused_index_list, halo_mask_list = [], [], [], [], [], []
             for i in range(conf.num_devices):
                 gpu_id = conf.devices_index[i]  # jax.lax.axis_index('gpus')
-                pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask, indices = cls.distribute_ptcl_pos(
+                pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask = cls.distribute_ptcl_pos(
                     pmid, disp, vel, acc, conf, gpu_id)
 
                 pmid_sliced_list.append(pmid_sliced)
@@ -445,20 +437,18 @@ class Particles:
                 acc_sliced_list.append(acc_sliced)
                 unused_index_list.append(unused_index)
                 halo_mask_list.append(halo_mask)
-                indices_list.append(indices)
 
             pmid = stack_and_shard(pmid_sliced_list, conf.pmid_dtype)
             disp = stack_and_shard(disp_sliced_list, conf.float_dtype)
             unused_index = stack_and_shard(unused_index_list, jnp.bool)
             halo_mask = stack_and_shard(halo_mask_list, jnp.bool)
-            indices = stack_and_shard(indices_list, jnp.int32)
 
             if vel is not None:
                 vel = stack_and_shard(vel_sliced_list, conf.float_dtype)
             if acc is not None:
                 acc = stack_and_shard(acc_sliced_list, conf.float_dtype)
 
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask, idx=indices)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
 
     @classmethod
     def from_ptcl(cls, ptcl, conf=None, wrap=True):
@@ -480,7 +470,7 @@ class Particles:
         pmid = ptcl.pmid
         disp = ptcl.disp
         vel = ptcl.vel
-        acc = ptcl.vel
+        acc = ptcl.acc
 
         pmid = pmid.astype(conf.pmid_dtype)
         disp = disp.astype(conf.float_dtype)
@@ -488,16 +478,16 @@ class Particles:
         if wrap:
             pmid %= jnp.array(conf.mesh_shape, dtype=conf.pmid_dtype)
 
-        unused_index, halo_mask, indices = None, None, None
+        unused_index, halo_mask = None, None
         if conf.use_mGPU:
             def stack_and_shard(array: ArrayLike, dtype=jnp.float32):
                 return distribute_array_on_gpus(jnp.concatenate(array, axis=0, dtype=dtype), conf.compute_mesh,
                                                 P(AXIS_NAME))
 
-            pmid_sliced_list, disp_sliced_list, vel_sliced_list, acc_sliced_list, unused_index_list, halo_mask_list, indices_list = [], [], [], [], [], [], []
+            pmid_sliced_list, disp_sliced_list, vel_sliced_list, acc_sliced_list, unused_index_list, halo_mask_list = [], [], [], [], [], []
             for i in range(conf.num_devices):
                 gpu_id = conf.devices_index[i]  # jax.lax.axis_index('gpus')
-                pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask, indices = cls.distribute_ptcl_pos(
+                pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask = cls.distribute_ptcl_pos(
                     pmid, disp, vel, acc, conf, gpu_id)
 
                 pmid_sliced_list.append(pmid_sliced)
@@ -506,20 +496,18 @@ class Particles:
                 acc_sliced_list.append(acc_sliced)
                 unused_index_list.append(unused_index)
                 halo_mask_list.append(halo_mask)
-                indices_list.append(indices)
 
             pmid = stack_and_shard(pmid_sliced_list, conf.pmid_dtype)
             disp = stack_and_shard(disp_sliced_list, conf.float_dtype)
             unused_index = stack_and_shard(unused_index_list, jnp.bool)
             halo_mask = stack_and_shard(halo_mask_list, jnp.bool)
-            indices = stack_and_shard(indices_list, jnp.int32)
 
             if vel is not None:
                 vel = stack_and_shard(vel_sliced_list, conf.float_dtype)
             if acc is not None:
                 acc = stack_and_shard(acc_sliced_list, conf.float_dtype)
 
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask, idx=indices)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
 
     @classmethod
     def gen_grid(cls, conf, vel=False, acc=False):
@@ -600,19 +588,7 @@ class Particles:
         vel = jnp.zeros_like(disp, device=NamedSharding(conf.compute_mesh, P(AXIS_NAME))) if vel else None
         acc = jnp.zeros_like(disp, device=NamedSharding(conf.compute_mesh, P(AXIS_NAME))) if acc else None
 
-        idx_dtype = jnp.int32
-        mesh_shape = jnp.array(conf.mesh_shape, dtype=idx_dtype)  # (3,)
-        ix = (pmid[:, 0].astype(idx_dtype)) % mesh_shape[0]
-        iy = (pmid[:, 1].astype(idx_dtype)) % mesh_shape[1]
-        iz = (pmid[:, 2].astype(idx_dtype)) % mesh_shape[2]
-
-        # Flatten to a unique global ID in C-order: ((x * Ny) + y) * Nz + z
-        idx = (ix * mesh_shape[1] + iy) * mesh_shape[2] + iz  # shape (N,)
-
-        # Mask out padded entries so they don't collide with real IDs
-        idx = jnp.where(unused_index, idx_dtype(-1), idx)
-
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask, idx=idx)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
 
     def raveled_id(self, dtype=jnp.uint64, wrap=False):
         """Particle raveled IDs, flattened from ``pmid``.
@@ -698,13 +674,11 @@ class Particles:
         # mGPU attributes
         unused_index = self.unused_index[start_id:end_id] if self.unused_index is not None else None
         halo_mask = self.halo_mask[start_id:end_id] if self.halo_mask is not None else None
-        idx = self.idx[start_id:end_id] if self.idx is not None else None
-
-        return pmid, disp, vel, acc, unused_index, halo_mask, idx
+        return pmid, disp, vel, acc, unused_index, halo_mask
 
     @staticmethod
     @jax.jit
-    def remove_particles(pmid, disp, vel, acc, particle_indices, mask, unused_index):
+    def remove_particles(pmid, disp, vel, acc, mask, unused_index):
         """
         Removes particles from the given data arrays based on a boolean mask. This function
         operates on position vectors, velocity vectors, particle indices, and unused indices.
@@ -715,31 +689,37 @@ class Particles:
             the expected broadcast dimension for operations.
         :param vel: Array of particle velocities. Should match the shape and type specifications
             of `pos`.
-        :param particle_indices: Array representing the unique indices assigned to each particle.
-            Portions of the array will be modified for particles identified by the mask.
         :param mask: Boolean array indicating which particles should be removed. `True` values
-            flag particles for removal at corresponding positions in `pos`, `vel`, and `particle_indices`.
+            flag particles for removal at corresponding positions in `pmid`, `disp`, `vel`, and `acc`.
         :param unused_index: Array of unused indices, which will also be updated when particles are
             removed as per the mask.
         :return: A tuple containing the updated position array (`pos`), velocity array (`vel`),
-            particle indices array (`particle_indices`), and unused index array (`unused_index`)
-            after particles are removed based on the mask.
+            acceleration array (`acc`), and unused index array (`unused_index`) after particles are
+            removed based on the mask.
         """
-        broadcasted_mask = jnp.broadcast_to(jnp.expand_dims(mask, axis=-1), pmid.shape)
-        zeros = jnp.zeros_like(disp)
-        pmid = jax.lax.select(broadcasted_mask, jnp.zeros_like(pmid), pmid)
-        disp = jax.lax.select(broadcasted_mask, zeros, disp)
-        vel = jax.lax.select(broadcasted_mask, zeros, vel)
-        acc = jax.lax.select(broadcasted_mask, zeros, acc)
-        particle_indices = jax.lax.select(mask, -jnp.ones_like(particle_indices), particle_indices)
+        mask_2d = jnp.expand_dims(mask, axis=-1)
+        pmid = jax.lax.select(jnp.broadcast_to(mask_2d, pmid.shape), jnp.zeros_like(pmid), pmid)
+        disp = jax.lax.select(jnp.broadcast_to(mask_2d, disp.shape), jnp.zeros_like(disp), disp)
+        vel = jax.lax.select(jnp.broadcast_to(mask_2d, vel.shape), jnp.zeros_like(vel), vel)
+        acc = jax.lax.select(jnp.broadcast_to(mask_2d, acc.shape), jnp.zeros_like(acc), acc)
         unused_index = jax.lax.select(mask, jnp.ones_like(unused_index), unused_index)
-        return pmid, disp, vel, acc, particle_indices, unused_index
+        return pmid, disp, vel, acc, unused_index
 
     @staticmethod
     @partial(jax.jit, static_argnames=["max_values_to_add"])
-    def add_particles(pmid, disp, vel, acc, particle_indices, unused_indexes, new_pmid, new_disp, new_vel, new_acc,
-                      new_particle_indices,
-                      max_values_to_add):
+    def add_particles(
+        pmid,
+        disp,
+        vel,
+        acc,
+        unused_indexes,
+        new_pmid,
+        new_disp,
+        new_vel,
+        new_acc,
+        new_valid,
+        max_values_to_add,
+    ):
         """
         Add a specified number of new particle positions, velocities, and indices to the existing particle
         system, while ensuring that the number of added particles does not exceed the maximum limit. The
@@ -749,30 +729,29 @@ class Particles:
                     a particle, and each column corresponds to a coordinate.
         :param vel: A 2D array representing the velocities of existing particles. Each row corresponds to
                     a particle, and each column corresponds to a speed component.
-        :param particle_indices: A 1D array representing the indices of particles currently in use
-                                 within the system.
         :param unused_indexes: A 1D Boolean array where True indicates the presence of available slots
                                for new particles and False indicates occupied slots.
         :param new_pos: A 2D array representing the positions of the new particles to be added. Each row
                         corresponds to a particle, and each column corresponds to a coordinate.
         :param new_vel: A 2D array representing the velocities of the new particles to be added. Each row
                         corresponds to a particle, and each column corresponds to a speed component.
-        :param new_particle_indices: A 1D array representing the indices of the new particles to be added.
         :param max_values_to_add: An integer representing the maximum number of new particles to add
                                   to the system.
         :return: A tuple containing the updated positions, velocities, indices of the particles, and the
                  updated array of unused indices.
         """
+        num_values_to_add = jnp.sum(new_valid)
+
         _ = jax.lax.cond(
-            jnp.sum(unused_indexes) < max_values_to_add,
+            jnp.sum(unused_indexes) < num_values_to_add,
             lambda _: raise_error(
                 "[ERROR] Exceeded max_amount_particles_per_slice. Available slots: {x}, values_to_add: {y}. Consider making 'max_amount_particles_per_slice' bigger.",
-                x=jnp.sum(unused_indexes), y=max_values_to_add),
+                x=jnp.sum(unused_indexes), y=num_values_to_add),
             lambda _: None,
             operand=None
         )
 
-        all_indices = jnp.nonzero(unused_indexes, size=pmid.shape[0], fill_value=-1)[0]
+        all_indices = jnp.nonzero(unused_indexes, size=pmid.shape[0], fill_value=0)[0]
 
         real_indices = jax.lax.dynamic_slice_in_dim(
             all_indices,
@@ -781,60 +760,56 @@ class Particles:
             axis=0
         )
 
+        valid_new_indices = jnp.nonzero(new_valid, size=max_values_to_add, fill_value=0)[0]
+
         chosen_new_pmid = jax.lax.dynamic_slice_in_dim(
-            new_pmid,
+            new_pmid[valid_new_indices],
             start_index=0,
             slice_size=max_values_to_add,
             axis=0
         )
         chosen_new_disp = jax.lax.dynamic_slice_in_dim(
-            new_disp,
+            new_disp[valid_new_indices],
             start_index=0,
             slice_size=max_values_to_add,
             axis=0
         )
         chosen_new_vel = jax.lax.dynamic_slice_in_dim(
-            new_vel,
+            new_vel[valid_new_indices],
             start_index=0,
             slice_size=max_values_to_add,
             axis=0
         )
         chosen_new_acc = jax.lax.dynamic_slice_in_dim(
-            new_acc,
+            new_acc[valid_new_indices],
             start_index=0,
             slice_size=max_values_to_add,
             axis=0
         )
-        chosen_new_indices = jax.lax.dynamic_slice_in_dim(
-            new_particle_indices,
-            start_index=0,
-            slice_size=max_values_to_add,
-            axis=0
-        )
+        update_mask = jnp.arange(max_values_to_add) < num_values_to_add
+        current_pmid = pmid[real_indices]
+        current_disp = disp[real_indices]
+        current_vel = vel[real_indices]
+        current_acc = acc[real_indices]
 
-        pmid = pmid.at[real_indices].set(chosen_new_pmid)
-        disp = disp.at[real_indices].set(chosen_new_disp)
-        vel = vel.at[real_indices].set(chosen_new_vel)
-        acc = acc.at[real_indices].set(chosen_new_acc)
-        particle_indices = particle_indices.at[real_indices].set(chosen_new_indices)
-
-        # unused_indexes = particle_indices == -1
+        pmid = pmid.at[real_indices].set(jnp.where(update_mask[:, None], chosen_new_pmid, current_pmid))
+        disp = disp.at[real_indices].set(jnp.where(update_mask[:, None], chosen_new_disp, current_disp))
+        vel = vel.at[real_indices].set(jnp.where(update_mask[:, None], chosen_new_vel, current_vel))
+        acc = acc.at[real_indices].set(jnp.where(update_mask[:, None], chosen_new_acc, current_acc))
         unused_indexes = jnp.all(pmid == 0, axis=1) & jnp.all(disp == 0, axis=1)
 
-        return pmid, disp, vel, acc, particle_indices, unused_indexes
+        return pmid, disp, vel, acc, unused_indexes
 
     @staticmethod
-    def move_particles_shard_map(pmid, disp, vel, acc, particle_indices, halo_start, halo_end, previous_halo_mask,
-                                 unused_indexes, share_only_right, global_nMesh, max_values_to_share, left_perm,
-                                 right_perm, num_gpus,
-                                 disp_size):
+    def move_particles_shard_map(pmid, disp, vel, acc, halo_start, halo_end, previous_halo_mask, unused_indexes,
+                                 share_only_right, global_nMesh, max_values_to_share, left_perm, right_perm,
+                                 num_gpus, disp_size):
         """
         Finds and processes particles that need to move between GPUs based on their position relative to halo regions.
         This function handles particle sharing and removal to ensure a consistent distribution of particles across GPUs.
 
         :param pos: Current positions of particles.
         :param vel: Current velocities of particles.
-        :param particle_indices: Indices associated with each particle.
         :param halo_start: Start boundaries of the halo regions.
         :param halo_end: End boundaries of the halo regions.
         :param previous_halo_mask: Mask indicating particles previously present in the halo region.
@@ -930,21 +905,22 @@ class Particles:
         to_share_right_disp = jnp.compress(to_share_right, disp, axis=0, size=max_values_to_share, fill_value=0)
         to_share_right_vel = jnp.compress(to_share_right, vel, axis=0, size=max_values_to_share, fill_value=0)
         to_share_right_acc = jnp.compress(to_share_right, acc, axis=0, size=max_values_to_share, fill_value=0)
-        to_share_right_idx = jnp.compress(to_share_right, particle_indices, axis=0, size=max_values_to_share,
-                                          fill_value=-1)
-
+        to_share_right_valid = jnp.compress(
+            to_share_right, ~dummy_mask, axis=0, size=max_values_to_share, fill_value=False
+        )
         to_share_left_pmid = jnp.compress(to_share_left, pmid, axis=0, size=max_values_to_share, fill_value=0)
         to_share_left_disp = jnp.compress(to_share_left, disp, axis=0, size=max_values_to_share, fill_value=0)
         to_share_left_vel = jnp.compress(to_share_left, vel, axis=0, size=max_values_to_share, fill_value=0)
         to_share_left_acc = jnp.compress(to_share_left, acc, axis=0, size=max_values_to_share, fill_value=0)
-        to_share_left_idx = jnp.compress(to_share_left, particle_indices, axis=0, size=max_values_to_share,
-                                         fill_value=-1)
+        to_share_left_valid = jnp.compress(
+            to_share_left, ~dummy_mask, axis=0, size=max_values_to_share, fill_value=False
+        )
 
-        incoming_from_left_pmid, incoming_from_left_disp, incoming_from_left_vel, incoming_from_left_acc, incoming_from_left_idx = jax.lax.ppermute(
-            (to_share_right_pmid, to_share_right_disp, to_share_right_vel, to_share_right_acc, to_share_right_idx),
+        incoming_from_left_pmid, incoming_from_left_disp, incoming_from_left_vel, incoming_from_left_acc, incoming_valid_left = jax.lax.ppermute(
+            (to_share_right_pmid, to_share_right_disp, to_share_right_vel, to_share_right_acc, to_share_right_valid),
             axis_name=AXIS_NAME, perm=right_perm)
-        incoming_from_right_pmid, incoming_from_right_disp, incoming_from_right_vel, incoming_from_right_acc, incoming_from_right_idx = jax.lax.ppermute(
-            (to_share_left_pmid, to_share_left_disp, to_share_left_vel, to_share_left_acc, to_share_left_idx),
+        incoming_from_right_pmid, incoming_from_right_disp, incoming_from_right_vel, incoming_from_right_acc, incoming_valid_right = jax.lax.ppermute(
+            (to_share_left_pmid, to_share_left_disp, to_share_left_vel, to_share_left_acc, to_share_left_valid),
             axis_name=AXIS_NAME, perm=left_perm)
 
         """jax.debug.print("[GPU {a}] to_share_left: {z}, to_share_left_pmid: {x}, to_share_left_disp: {y}.",
@@ -958,26 +934,20 @@ class Particles:
         incoming_disp = jnp.concatenate((incoming_from_right_disp, incoming_from_left_disp), axis=0)
         incoming_vel = jnp.concatenate((incoming_from_right_vel, incoming_from_left_vel), axis=0)
         incoming_acc = jnp.concatenate((incoming_from_right_acc, incoming_from_left_acc), axis=0)
-        incoming_idx = jnp.concatenate((incoming_from_right_idx, incoming_from_left_idx), axis=0)
+        incoming_valid = jnp.concatenate((incoming_valid_right, incoming_valid_left), axis=0)
 
-        pmid, disp, vel, acc, particle_indices, unused_index = Particles.remove_particles(pmid, disp, vel, acc,
-                                                                                          particle_indices, to_remove,
-                                                                                          unused_indexes)
+        pmid, disp, vel, acc, unused_index = Particles.remove_particles(
+            pmid, disp, vel, acc, to_remove, unused_indexes)
 
-        pmid, disp, vel, acc, particle_indices, unused_indexes = Particles.add_particles(pmid, disp, vel, acc,
-                                                                                         particle_indices,
-                                                                                         unused_indexes,
-                                                                                         incoming_pmid,
-                                                                                         incoming_disp,
-                                                                                         incoming_vel,
-                                                                                         incoming_acc,
-                                                                                         incoming_idx,
-                                                                                         max_values_to_share * 2)
+        pmid, disp, vel, acc, unused_indexes = Particles.add_particles(
+            pmid, disp, vel, acc, unused_indexes, incoming_pmid, incoming_disp, incoming_vel, incoming_acc,
+            incoming_valid,
+            max_values_to_share * 2)
 
         x_mod = (pmid[:, 0] + disp[:, 0] * disp_size) % global_nMesh
         previous_halo_mask = Particles.compute_halo_mask(x_mod, halo_start_fix, halo_end, unused_indexes)
 
-        return pmid, disp, vel, acc, particle_indices, previous_halo_mask, unused_indexes, check_fraction_and_share, jnp.maximum(
+        return pmid, disp, vel, acc, previous_halo_mask, unused_indexes, check_fraction_and_share, jnp.maximum(
             jnp.sum(to_share_right), jnp.sum(to_share_left))
 
     @staticmethod
@@ -990,7 +960,6 @@ class Particles:
                 P(AXIS_NAME, None),  # disp
                 P(AXIS_NAME, None),  # vel
                 P(AXIS_NAME, None),  # acc
-                P(AXIS_NAME),  # particle_indices
                 P(AXIS_NAME),  # halo_start
                 P(AXIS_NAME),  # halo_end
                 P(AXIS_NAME),  # previous_halo_mask
@@ -1006,7 +975,6 @@ class Particles:
                 P(AXIS_NAME, None),  # disp
                 P(AXIS_NAME, None),  # vel
                 P(AXIS_NAME, None),  # acc
-                P(AXIS_NAME),  # particle_indices
                 P(AXIS_NAME),  # previous_halo_mask
                 P(AXIS_NAME),  # unused_indexes
                 P(),  # has_failed
@@ -1029,19 +997,17 @@ class Particles:
                 P(AXIS_NAME, None),  # disp
                 P(AXIS_NAME, None),  # vel
                 P(AXIS_NAME, None),  # acc
-                P(AXIS_NAME),  # particle_indices
                 P(AXIS_NAME),  # halo_start
                 P(AXIS_NAME),  # halo_end
                 P(AXIS_NAME),  # previous_halo_mask
                 P(AXIS_NAME),  # unused_indexes
-                P()
+                P() # share_only_right
             ),
             out_specs=(
                 P(AXIS_NAME, None),  # pmid
                 P(AXIS_NAME, None),  # disp
                 P(AXIS_NAME, None),  # vel
                 P(AXIS_NAME, None),  # acc
-                P(AXIS_NAME),  # particle_indices
                 P(AXIS_NAME),  # previous_halo_mask
                 P(AXIS_NAME),  # unused_indexes
                 P(),  # has_failed

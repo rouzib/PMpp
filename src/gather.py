@@ -2,14 +2,14 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-from jax import custom_vjp, NamedSharding
+from jax import custom_vjp
 from jax.experimental.shard_map import shard_map
 from jax.lax import scan
-from jax.sharding import PartitionSpec as P
+from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .enmesh import _chunk_split, enmesh, _chunk_cat
 from .particles import Particles
-from .utils import AXIS_NAME, raise_error
+from .utils import AXIS_NAME, raise_error, pmid_to_idx
 
 
 def initialize_mGPU_gather(conf):
@@ -19,7 +19,7 @@ def initialize_mGPU_gather(conf):
         in_specs=(
             P(AXIS_NAME, None),  # pmid
             P(AXIS_NAME, None),  # disp
-            P(AXIS_NAME),  # particle_indices
+            P(AXIS_NAME),  # unused_index
             None,  # conf
             P(AXIS_NAME, None, None),  # mesh
         ),
@@ -33,7 +33,7 @@ def initialize_mGPU_gather(conf):
     )
 
 
-def _apply_exchange(val_in, pmid_sg, disp_sg, particle_indices_sg, conf_sg, gpu_id):
+def _apply_exchange(val_in, pmid_sg, disp_sg, unused_index_sg, conf_sg, gpu_id):
     """Pure forward halo-exchange on a STOP-GRAD input.
     Returns the exchanged values; no gradients should flow through this.
     """
@@ -45,7 +45,7 @@ def _apply_exchange(val_in, pmid_sg, disp_sg, particle_indices_sg, conf_sg, gpu_
     max_values_to_share = conf_sg.max_share_gather_ptcl
 
     # masks (ints/bools, forward-only)
-    dummy_mask = (particle_indices_sg == -1)
+    dummy_mask = unused_index_sg
     x_mod = (pmid_sg[:, 0] + disp_sg[:, 0] * conf_sg.disp_size) % global_nMesh
 
     val = jnp.where(dummy_mask, jnp.asarray(0, val_in.dtype), val_in)
@@ -73,15 +73,21 @@ def _apply_exchange(val_in, pmid_sg, disp_sg, particle_indices_sg, conf_sg, gpu_
     )
 
     # --- pack share payloads with explicit dtypes for fill_value ---
-    to_share_left_idx = jnp.compress(
-        to_share_left, particle_indices_sg, axis=0,
-        size=max_values_to_share,
-        fill_value=jnp.asarray(-1, particle_indices_sg.dtype)
+    to_share_left_pmid = jnp.compress(
+        to_share_left, pmid_sg, axis=0, size=max_values_to_share,
+        fill_value=jnp.asarray(0, pmid_sg.dtype)
     )
-    to_share_right_idx = jnp.compress(
-        to_share_right, particle_indices_sg, axis=0,
-        size=max_values_to_share,
-        fill_value=jnp.asarray(-1, particle_indices_sg.dtype)
+    to_share_right_pmid = jnp.compress(
+        to_share_right, pmid_sg, axis=0, size=max_values_to_share,
+        fill_value=jnp.asarray(0, pmid_sg.dtype)
+    )
+    to_share_left_valid = jnp.compress(
+        to_share_left, ~dummy_mask, axis=0, size=max_values_to_share,
+        fill_value=jnp.asarray(False, jnp.bool_)
+    )
+    to_share_right_valid = jnp.compress(
+        to_share_right, ~dummy_mask, axis=0, size=max_values_to_share,
+        fill_value=jnp.asarray(False, jnp.bool_)
     )
 
     to_share_left_val = jnp.compress(
@@ -94,48 +100,54 @@ def _apply_exchange(val_in, pmid_sg, disp_sg, particle_indices_sg, conf_sg, gpu_
     )
 
     # --- exchange ---
-    incoming_idx_left, incoming_from_left_val = jax.lax.ppermute(
-        (to_share_right_idx, to_share_right_val), axis_name=AXIS_NAME, perm=conf_sg.right_perm)
-    incoming_idx_right, incoming_from_right_val = jax.lax.ppermute(
-        (to_share_left_idx, to_share_left_val), axis_name=AXIS_NAME, perm=conf_sg.left_perm)
+    incoming_pmid_left, incoming_from_left_val, incoming_valid_left = jax.lax.ppermute(
+        (to_share_right_pmid, to_share_right_val, to_share_right_valid), axis_name=AXIS_NAME, perm=conf_sg.right_perm)
+    incoming_pmid_right, incoming_from_right_val, incoming_valid_right = jax.lax.ppermute(
+        (to_share_left_pmid, to_share_left_val, to_share_left_valid), axis_name=AXIS_NAME, perm=conf_sg.left_perm)
 
     # --- match incoming to local positions ---
-    sorted_local_positions = jnp.sort(particle_indices_sg)
-    sorted_local_indices = jnp.argsort(particle_indices_sg)
+    local_keys = pmid_to_idx(pmid_sg, conf_sg, unused_index_sg)
+    incoming_idx_left = jnp.where(incoming_valid_left, pmid_to_idx(incoming_pmid_left, conf_sg), -1)
+    incoming_idx_right = jnp.where(incoming_valid_right, pmid_to_idx(incoming_pmid_right, conf_sg), -1)
+
+    sorted_local_positions = jnp.sort(local_keys)
+    sorted_local_indices = jnp.argsort(local_keys)
 
     matching_indices_sorted = jnp.searchsorted(sorted_local_positions, incoming_idx_left, method="sort")
-    update_indices_left = sorted_local_indices[matching_indices_sorted]
+    matching_indices_sorted = jnp.clip(matching_indices_sorted, 0, sorted_local_positions.shape[0] - 1)
+    update_indices_left = jnp.where(incoming_valid_left, sorted_local_indices[matching_indices_sorted], 0)
 
     matching_indices_sorted = jnp.searchsorted(sorted_local_positions, incoming_idx_right, method="sort")
-    update_indices_right = sorted_local_indices[matching_indices_sorted]
+    matching_indices_sorted = jnp.clip(matching_indices_sorted, 0, sorted_local_positions.shape[0] - 1)
+    update_indices_right = jnp.where(incoming_valid_right, sorted_local_indices[matching_indices_sorted], 0)
 
     # --- apply updates on a LOCAL copy (val_out) ---
     val_out = val
-    val_out = val_out.at[update_indices_left].add(incoming_from_left_val)
-    val_out = val_out.at[update_indices_right].add(incoming_from_right_val)
+    val_out = val_out.at[update_indices_left].add(incoming_from_left_val * incoming_valid_left.astype(val.dtype))
+    val_out = val_out.at[update_indices_right].add(incoming_from_right_val * incoming_valid_right.astype(val.dtype))
 
     return val_out
 
 
 @partial(custom_vjp, nondiff_argnums=(3, ))
-def _gather_mGPU(pmid, disp, particle_indices, conf, mesh):
+def _gather_mGPU(pmid, disp, unused_index, conf, mesh):
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
 
     val = _gather_impl(pmid, disp, conf, mesh, 0.0, offset, None)
 
-    val = _apply_exchange(val, pmid, disp, particle_indices, conf, gpu_id)
+    val = _apply_exchange(val, pmid, disp, unused_index, conf, gpu_id)
 
     return val
 
 
-def _gather_mGPU_fwd(pmid, disp, particle_indices, conf, mesh):
-    val = _gather_mGPU(pmid, disp, particle_indices, conf, mesh)
-    return val, (pmid, disp, particle_indices, mesh)
+def _gather_mGPU_fwd(pmid, disp, unused_index, conf, mesh):
+    val = _gather_mGPU(pmid, disp, unused_index, conf, mesh)
+    return val, (pmid, disp, mesh)
 
 
 def _gather_mGPU_bwd(conf, res, val_cot):
-    pmid, disp, particle_indices, mesh = res
+    pmid, disp, mesh = res
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
 
@@ -168,8 +180,7 @@ def gather(ptcl, conf, mesh):
 
     """
     # return _gather(ptcl.pmid, ptcl.disp, conf, mesh, 0.0, 0.0, conf.cell_size)
-    # return _gather_mGPU(ptcl.pmid, ptcl.disp, ptcl.idx, conf, mesh)
-    return conf.mGPU_gather(ptcl.pmid, ptcl.disp, ptcl.idx, conf, mesh)
+    return conf.mGPU_gather(ptcl.pmid, ptcl.disp, ptcl.unused_index, conf, mesh)
 
 
 def _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size):

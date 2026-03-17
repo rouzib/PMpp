@@ -4,9 +4,36 @@ import jax.numpy as jnp
 
 from .configuration import Configuration
 from .cosmo import E2, H_deriv
-from .gravity import gravity
+from .gravity import gravity, duplicate_slot_counts
 from .growth import growth
 from .particles import Particles
+
+
+def _halo_move_float_outputs(ptcl, disp, vel, acc, share_only_right, conf):
+    _, disp, vel, acc, _, _, _, _ = conf.mGPU_halo_moving(
+        ptcl.pmid,
+        disp,
+        vel,
+        acc,
+        conf.halo_start,
+        conf.halo_end,
+        ptcl.halo_mask,
+        ptcl.unused_index,
+        share_only_right,
+    )
+    return disp, vel, acc
+
+
+def _halo_move_vjp(ptcl, disp, vel, acc, disp_cot, vel_cot, acc_cot, share_only_right, conf):
+    _, halo_move_vjp = vjp(
+        lambda disp_in, vel_in, acc_in: _halo_move_float_outputs(
+            ptcl, disp_in, vel_in, acc_in, share_only_right, conf
+        ),
+        disp,
+        vel,
+        acc,
+    )
+    return halo_move_vjp((disp_cot, vel_cot, acc_cot))
 
 
 def _G_D(a, cosmo, conf):
@@ -40,14 +67,14 @@ def drift(a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configuration):
     """Drift."""
     factor = drift_factor(a_vel, a_prev, a_next, cosmo, conf)
     factor = factor.astype(conf.float_dtype)
+    share_only_right = conf.num_devices == 2
 
     disp = ptcl.disp + ptcl.vel * factor
 
-    pmid, disp, vel, acc, particle_indices, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
-        ptcl.pmid, disp, ptcl.vel, ptcl.acc, ptcl.idx, conf.halo_start, conf.halo_end,
-        ptcl.halo_mask, ptcl.unused_index, conf.num_devices == 2)
-    return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, idx=particle_indices, halo_mask=halo_mask,
-                        unused_index=unused_indexes)
+    pmid, disp, vel, acc, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
+        ptcl.pmid, disp, ptcl.vel, ptcl.acc, conf.halo_start, conf.halo_end,
+        ptcl.halo_mask, ptcl.unused_index, share_only_right)
+    return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, halo_mask=halo_mask, unused_index=unused_indexes)
 
 
 def drift_adj(a_vel, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
@@ -55,22 +82,44 @@ def drift_adj(a_vel, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
     factor_valgrad = value_and_grad(drift_factor, argnums=3)
     factor, cosmo_cot_drift = factor_valgrad(a_vel, a_prev, a_next, cosmo, conf)
     factor = factor.astype(conf.float_dtype)
+    share_only_right = conf.num_devices == 2
 
     # drift
-    disp = ptcl.disp + ptcl.vel * factor
+    ptcl_before_halo = ptcl
+    disp_before_halo = ptcl.disp + ptcl.vel * factor
 
-    pmid, disp, vel, acc, particle_indices, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
-        ptcl.pmid, disp, ptcl.vel, ptcl.acc, ptcl.idx, conf.halo_start, conf.halo_end,
-        ptcl.halo_mask, ptcl.unused_index, False)
-    ptcl = ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, idx=particle_indices, halo_mask=halo_mask,
-                        unused_index=unused_indexes)
+    pmid, disp, vel, acc, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
+        ptcl_before_halo.pmid,
+        disp_before_halo,
+        ptcl_before_halo.vel,
+        ptcl_before_halo.acc,
+        conf.halo_start,
+        conf.halo_end,
+        ptcl_before_halo.halo_mask,
+        ptcl_before_halo.unused_index,
+        share_only_right,
+    )
+    ptcl = ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, halo_mask=halo_mask, unused_index=unused_indexes)
+
+    disp, vel, acc = _halo_move_vjp(
+        ptcl_before_halo,
+        disp_before_halo,
+        ptcl_before_halo.vel,
+        ptcl_before_halo.acc,
+        ptcl_cot.disp,
+        ptcl_cot.vel,
+        ptcl_cot.acc,
+        share_only_right,
+        conf,
+    )
+    ptcl_cot = ptcl_cot.replace(disp=disp, vel=vel, acc=acc)
 
     # particle adjoint
     vel_cot = ptcl_cot.vel - ptcl_cot.disp * factor
     ptcl_cot = ptcl_cot.replace(vel=vel_cot)
 
     # cosmology adjoint
-    cosmo_cot_drift *= (ptcl_cot.disp * ptcl.vel).sum()
+    cosmo_cot_drift *= (ptcl_cot.disp * ptcl_before_halo.vel).sum()
     cosmo_cot -= cosmo_cot_drift
 
     return ptcl, ptcl_cot, cosmo_cot
@@ -98,12 +147,7 @@ def kick_adj(a_acc, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, cosmo_cot_
 
     # particle adjoint
     disp_cot = ptcl_cot.disp - ptcl_cot.acc * factor
-
-    pmid, disp, vel, acc, particle_indices, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
-        ptcl_cot.pmid, disp_cot, ptcl_cot.vel, ptcl_cot.acc, ptcl_cot.idx, conf.halo_start, conf.halo_end,
-        ptcl_cot.halo_mask, ptcl_cot.unused_index, False)
-    ptcl_cot = ptcl_cot.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, idx=particle_indices, halo_mask=halo_mask,
-                                unused_index=unused_indexes)
+    ptcl_cot = ptcl_cot.replace(disp=disp_cot)
 
     # cosmology adjoint
     cosmo_cot_kick *= (ptcl_cot.vel * ptcl.acc).sum()
@@ -128,7 +172,9 @@ def force_adj(a, ptcl, ptcl_cot, cosmo, conf):
 
     # particle and cosmology vjp
     _, ptcl_cot_force, cosmo_cot_force, _ = gravity_vjp(ptcl_cot.vel)
-    ptcl_cot = ptcl_cot.replace(acc=ptcl_cot_force.disp)
+    counts = duplicate_slot_counts(ptcl, conf).astype(ptcl_cot_force.disp.dtype)
+    acc_cot = jnp.where(counts != 0, ptcl_cot_force.disp / counts, 0)
+    ptcl_cot = ptcl_cot.replace(acc=acc_cot)
 
     return ptcl, ptcl_cot, cosmo_cot_force
 

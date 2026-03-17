@@ -10,7 +10,7 @@ from .fft import fftinv, fftfwd, fftfreq
 from .gravity import laplace, neg_grad
 from .growth import growth
 from .particles import Particles
-from .utils import AXIS_NAME
+from .utils import AXIS_NAME, pmid_to_idx
 
 
 def _strain(kvec, i, j, pot, conf):
@@ -132,16 +132,17 @@ def lpt(modes, cosmo, conf):
         raise NotImplementedError('TODO')
 
     a = conf.a_start
-    ptcl = Particles.gen_grid(conf, vel=True, acc=True)
+    ptcl = Particles.gen_grid(conf, vel=True)
     disp = ptcl.disp
     vel = ptcl.vel
+    ptcl_idx = pmid_to_idx(ptcl.pmid, conf, ptcl.unused_index)
+    valid_slots = ~ptcl.unused_index
 
     for order in range(1, 1 + conf.lpt_order):
         D = growth(a, cosmo, conf, order=order)
         dD_dlna = growth(a, cosmo, conf, order=order, deriv=1)
         a2HDp = a ** 2 * jnp.sqrt(E2(a, cosmo)) * dD_dlna
         D = D.astype(conf.float_dtype)
-        dD_dlna = dD_dlna.astype(conf.float_dtype)
         a2HDp = a2HDp.astype(conf.float_dtype)
 
         for i, k in enumerate(kvec):
@@ -150,16 +151,16 @@ def lpt(modes, cosmo, conf):
             grad = conf.mGPU_irfftn(grad)
             grad = grad.astype(conf.float_dtype)  # no jnp.complex32
 
-            grad = grad.ravel()
-            grad = jnp.resize(grad, ptcl.disp.shape[0])[ptcl.idx]
-            grad *= ~ptcl.unused_index
+            grad = jnp.take(grad.reshape(-1), ptcl_idx, mode="wrap")
+            grad = jnp.where(valid_slots, grad, 0)
 
             disp = disp.at[:, i].add(D * grad)
             vel = vel.at[:, i].add(a2HDp * grad)
 
-    pmid, disp, vel, acc, particle_indices, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
-        ptcl.pmid, disp, vel, ptcl.acc, ptcl.idx, conf.halo_start, conf.halo_end,
+    scratch_acc = disp[:, :0]
+    pmid, disp, vel, acc, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
+        ptcl.pmid, disp, vel, scratch_acc, conf.halo_start, conf.halo_end,
         ptcl.halo_mask, ptcl.unused_index, True)
 
-    return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, idx=particle_indices, halo_mask=halo_mask,
+    return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=None, halo_mask=halo_mask,
                         unused_index=unused_indexes)

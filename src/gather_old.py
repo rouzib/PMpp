@@ -2,14 +2,14 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-from jax import custom_vjp, NamedSharding
+from jax import custom_vjp
 from jax.experimental.shard_map import shard_map
 from jax.lax import scan
-from jax.sharding import PartitionSpec as P
+from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .enmesh import _chunk_split, enmesh, _chunk_cat
 from .particles import Particles
-from .utils import AXIS_NAME, raise_error
+from .utils import AXIS_NAME, raise_error, pmid_to_idx
 
 
 def initialize_mGPU_gather(conf):
@@ -19,44 +19,96 @@ def initialize_mGPU_gather(conf):
         in_specs=(
             P(AXIS_NAME, None),  # pmid
             P(AXIS_NAME, None),  # disp
-            P(AXIS_NAME),  # particle_indices
+            P(AXIS_NAME),  # unused_index
             None,  # conf
             P(AXIS_NAME, None, None),  # mesh
-            # None,  # P(AXIS_NAME),  # val
-            P(AXIS_NAME, None),  # offset
-            # None,  # cell_size
         ),
-        out_specs=(
-            P(AXIS_NAME),  # read_values: [n_particles]
-            P(),  # has_failed
-            P()  # max_particles_moved
-        ),
+        out_specs=P(AXIS_NAME),
         check_rep=False
     )
 
 
-def _gather_mGPU(pmid, disp, particle_indices, conf, mesh, offset):
-    gpu_id = jax.lax.axis_index(AXIS_NAME)
+def _match_exchange_routing(to_share_left, to_share_right, pmid, conf, incoming_pmid_left, incoming_valid_left,
+                            incoming_pmid_right, incoming_valid_right, max_values_to_share):
+    slot_index = jnp.arange(pmid.shape[0], dtype=jnp.int32)
 
-    val = _gather(pmid, disp, conf, mesh, 0, offset[0], None)
+    local_left_pmid = jnp.compress(
+        to_share_left, pmid, axis=0, size=max_values_to_share, fill_value=jnp.asarray(0, pmid.dtype)
+    )
+    local_right_pmid = jnp.compress(
+        to_share_right, pmid, axis=0, size=max_values_to_share, fill_value=jnp.asarray(0, pmid.dtype)
+    )
+    local_left_slot = jnp.compress(
+        to_share_left, slot_index, axis=0, size=max_values_to_share, fill_value=jnp.asarray(-1, slot_index.dtype)
+    )
+    local_right_slot = jnp.compress(
+        to_share_right, slot_index, axis=0, size=max_values_to_share, fill_value=jnp.asarray(-1, slot_index.dtype)
+    )
 
-    conf_sg = jax.tree_util.tree_map(jax.lax.stop_gradient, conf)
+    missing_key = jnp.asarray(conf.mesh_size, dtype=jnp.int32)
+    local_left_keys = jnp.where(local_left_slot >= 0, pmid_to_idx(local_left_pmid, conf), missing_key)
+    local_right_keys = jnp.where(local_right_slot >= 0, pmid_to_idx(local_right_pmid, conf), missing_key)
 
-    pmid_sg = jax.lax.stop_gradient(pmid)
-    disp_sg = jax.lax.stop_gradient(disp)
-    particle_indices_sg = jax.lax.stop_gradient(particle_indices)
+    incoming_idx_left = jnp.where(incoming_valid_left, pmid_to_idx(incoming_pmid_left, conf), -1)
+    incoming_idx_right = jnp.where(incoming_valid_right, pmid_to_idx(incoming_pmid_right, conf), -1)
 
-    halo_start = conf_sg.halo_start[gpu_id]
-    halo_end = conf_sg.halo_end[gpu_id]
-    global_nMesh = conf_sg.nMesh
+    sorted_left_order = jnp.argsort(local_left_keys)
+    sorted_left_keys = local_left_keys[sorted_left_order]
+    sorted_left_slots = local_left_slot[sorted_left_order]
+
+    matching_left = jnp.searchsorted(sorted_left_keys, incoming_idx_left)
+    matching_left = jnp.clip(matching_left, 0, sorted_left_keys.shape[0] - 1)
+    update_indices_left = sorted_left_slots[matching_left]
+    match_left = incoming_valid_left & (sorted_left_keys[matching_left] == incoming_idx_left) & (update_indices_left >= 0)
+    update_indices_left = jnp.where(match_left, update_indices_left, 0)
+
+    sorted_right_order = jnp.argsort(local_right_keys)
+    sorted_right_keys = local_right_keys[sorted_right_order]
+    sorted_right_slots = local_right_slot[sorted_right_order]
+
+    matching_right = jnp.searchsorted(sorted_right_keys, incoming_idx_right)
+    matching_right = jnp.clip(matching_right, 0, sorted_right_keys.shape[0] - 1)
+    update_indices_right = sorted_right_slots[matching_right]
+    match_right = incoming_valid_right & (sorted_right_keys[matching_right] == incoming_idx_right) & (update_indices_right >= 0)
+    update_indices_right = jnp.where(match_right, update_indices_right, 0)
+
+    to_share_left_src = jnp.compress(
+        to_share_left,
+        slot_index,
+        axis=0,
+        size=max_values_to_share,
+        fill_value=jnp.asarray(0, slot_index.dtype),
+    )
+    to_share_right_src = jnp.compress(
+        to_share_right,
+        slot_index,
+        axis=0,
+        size=max_values_to_share,
+        fill_value=jnp.asarray(0, slot_index.dtype),
+    )
+
+    return (
+        update_indices_left,
+        match_left,
+        update_indices_right,
+        match_right,
+        to_share_left_src,
+        to_share_right_src,
+    )
+
+
+def _apply_exchange(val_in, pmid, disp, unused_index, conf, gpu_id, return_routing=False):
+    """Forward halo exchange for gathered values on duplicated particle slots."""
+    halo_start = conf.halo_start[gpu_id]
+    halo_end = conf.halo_end[gpu_id]
+    global_nMesh = conf.nMesh
     halo_start_fix = [halo_start[0], (halo_start[1] - 1) % global_nMesh]
-    max_values_to_share = conf_sg.max_share_gather_ptcl
+    max_values_to_share = conf.max_share_gather_ptcl
 
-    # dummy_mask = jnp.all(pos == 0.0, axis=1)
-    dummy_mask = particle_indices_sg == -1
-    x_mod = (pmid_sg[:, 0] + disp_sg[:, 0] * conf_sg.disp_size) % global_nMesh
+    dummy_mask = unused_index
+    x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % global_nMesh
 
-    val = jnp.where(dummy_mask, jnp.asarray(0, val.dtype), val)
+    val = jnp.where(dummy_mask, jnp.asarray(0, val_in.dtype), val_in)
 
     to_share_left = Particles.particles_in_slice_mask(x_mod, *halo_start_fix) & ~dummy_mask
     to_share_right = Particles.particles_in_slice_mask(x_mod, *halo_end) & ~dummy_mask
@@ -78,28 +130,122 @@ def _gather_mGPU(pmid, disp, particle_indices, conf, mesh, offset):
         operand=None
     )
 
-    to_share_left_idx = jnp.compress(to_share_left, particle_indices_sg, axis=0, size=max_values_to_share,
-                                     fill_value=-1)
-    to_share_right_idx = jnp.compress(to_share_right, particle_indices_sg, axis=0, size=max_values_to_share,
-                                      fill_value=-1)
+    to_share_left_pmid = jnp.compress(to_share_left, pmid, axis=0, size=max_values_to_share, fill_value=0)
+    to_share_right_pmid = jnp.compress(to_share_right, pmid, axis=0, size=max_values_to_share, fill_value=0)
+    to_share_left_valid = jnp.compress(
+        to_share_left, ~dummy_mask, axis=0, size=max_values_to_share, fill_value=False
+    )
+    to_share_right_valid = jnp.compress(
+        to_share_right, ~dummy_mask, axis=0, size=max_values_to_share, fill_value=False
+    )
 
     to_share_left_val = jnp.compress(to_share_left, val, axis=0, size=max_values_to_share, fill_value=0)
     to_share_right_val = jnp.compress(to_share_right, val, axis=0, size=max_values_to_share, fill_value=0)
 
-    incoming_idx_left, incoming_from_left_val = jax.lax.ppermute(
-        (to_share_right_idx, to_share_right_val), axis_name=AXIS_NAME, perm=conf.right_perm)
-    incoming_idx_right, incoming_from_right_val = jax.lax.ppermute(
-        (to_share_left_idx, to_share_left_val), axis_name=AXIS_NAME, perm=conf.left_perm)
+    incoming_pmid_left, incoming_from_left_val, incoming_valid_left = jax.lax.ppermute(
+        (to_share_right_pmid, to_share_right_val, to_share_right_valid), axis_name=AXIS_NAME, perm=conf.right_perm)
+    incoming_pmid_right, incoming_from_right_val, incoming_valid_right = jax.lax.ppermute(
+        (to_share_left_pmid, to_share_left_val, to_share_left_valid), axis_name=AXIS_NAME, perm=conf.left_perm)
 
-    sorted_local_positions, sorted_local_indices = jnp.sort(particle_indices_sg), jnp.argsort(particle_indices_sg)
-    matching_indices_sorted = jnp.searchsorted(sorted_local_positions, incoming_idx_left)
-    update_indices_left = sorted_local_indices[matching_indices_sorted]
-    matching_indices_sorted = jnp.searchsorted(sorted_local_positions, incoming_idx_right)
-    update_indices_right = sorted_local_indices[matching_indices_sorted]
+    (
+        update_indices_left,
+        match_left,
+        update_indices_right,
+        match_right,
+        to_share_left_src,
+        to_share_right_src,
+    ) = _match_exchange_routing(
+        to_share_left,
+        to_share_right,
+        pmid,
+        conf,
+        incoming_pmid_left,
+        incoming_valid_left,
+        incoming_pmid_right,
+        incoming_valid_right,
+        max_values_to_share,
+    )
 
-    val = val.at[update_indices_left].add(incoming_from_left_val)
-    val = val.at[update_indices_right].add(incoming_from_right_val)
-    return val, check_fraction_and_share, jnp.maximum(jnp.sum(to_share_right), jnp.sum(to_share_left))
+    val = val.at[update_indices_left].add(incoming_from_left_val * match_left.astype(val.dtype))
+    val = val.at[update_indices_right].add(incoming_from_right_val * match_right.astype(val.dtype))
+    if return_routing:
+        return val, (
+            update_indices_left,
+            match_left,
+            update_indices_right,
+            match_right,
+            to_share_left_src,
+            to_share_left_valid,
+            to_share_right_src,
+            to_share_right_valid,
+        )
+    return val
+
+
+def _apply_exchange_bwd_from_routing(val_cot_in, routing, unused_index, conf):
+    """Transpose the forward halo exchange using routing saved during forward."""
+    (
+        update_indices_left,
+        match_left,
+        update_indices_right,
+        match_right,
+        to_share_left_src,
+        to_share_left_valid,
+        to_share_right_src,
+        to_share_right_valid,
+    ) = routing
+    dummy_mask = unused_index
+    val_cot = jnp.where(dummy_mask, jnp.asarray(0, val_cot_in.dtype), val_cot_in)
+
+    incoming_from_left_cot = val_cot[update_indices_left] * match_left.astype(val_cot.dtype)
+    incoming_from_right_cot = val_cot[update_indices_right] * match_right.astype(val_cot.dtype)
+
+    to_share_right_cot = jax.lax.ppermute(
+        incoming_from_left_cot,
+        axis_name=AXIS_NAME,
+        perm=conf.left_perm,
+    )
+    to_share_left_cot = jax.lax.ppermute(
+        incoming_from_right_cot,
+        axis_name=AXIS_NAME,
+        perm=conf.right_perm,
+    )
+
+    val_cot = val_cot.at[to_share_left_src].add(to_share_left_cot * to_share_left_valid.astype(val_cot.dtype))
+    val_cot = val_cot.at[to_share_right_src].add(to_share_right_cot * to_share_right_valid.astype(val_cot.dtype))
+
+    return jnp.where(dummy_mask, jnp.asarray(0, val_cot.dtype), val_cot)
+
+
+@partial(custom_vjp, nondiff_argnums=(3,))
+def _gather_mGPU(pmid, disp, unused_index, conf, mesh):
+    gpu_id = jax.lax.axis_index(AXIS_NAME)
+    offset = conf.scatter_offsets[gpu_id]
+
+    val = _gather(pmid, disp, conf, mesh, 0, offset, None)
+    return _apply_exchange(val, pmid, disp, unused_index, conf, gpu_id)
+
+
+def _gather_mGPU_fwd(pmid, disp, unused_index, conf, mesh):
+    gpu_id = jax.lax.axis_index(AXIS_NAME)
+    offset = conf.scatter_offsets[gpu_id]
+
+    val = _gather(pmid, disp, conf, mesh, 0, offset, None)
+    val, routing = _apply_exchange(val, pmid, disp, unused_index, conf, gpu_id, return_routing=True)
+    return val, (pmid, disp, unused_index, mesh, routing)
+
+
+def _gather_mGPU_bwd(conf, res, val_cot):
+    pmid, disp, unused_index, mesh, routing = res
+    gpu_id = jax.lax.axis_index(AXIS_NAME)
+    offset = conf.scatter_offsets[gpu_id]
+    local_val_cot = _apply_exchange_bwd_from_routing(val_cot, routing, unused_index, conf)
+
+    _, disp_cot, _, mesh_cot, _, _, _ = _gather_bwd((pmid, disp, conf, mesh, offset, None), local_val_cot)
+    return None, disp_cot, None, mesh_cot
+
+
+_gather_mGPU.defvjp(_gather_mGPU_fwd, _gather_mGPU_bwd)
 
 
 def gather(ptcl, conf, mesh):
@@ -123,9 +269,19 @@ def gather(ptcl, conf, mesh):
     val : jax.Array
         Output values.
 
-    """
-    return conf.mGPU_gather(ptcl.pmid, ptcl.disp, ptcl.idx, conf, mesh, conf.scatter_offsets)[0]
+    Notes
+    -----
+    On the mGPU path the output is defined on the duplicated particle-slot state,
+    including halo copies. Comparisons against PMWD's unique-particle state should
+    therefore map values to unique particles, and should sum PMPP ``disp``
+    cotangents across duplicate halo slots.
 
+    """
+    pmid = jax.lax.stop_gradient(ptcl.pmid)
+    disp = ptcl.disp
+    unused_index = jax.lax.stop_gradient(ptcl.unused_index)
+
+    return conf.mGPU_gather(pmid, disp, unused_index, conf, mesh)
 
 @custom_vjp
 def _gather(pmid, disp, conf, mesh, val, offset, cell_size):
@@ -139,17 +295,18 @@ def _gather(pmid, disp, conf, mesh, val, offset, cell_size):
         raise ValueError('channel shape mismatch: '
                          f'{mesh.shape[spatial_ndim:]} != {val.shape[1:]}')
 
+    carry = mesh, offset, cell_size, conf.cell_size, conf.mesh_shape
+    if conf.chunk_size is None or conf.chunk_size >= ptcl_num:
+        return _gather_chunk(carry, (pmid, disp, val))[1]
+
     remainder, chunks = _chunk_split(ptcl_num, conf.chunk_size, pmid, disp, val)
 
-    carry = mesh, offset, cell_size, conf.cell_size, conf.mesh_shape
     val_0 = None
     if remainder is not None:
         val_0 = _gather_chunk(carry, remainder)[1]
     val = scan(_gather_chunk, carry, chunks)[1]
 
-    val = _chunk_cat(val_0, val)
-
-    return val
+    return _chunk_cat(val_0, val)
 
 
 def _gather_chunk(carry, chunk):
@@ -228,16 +385,20 @@ def _gather_bwd(res, val_cot):
     mesh = jnp.asarray(mesh, dtype=conf.float_dtype)
     mesh_cot = jnp.zeros_like(mesh)
 
-    remainder, chunks = _chunk_split(ptcl_num, conf.chunk_size, pmid, disp, val_cot)
-
     carry = mesh, mesh_cot, offset, cell_size, conf.cell_size, conf.mesh_shape
-    disp_cot_0 = None
-    if remainder is not None:
-        carry, disp_cot_0 = _gather_chunk_adj(carry, remainder)
-    carry, disp_cot = scan(_gather_chunk_adj, carry, chunks)
-    mesh_cot = carry[1]
+    if conf.chunk_size is None or conf.chunk_size >= ptcl_num:
+        carry, disp_cot = _gather_chunk_adj(carry, (pmid, disp, val_cot))
+        mesh_cot = carry[1]
+    else:
+        remainder, chunks = _chunk_split(ptcl_num, conf.chunk_size, pmid, disp, val_cot)
 
-    disp_cot = _chunk_cat(disp_cot_0, disp_cot)
+        disp_cot_0 = None
+        if remainder is not None:
+            carry, disp_cot_0 = _gather_chunk_adj(carry, remainder)
+        carry, disp_cot = scan(_gather_chunk_adj, carry, chunks)
+        mesh_cot = carry[1]
+
+        disp_cot = _chunk_cat(disp_cot_0, disp_cot)
 
     return None, disp_cot, None, mesh_cot, None, None, None
 

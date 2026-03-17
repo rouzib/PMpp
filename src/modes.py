@@ -139,6 +139,7 @@ def linear_modes(modes, cosmo, conf, a=None, real=False):
 
     if jnp.isrealobj(modes):
         modes = conf.mGPU_rfftn(modes)
+        modes *= _fft_norm(s=jnp.array(conf.ptcl_grid_shape, dtype=modes.dtype), func_name="rfftn", norm="ortho")
 
     modes *= _safe_sqrt(Plin * conf.box_vol)
 

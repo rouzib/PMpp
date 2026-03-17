@@ -207,7 +207,26 @@ def distribute_array_on_gpus(array: Array, compute_mesh: Mesh, partition: P) -> 
 
 
 def is_float0_array(x):
-    return isinstance(x, np.ndarray) and x.dtype == float0
+    return hasattr(x, 'dtype') and x.dtype == float0
+
+
+def pmid_to_idx(pmid, conf, unused_index=None, dtype=jnp.int32):
+    """Pack mesh-index triplets into the legacy flat particle key when required.
+
+    This intentionally defaults to ``int32`` to match the removed ``Particles.idx``
+    field exactly. Larger dtypes can still be requested explicitly by callers.
+    """
+    mesh_shape = jnp.array(conf.mesh_shape, dtype=dtype)
+    ix = (pmid[:, 0].astype(dtype)) % mesh_shape[0]
+    iy = (pmid[:, 1].astype(dtype)) % mesh_shape[1]
+    iz = (pmid[:, 2].astype(dtype)) % mesh_shape[2]
+
+    idx = (ix * mesh_shape[1] + iy) * mesh_shape[2] + iz
+
+    if unused_index is not None:
+        idx = jnp.where(unused_index, dtype(-1), idx)
+
+    return idx
 
 
 def build_ring_permutations(num_devices):

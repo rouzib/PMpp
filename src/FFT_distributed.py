@@ -179,7 +179,7 @@ def _irfftn_second_pass(x):
     return jnp.fft.irfftn(x, axes=[1, 2])
 
 
-def create_ffts(compute_mesh: Mesh, max_n: int) -> Tuple[Callable, Callable, Callable, Callable]:
+def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Callable]:
     """
     Create a set of Fourrier Transform functions that distribute computation across a provided compute mesh (a logical
     grouping of devices for parallel computation).  It returns a tuple of functions: `rfftn_jit`, `irfftn_jit`, `fftn_jit`,
@@ -187,7 +187,6 @@ def create_ffts(compute_mesh: Mesh, max_n: int) -> Tuple[Callable, Callable, Cal
 
     Args:
         compute_mesh (Mesh): The compute mesh defining the layout of devices for parallel computation.
-        max_n (int): The maximum size of elements along the largest dimensions of the input arrays.
 
     Returns:
         tuple: The forward and inverse FFT functions including real and complex variants. These functions are JIT
@@ -292,34 +291,24 @@ def create_ffts(compute_mesh: Mesh, max_n: int) -> Tuple[Callable, Callable, Cal
         """ Forward pass for custom VJP of real-valued inverse FFT """
         return _irfftn_jit(x), x.shape
 
-    def create_mask(n, is_odd, dtype):
-        # Create a large enough static mask
-        assert n <= max_n, f"max_n provided ({max_n}) is not big enough for array size of {n}."
-        mask = jnp.ones(max_n, dtype=dtype)
-        mask = mask.at[1:max_n - 1].set(2.0)  # Set the middle values to 2.0
-        mask = mask.at[max_n - 1].set(1.0 - is_odd)  # Adjust the last value based on odd/even
-        return mask[:n]  # Slice the mask to the desired size dynamically
-
     def irfftn_bwd(res, g):
         """ Backward pass for custom VJP of real-valued inverse FFT """
-        fft_lengths = jnp.array(g.shape)
-        dtype = g.dtype
+        real_shape = g.shape
         # Compute the RFFT of the gradient (changes the size of g)
         g = _rfftn_jit(g).conj()  # jnp.fft.rfftn(g) # _rfftn_jit(g)
         # Apply the scaling factor and mask
         n = g.shape[-1]
-        is_odd = fft_lengths[-1] % 2
+        is_even = (real_shape[-1] % 2 == 0)
 
-        # for jax.jit computation, the mask needs to be static. The commented code is more intuitive, but dynamic
-        """full = partial(lax.full_like, g, dtype=x.dtype)
-        mask = lax.concatenate(
-            [full(1.0, shape=(1,)),
-             full(2.0, shape=(n - 2 + is_odd,)),
-             full(1.0, shape=(1 - is_odd,))],
-            dimension=0)"""
-        mask = create_mask(n, is_odd, dtype)
+        # The FFT shape is static under JIT, so the Hermitian weighting can be built
+        # directly without padding to an external max size.
+        mask = jnp.ones((n,), dtype=g.real.dtype)
+        if n > 1:
+            mask = mask.at[1:].set(2.0)
+            if is_even:
+                mask = mask.at[n - 1].set(1.0)
 
-        scale = 1 / jnp.prod(fft_lengths, dtype=dtype)
+        scale = jnp.asarray(1 / np.prod(real_shape), dtype=g.real.dtype)
         out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
         return (out,)
 
