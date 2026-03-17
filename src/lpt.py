@@ -10,7 +10,7 @@ from .fft import fftinv, fftfwd, fftfreq
 from .gravity import laplace, neg_grad
 from .growth import growth
 from .particles import Particles
-from .utils import AXIS_NAME, pmid_to_idx
+from .utils import AXIS_NAME
 
 
 def _strain(kvec, i, j, pot, conf):
@@ -135,7 +135,16 @@ def lpt(modes, cosmo, conf):
     ptcl = Particles.gen_grid(conf, vel=True)
     disp = ptcl.disp
     vel = ptcl.vel
-    ptcl_idx = pmid_to_idx(ptcl.pmid, conf, ptcl.unused_index)
+    ptcl_grid_shape = jnp.array(conf.ptcl_grid_shape, dtype=jnp.int32)
+    ptcl_grid_coord = jnp.rint(
+        (ptcl.pmid.astype(conf.float_dtype) * conf.cell_size + ptcl.disp) / conf.ptcl_spacing
+    ).astype(jnp.int32)
+    ptcl_grid_coord %= ptcl_grid_shape
+    ptcl_idx = (
+        (ptcl_grid_coord[:, 0] * ptcl_grid_shape[1] + ptcl_grid_coord[:, 1]) * ptcl_grid_shape[2]
+        + ptcl_grid_coord[:, 2]
+    )
+    ptcl_idx = jnp.where(ptcl.unused_index, jnp.int32(-1), ptcl_idx)
     valid_slots = ~ptcl.unused_index
 
     for order in range(1, 1 + conf.lpt_order):

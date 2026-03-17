@@ -41,7 +41,6 @@ def _apply_exchange(val_in, pmid_sg, disp_sg, unused_index_sg, conf_sg, gpu_id):
     halo_start = conf_sg.halo_start[gpu_id]
     halo_end = conf_sg.halo_end[gpu_id]
     global_nMesh = conf_sg.nMesh
-    halo_start_fix = [halo_start[0], (halo_start[1] - 1) % global_nMesh]
     max_values_to_share = conf_sg.max_share_gather_ptcl
 
     # masks (ints/bools, forward-only)
@@ -50,7 +49,7 @@ def _apply_exchange(val_in, pmid_sg, disp_sg, unused_index_sg, conf_sg, gpu_id):
 
     val = jnp.where(dummy_mask, jnp.asarray(0, val_in.dtype), val_in)
 
-    to_share_left = Particles.particles_in_slice_mask(x_mod, *halo_start_fix) & ~dummy_mask
+    to_share_left = Particles.particles_in_slice_mask(x_mod, *halo_start) & ~dummy_mask
     to_share_right = Particles.particles_in_slice_mask(x_mod, *halo_end) & ~dummy_mask
 
     # diagnostics (forward-only side effect)

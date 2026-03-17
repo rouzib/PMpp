@@ -18,11 +18,10 @@ def reduce_grad_across_gpus(disp_cot, pmid, disp, valid_mask, conf):
     halo_start = conf.halo_start[gpu_id]
     halo_end = conf.halo_end[gpu_id]
     global_nmesh = conf.nMesh
-    halo_start_fix = [halo_start[0], (halo_start[1] - 1) % global_nmesh]
     max_values_to_share = conf.max_share_gather_ptcl
 
     x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % global_nmesh
-    to_share_left = Particles.particles_in_slice_mask(x_mod, *halo_start_fix) & valid_mask
+    to_share_left = Particles.particles_in_slice_mask(x_mod, *halo_start) & valid_mask
     to_share_right = Particles.particles_in_slice_mask(x_mod, *halo_end) & valid_mask
 
     check_fraction_and_share = (

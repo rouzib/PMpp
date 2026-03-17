@@ -299,8 +299,7 @@ class Particles:
         unused_index = unused_index.at[0].set(False)
         # unused_index = (indices == -1)
         x_mod = (pmid_sliced[:, 0] + disp_sliced[:, 0] * conf.disp_size) % conf.nMesh
-        temp = [conf.halo_start[gpu_id, 0], (conf.halo_start[gpu_id, 1] - 1) % conf.nMesh]
-        halo_mask = Particles.compute_halo_mask(x_mod, temp,
+        halo_mask = Particles.compute_halo_mask(x_mod, conf.halo_start[gpu_id],
                                                 conf.halo_end[gpu_id], unused_index)
 
         unused_index.astype(jnp.bool)
@@ -527,7 +526,7 @@ class Particles:
             pmid, disp = [], []
 
             sp = conf.ptcl_grid_shape[0]
-            sm = conf.local_mesh_shape[0] + conf.mesh_shape[0] / sp
+            sm = conf.local_mesh_shape[0] + conf.ptcl_halo_width
             n_devices = conf.num_devices
             n_ptcl = sp // n_devices + 1
             pmid_x = jnp.linspace(0, sm, num=n_ptcl, endpoint=False)
@@ -539,7 +538,7 @@ class Particles:
             disp_x *= conf.cell_size / sp
             disp_x = disp_x.astype(conf.float_dtype)
 
-            pmid_x = pmid_x + offset - 1
+            pmid_x = pmid_x + offset - conf.ptcl_halo_width
             pmid_x = jnp.mod(pmid_x, conf.mesh_shape[0])
 
             pmid.append(pmid_x)
@@ -569,9 +568,7 @@ class Particles:
                            n_ptcl * sp * sp:].set(True)
 
             x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % conf.nMesh
-            temp = [conf.halo_start[gpu_id, 0], (conf.halo_start[gpu_id, 1] - 1) % conf.nMesh]
-
-            halo_mask = Particles.compute_halo_mask(x_mod, temp,
+            halo_mask = Particles.compute_halo_mask(x_mod, conf.halo_start[gpu_id],
                                                     conf.halo_end[gpu_id], unused_index)
             # print(pmid[halo_mask])
 
@@ -803,7 +800,7 @@ class Particles:
     @staticmethod
     def move_particles_shard_map(pmid, disp, vel, acc, halo_start, halo_end, previous_halo_mask, unused_indexes,
                                  share_only_right, global_nMesh, max_values_to_share, left_perm, right_perm,
-                                 num_gpus, disp_size):
+                                 num_gpus, disp_size, offsets):
         """
         Finds and processes particles that need to move between GPUs based on their position relative to halo regions.
         This function handles particle sharing and removal to ensure a consistent distribution of particles across GPUs.
@@ -824,19 +821,18 @@ class Particles:
         halo_start = halo_start.squeeze()
         halo_end = halo_end.squeeze()
 
-        halo_start_fix = [halo_start[0], (halo_start[1] - 1) % global_nMesh]
-
         offset = global_nMesh // num_gpus
         # dummy_mask = jnp.all(pmid == 0, axis=1) & jnp.all(disp == 0, axis=1)  # [n_particles], bool
         dummy_mask = unused_indexes
+        owned_start = offsets[jax.lax.axis_index(AXIS_NAME)]
 
         x_mod = (pmid[:, 0] + disp[:, 0] * disp_size) % global_nMesh
 
-        particles_in_halo = Particles.compute_halo_mask(x_mod, halo_start_fix, halo_end, unused_indexes)
+        particles_in_halo = Particles.compute_halo_mask(x_mod, halo_start, halo_end, unused_indexes)
         """diff = particles_in_halo.astype(int) - previous_halo_mask.astype(
             int)  # 1 if entered the halo and should be shared to the other gpus, -1 if particle exited the halo slice
         """
-        in_gpu_slice = Particles.particles_in_slice_mask(x_mod, halo_start_fix[1],
+        in_gpu_slice = Particles.particles_in_slice_mask(x_mod, owned_start,
                                                          halo_end[0])  # in the gpu slice, but not in the halo
 
         exited_halo = previous_halo_mask & ~particles_in_halo  # Particles that exited the halo_slice
@@ -849,15 +845,15 @@ class Particles:
         to_share = entered_halo | to_share_and_remove
 
         to_share_left = to_share & Particles.particles_in_slice_mask(x_mod,
-                                                                     (halo_start_fix[0] - offset) % global_nMesh,
-                                                                     halo_start_fix[1])
-        # jax.debug.print("{x}", x=((halo_start_fix[0] - offset) % global_nMesh, halo_start_fix[1]))
+                                                                     (halo_start[0] - offset) % global_nMesh,
+                                                                     owned_start)
+        # jax.debug.print("{x}", x=((halo_start[0] - offset) % global_nMesh, owned_start))
         to_share_right = to_share & Particles.particles_in_slice_mask(x_mod, halo_end[0],
                                                                       (halo_end[
                                                                            1] + offset) % global_nMesh) & ~share_only_right
 
         """jax.debug.print("[GPU {a}] Halo_start: {x}, Halo_end: {y}.", a=jax.lax.axis_index("gpus"),
-                        x=halo_start_fix, y=halo_end)
+                        x=halo_start, y=halo_end)
 
         def plotting():
             p = (pmid + disp * disp_size) % global_nMesh
@@ -945,7 +941,7 @@ class Particles:
             max_values_to_share * 2)
 
         x_mod = (pmid[:, 0] + disp[:, 0] * disp_size) % global_nMesh
-        previous_halo_mask = Particles.compute_halo_mask(x_mod, halo_start_fix, halo_end, unused_indexes)
+        previous_halo_mask = Particles.compute_halo_mask(x_mod, halo_start, halo_end, unused_indexes)
 
         return pmid, disp, vel, acc, previous_halo_mask, unused_indexes, check_fraction_and_share, jnp.maximum(
             jnp.sum(to_share_right), jnp.sum(to_share_left))
@@ -988,7 +984,8 @@ class Particles:
                        left_perm=conf.left_perm,
                        right_perm=conf.right_perm,
                        num_gpus=conf.num_devices,
-                       disp_size=conf.disp_size)
+                       disp_size=conf.disp_size,
+                       offsets=conf.offsets)
         return shard_map(
             func,
             mesh=conf.compute_mesh,

@@ -168,6 +168,7 @@ class Configuration:
     local_mesh_shape: Tuple[int, ...] = None
 
     # mGPU halos
+    ptcl_halo_width: int = None
     slice_start: List[int] = None
     slice_end: List[int] = None
     halo_start: ArrayLike = None
@@ -270,15 +271,19 @@ class Configuration:
                                    (self.mesh_shape[0] // self.num_devices, self.mesh_shape[1], self.mesh_shape[2]))
 
                 global_nMesh = self.mesh_shape[0]
+                ptcl_halo_width = 0 if self.num_devices == 1 else max(
+                    1,
+                    int(round(self.mesh_shape[0] / self.ptcl_grid_shape[0])),
+                )
+                object.__setattr__(self, "ptcl_halo_width", ptcl_halo_width)
                 slice_start = list(
                     (global_nMesh // self.num_devices * device_idx) % global_nMesh for device_idx in self.devices_index)
                 slice_end = list((global_nMesh // self.num_devices * (device_idx + 1)) % global_nMesh for device_idx in
                                  self.devices_index)
-                halo_size = 0 if self.num_devices == 1 else 1
                 halo_start = list(
-                    [(slice_s - halo_size) % global_nMesh, (slice_s + halo_size) % global_nMesh] for slice_s in
+                    [(slice_s - ptcl_halo_width) % global_nMesh, slice_s] for slice_s in
                     slice_start)
-                halo_end = list([(slice_e - halo_size) % global_nMesh, slice_e] for slice_e in slice_end)
+                halo_end = list([(slice_e - ptcl_halo_width) % global_nMesh, slice_e] for slice_e in slice_end)
                 object.__setattr__(self, "slice_start", jnp.array(halo_start)[:, 0])
                 object.__setattr__(self, "slice_end",
                                    jnp.array(halo_end)[:, 1] if self.num_devices > 1 else jnp.array([global_nMesh]))
@@ -317,6 +322,7 @@ class Configuration:
                 object.__setattr__(self, "mGPU_gather", initialize_mGPU_gather(self))
         else:
             object.__setattr__(self, "local_mesh_shape", self.mesh_shape)
+            object.__setattr__(self, "ptcl_halo_width", 0)
 
         # finalize
         dtype = self.cosmo_dtype
