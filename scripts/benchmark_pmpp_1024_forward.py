@@ -158,7 +158,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--params-file",
         type=Path,
-        default=REPO_ROOT / "cosmo_parameters_uniform_30000.npy",
+        default=REPO_ROOT / "scripts/cosmo_parameters_uniform.npy",
         help="Seed -> cosmology table used by pmpp_1024_maps.py.",
     )
     parser.add_argument("--omega-m", type=float, default=None)
