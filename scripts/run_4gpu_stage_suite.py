@@ -90,9 +90,9 @@ SIZE_PROFILES = {
         "step_num_ptcl": 128,
         "scatter_num_ptcl": 128,
         "gravity_num_ptcl": 128,
-        "nbody_num_ptcl": 128,
-        "forward_smoke_num_ptcl": 256,
-        "forward_large_num_ptcl": 512,
+        "nbody_num_ptcl": 64,
+        "forward_smoke_num_ptcl": 128,
+        "forward_large_num_ptcl": 256,
     },
 }
 
