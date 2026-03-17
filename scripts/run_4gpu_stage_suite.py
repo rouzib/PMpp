@@ -47,21 +47,80 @@ class SuiteCase:
 COMMON_SEED = ("--seed", "0")
 COMMON_4GPU = ("--num-devices", "4")
 MESH_SHAPE_ONE = ("--mesh-shape", "1")
+CASE_NAMES = (
+    "fft_gradients",
+    "modes_pipeline_gradients",
+    "lpt_gradients",
+    "drift_gradients",
+    "kick_gradients",
+    "halo_moving_gradients",
+    "scatter_gradients",
+    "gravity_gradients",
+    "nbody_gradients",
+    "forward_compare_smoke",
+    "forward_compare_large",
+)
+SIZE_PROFILES = {
+    "baseline": {
+        "fft_mesh": 64,
+        "modes_num_ptcl": 8,
+        "lpt_num_ptcl": 8,
+        "step_num_ptcl": 16,
+        "scatter_num_ptcl": 16,
+        "gravity_num_ptcl": 16,
+        "nbody_num_ptcl": 8,
+        "forward_smoke_num_ptcl": 32,
+        "forward_large_num_ptcl": 64,
+    },
+    "large": {
+        "fft_mesh": 128,
+        "modes_num_ptcl": 16,
+        "lpt_num_ptcl": 16,
+        "step_num_ptcl": 32,
+        "scatter_num_ptcl": 32,
+        "gravity_num_ptcl": 32,
+        "nbody_num_ptcl": 32,
+        "forward_smoke_num_ptcl": 64,
+        "forward_large_num_ptcl": 128,
+    },
+    "h100": {
+        "fft_mesh": 512,
+        "modes_num_ptcl": 64,
+        "lpt_num_ptcl": 64,
+        "step_num_ptcl": 128,
+        "scatter_num_ptcl": 128,
+        "gravity_num_ptcl": 128,
+        "nbody_num_ptcl": 128,
+        "forward_smoke_num_ptcl": 256,
+        "forward_large_num_ptcl": 512,
+    },
+}
 
 
-def build_cases() -> dict[str, SuiteCase]:
+def _cap(base: int, num_ptcl: int, scale: int) -> str:
+    return str(max(base, scale * num_ptcl * num_ptcl))
+
+
+def build_cases(size_profile: str) -> dict[str, SuiteCase]:
+    sizes = SIZE_PROFILES[size_profile]
+    step_num_ptcl = sizes["step_num_ptcl"]
+    scatter_num_ptcl = sizes["scatter_num_ptcl"]
+    gravity_num_ptcl = sizes["gravity_num_ptcl"]
+    forward_smoke_num_ptcl = sizes["forward_smoke_num_ptcl"]
+    forward_large_num_ptcl = sizes["forward_large_num_ptcl"]
+
     cases = [
         SuiteCase(
             name="fft_gradients",
             script="scripts/compare_fft_gradients.py",
             description="Distributed FFT forward and gradient parity against JAX reference.",
-            args=("--mesh-size", "64", *COMMON_4GPU),
+            args=("--mesh-size", str(sizes["fft_mesh"]), *COMMON_4GPU),
         ),
         SuiteCase(
             name="modes_pipeline_gradients",
             script="scripts/compare_modes_pipeline_gradients.py",
             description="from_sigma8 -> boltzmann -> white_noise -> linear_modes forward and gradient comparison.",
-            args=("--num-ptcl", "8", *COMMON_SEED, *COMMON_4GPU),
+            args=("--num-ptcl", str(sizes["modes_num_ptcl"]), *COMMON_SEED, *COMMON_4GPU),
         ),
         SuiteCase(
             name="lpt_gradients",
@@ -69,16 +128,16 @@ def build_cases() -> dict[str, SuiteCase]:
             description="Linear modes -> LPT forward and gradient comparison with PMWD.",
             args=(
                 "--num-ptcl",
-                "8",
+                str(sizes["lpt_num_ptcl"]),
                 *COMMON_SEED,
                 *MESH_SHAPE_ONE,
                 *COMMON_4GPU,
                 "--max-ptcl-factor",
                 "2.5",
                 "--max-share-ptcl",
-                "8000",
+                _cap(8000, sizes["lpt_num_ptcl"], 24),
                 "--max-share-gather-ptcl",
-                "16000",
+                _cap(16000, sizes["lpt_num_ptcl"], 48),
             ),
         ),
         SuiteCase(
@@ -87,15 +146,15 @@ def build_cases() -> dict[str, SuiteCase]:
             description="Drift forward and adjoint parity on a constructed particle-crossing state.",
             args=(
                 "--num-ptcl",
-                "16",
+                str(step_num_ptcl),
                 *MESH_SHAPE_ONE,
                 *COMMON_4GPU,
                 "--max-ptcl-factor",
                 "2.0",
                 "--max-share-ptcl",
-                "256",
+                _cap(256, step_num_ptcl, 2),
                 "--max-share-gather-ptcl",
-                "1024",
+                _cap(1024, step_num_ptcl, 8),
             ),
         ),
         SuiteCase(
@@ -104,15 +163,15 @@ def build_cases() -> dict[str, SuiteCase]:
             description="Kick forward and adjoint parity against PMWD.",
             args=(
                 "--num-ptcl",
-                "16",
+                str(step_num_ptcl),
                 *MESH_SHAPE_ONE,
                 *COMMON_4GPU,
                 "--max-ptcl-factor",
                 "2.0",
                 "--max-share-ptcl",
-                "256",
+                _cap(256, step_num_ptcl, 2),
                 "--max-share-gather-ptcl",
-                "1024",
+                _cap(1024, step_num_ptcl, 8),
             ),
         ),
         SuiteCase(
@@ -121,15 +180,15 @@ def build_cases() -> dict[str, SuiteCase]:
             description="True halo-move VJP versus legacy replay on forced crossings.",
             args=(
                 "--num-ptcl",
-                "16",
+                str(step_num_ptcl),
                 *MESH_SHAPE_ONE,
                 *COMMON_4GPU,
                 "--max-ptcl-factor",
                 "2.5",
                 "--max-share-ptcl",
-                "256",
+                _cap(256, step_num_ptcl, 2),
                 "--max-share-gather-ptcl",
-                "1024",
+                _cap(1024, step_num_ptcl, 8),
             ),
         ),
         SuiteCase(
@@ -138,16 +197,16 @@ def build_cases() -> dict[str, SuiteCase]:
             description="Scatter gradient parity with residual projections.",
             args=(
                 "--num-ptcl",
-                "16",
+                str(scatter_num_ptcl),
                 *COMMON_SEED,
                 *MESH_SHAPE_ONE,
                 *COMMON_4GPU,
                 "--max-ptcl-factor",
                 "1.5",
                 "--max-share-ptcl",
-                "20000",
+                _cap(20000, scatter_num_ptcl, 6),
                 "--max-share-gather-ptcl",
-                "50000",
+                _cap(50000, scatter_num_ptcl, 18),
             ),
         ),
         SuiteCase(
@@ -156,16 +215,16 @@ def build_cases() -> dict[str, SuiteCase]:
             description="Gravity forward and disp-gradient parity. This indirectly exercises gather on 4 GPUs.",
             args=(
                 "--num-ptcl",
-                "16",
+                str(gravity_num_ptcl),
                 *COMMON_SEED,
                 *MESH_SHAPE_ONE,
                 *COMMON_4GPU,
                 "--max-ptcl-factor",
                 "1.5",
                 "--max-share-ptcl",
-                "20000",
+                _cap(20000, gravity_num_ptcl, 6),
                 "--max-share-gather-ptcl",
-                "50000",
+                _cap(50000, gravity_num_ptcl, 18),
             ),
         ),
         SuiteCase(
@@ -174,7 +233,7 @@ def build_cases() -> dict[str, SuiteCase]:
             description="End-to-end N-body forward and gradient parity against PMWD.",
             args=(
                 "--num-ptcl",
-                "8",
+                str(sizes["nbody_num_ptcl"]),
                 "--target-seed",
                 "0",
                 "--seed",
@@ -190,9 +249,9 @@ def build_cases() -> dict[str, SuiteCase]:
                 "--max-ptcl-factor",
                 "2.5",
                 "--max-share-ptcl",
-                "12000",
+                _cap(12000, sizes["nbody_num_ptcl"], 40),
                 "--max-share-gather-ptcl",
-                "30000",
+                _cap(30000, sizes["nbody_num_ptcl"], 120),
             ),
         ),
         SuiteCase(
@@ -201,16 +260,16 @@ def build_cases() -> dict[str, SuiteCase]:
             description="Forward-only PMWD/PMPP comparison with projection plots and layout overlays.",
             args=(
                 "--num-ptcl",
-                "32",
+                str(forward_smoke_num_ptcl),
                 *COMMON_SEED,
                 *MESH_SHAPE_ONE,
                 *COMMON_4GPU,
                 "--max-ptcl-factor",
                 "1.75",
                 "--max-share-ptcl",
-                "20000",
+                _cap(20000, forward_smoke_num_ptcl, 8),
                 "--max-share-gather-ptcl",
-                "60000",
+                _cap(60000, forward_smoke_num_ptcl, 24),
             ),
         ),
         SuiteCase(
@@ -219,23 +278,23 @@ def build_cases() -> dict[str, SuiteCase]:
             description="Larger forward-only PMWD/PMPP comparison for 4-GPU stress.",
             args=(
                 "--num-ptcl",
-                "64",
+                str(forward_large_num_ptcl),
                 *COMMON_SEED,
                 *MESH_SHAPE_ONE,
                 *COMMON_4GPU,
                 "--max-ptcl-factor",
                 "1.75",
                 "--max-share-ptcl",
-                "50000",
+                _cap(50000, forward_large_num_ptcl, 8),
                 "--max-share-gather-ptcl",
-                "120000",
+                _cap(120000, forward_large_num_ptcl, 24),
             ),
         ),
     ]
     return {case.name: case for case in cases}
 
 
-CASES = build_cases()
+CASES = build_cases("baseline")
 SUITES = {
     "core": [
         "fft_gradients",
@@ -267,10 +326,11 @@ SUITES = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=tuple(SUITES), default="full")
-    parser.add_argument("--case", choices=tuple(CASES), default=None)
+    parser.add_argument("--case", choices=CASE_NAMES, default=None)
     parser.add_argument("--list-cases", action="store_true")
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--num-devices", type=int, default=4)
+    parser.add_argument("--size-profile", choices=tuple(SIZE_PROFILES), default="h100")
     parser.add_argument("--output-dir", type=Path, default=None)
     return parser.parse_args()
 
@@ -387,15 +447,23 @@ def run_one_case(case: SuiteCase, python_executable: str, num_devices: int, outp
     }
 
 
-def manifest_payload(case_names: list[str], python_executable: str, num_devices: int, output_root: Path) -> dict[str, object]:
+def manifest_payload(
+    case_names: list[str],
+    cases: dict[str, SuiteCase],
+    size_profile: str,
+    python_executable: str,
+    num_devices: int,
+    output_root: Path,
+) -> dict[str, object]:
     payload = {
         "suite_cases": [],
+        "size_profile": size_profile,
         "python": python_executable,
         "num_devices": num_devices,
         "output_dir": str(output_root),
     }
     for name in case_names:
-        case = CASES[name]
+        case = cases[name]
         case_dir = output_root / case.name
         payload["suite_cases"].append(
             {
@@ -408,6 +476,7 @@ def manifest_payload(case_names: list[str], python_executable: str, num_devices:
 
 def main() -> int:
     args = parse_args()
+    cases = build_cases(args.size_profile)
 
     if args.list_cases:
         for suite_name, case_names in SUITES.items():
@@ -422,20 +491,24 @@ def main() -> int:
     case_names = [args.case] if args.case else SUITES[args.suite]
 
     write_json(output_root / "env.json", collect_env_report(args.num_devices, args.python))
-    write_json(output_root / "suite_manifest.json", manifest_payload(case_names, args.python, args.num_devices, output_root))
+    write_json(
+        output_root / "suite_manifest.json",
+        manifest_payload(case_names, cases, args.size_profile, args.python, args.num_devices, output_root),
+    )
 
     summary = {
         "suite": args.suite if args.case is None else None,
         "case": args.case,
         "python": args.python,
         "num_devices": args.num_devices,
+        "size_profile": args.size_profile,
         "output_dir": str(output_root),
         "cases": [],
     }
 
     exit_code = 0
     for case_name in case_names:
-        case = CASES[case_name]
+        case = cases[case_name]
         print(f"[RUN] {case.name}")
         result = run_one_case(case, args.python, args.num_devices, output_root)
         summary["cases"].append(result)
