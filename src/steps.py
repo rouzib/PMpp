@@ -1,10 +1,11 @@
 import jax
 from jax import vjp, value_and_grad
 import jax.numpy as jnp
+from jax.tree_util import tree_map
 
 from .configuration import Configuration
 from .cosmo import E2, H_deriv
-from .gravity import gravity, duplicate_slot_counts
+from .gravity import gravity, duplicate_slot_counts, reduce_duplicate_slot_cot
 from .growth import growth
 from .particles import Particles
 
@@ -171,10 +172,24 @@ def force_adj(a, ptcl, ptcl_cot, cosmo, conf):
     ptcl = ptcl.replace(acc=acc)
 
     # particle and cosmology vjp
-    _, ptcl_cot_force, cosmo_cot_force, _ = gravity_vjp(ptcl_cot.vel)
+    acc_out_cot = ptcl_cot.vel
+    _, ptcl_cot_force, _, _ = gravity_vjp(acc_out_cot)
     counts = duplicate_slot_counts(ptcl, conf).astype(ptcl_cot_force.disp.dtype)
     acc_cot = jnp.where(counts != 0, ptcl_cot_force.disp / counts, 0)
     ptcl_cot = ptcl_cot.replace(acc=acc_cot)
+
+    # Gravity only depends on cosmology through Omega_m, and the dependence is linear.
+    # Compute this cotangent analytically after reducing duplicated halo-slot cotangents.
+    acc_out_cot = reduce_duplicate_slot_cot(ptcl, acc_out_cot, conf).astype(acc.dtype)
+    acc_out_cot = jnp.where(counts != 0, acc_out_cot / counts, 0)
+    omega_scale = cosmo.Omega_m.astype(acc.dtype)
+    omega_cot = jnp.where(
+        omega_scale != 0,
+        jnp.sum(acc_out_cot * acc) / omega_scale,
+        jnp.asarray(0, dtype=acc.dtype),
+    ).astype(cosmo.Omega_m.dtype)
+    cosmo_cot_force = tree_map(lambda x: jnp.zeros_like(x) if x is not None else None, cosmo)
+    cosmo_cot_force = cosmo_cot_force.replace(Omega_m=omega_cot)
 
     return ptcl, ptcl_cot, cosmo_cot_force
 

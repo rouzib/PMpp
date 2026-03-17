@@ -136,6 +136,12 @@ def _reduce_gather_disp_cot(pmid, disp, unused_index, disp_cot, conf: Configurat
     return reduce_local(disp_cot, pmid, unused_index, disp, conf)
 
 
+def reduce_duplicate_slot_cot(ptcl, cot, conf: Configuration):
+    """Sum cotangents across halo-duplicated slots for one particle field."""
+    unused_index = None if ptcl.unused_index is None else ptcl.unused_index
+    return _reduce_gather_disp_cot(ptcl.pmid, ptcl.disp, unused_index, cot, conf)
+
+
 @partial(custom_vjp, nondiff_argnums=(3,))
 def _gather_disp_with_duplicate_reduction(pmid, disp, unused_index, conf):
     return disp

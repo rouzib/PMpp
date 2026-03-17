@@ -364,14 +364,12 @@ class Configuration:
     @property
     def mesh_size(self):
         """Number of mesh grid points."""
-        with jax.ensure_compile_time_eval():
-            return jnp.array(self.mesh_shape).prod().item()
+        return math.prod(self.mesh_shape)
 
     @property
     def local_mesh_size(self):
         """Number of mesh grid points."""
-        with jax.ensure_compile_time_eval():
-            return jnp.array(self.local_mesh_shape).prod().item()
+        return math.prod(self.local_mesh_shape)
 
     @property
     def V(self):
