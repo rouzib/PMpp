@@ -7,7 +7,14 @@ from jax.tree_util import tree_map
 from jax.sharding import PartitionSpec as P, NamedSharding
 
 from .scatter import scatter
-from .steps import force, integrate, force_adj, integrate_adj
+from .steps import (
+    force,
+    integrate,
+    force_adj,
+    integrate_adj,
+    partition_duplicate_slot_cot,
+    duplicate_partitioned_slot_cot,
+)
 from .utils import wraparound_slice, AXIS_NAME
 
 
@@ -127,6 +134,8 @@ def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False):
     ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force = nbody_adj_init(
         a_nbody[-1], ptcl, ptcl_cot, cosmo, conf
     )
+    if len(a_nbody) > 1:
+        ptcl_cot = partition_duplicate_slot_cot(ptcl, ptcl_cot, conf)
 
     def body(carry, ab):
         ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force = carry
@@ -153,9 +162,10 @@ def nbody_bwd(reverse, res, cotangents):
     ptcl, cosmo, conf = res
     ptcl_cot = cotangents
 
-    _, ptcl_cot, cosmo_cot = nbody_adj(
+    ptcl, ptcl_cot, cosmo_cot = nbody_adj(
         ptcl, ptcl_cot, cosmo, conf, reverse=reverse
     )
+    ptcl_cot = duplicate_partitioned_slot_cot(ptcl, ptcl_cot, conf)
     return ptcl_cot, cosmo_cot, None
 
 

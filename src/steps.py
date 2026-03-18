@@ -37,6 +37,26 @@ def _halo_move_vjp(ptcl, disp, vel, acc, disp_cot, vel_cot, acc_cot, share_only_
     return halo_move_vjp((disp_cot, vel_cot, acc_cot))
 
 
+def partition_duplicate_slot_cot(ptcl, ptcl_cot, conf):
+    """Convert duplicated slot cotangents into a partitioned per-slot representation."""
+    counts = jax.lax.stop_gradient(duplicate_slot_counts(ptcl, conf)).astype(ptcl_cot.disp.dtype)
+    return ptcl_cot.replace(
+        disp=jnp.where(counts != 0, ptcl_cot.disp / counts, 0),
+        vel=jnp.where(counts != 0, ptcl_cot.vel / counts, 0),
+        acc=jnp.where(counts != 0, ptcl_cot.acc / counts, 0),
+    )
+
+
+def duplicate_partitioned_slot_cot(ptcl, ptcl_cot, conf):
+    """Expand a partitioned per-slot cotangent back to duplicated-slot convention."""
+    counts = jax.lax.stop_gradient(duplicate_slot_counts(ptcl, conf)).astype(ptcl_cot.disp.dtype)
+    return ptcl_cot.replace(
+        disp=ptcl_cot.disp * counts,
+        vel=ptcl_cot.vel * counts,
+        acc=ptcl_cot.acc * counts,
+    )
+
+
 def _G_D(a, cosmo, conf):
     """Growth factor of ZA canonical velocity in [H_0]."""
     return a ** 2 * jnp.sqrt(E2(a, cosmo)) * growth(a, cosmo, conf, deriv=1)
@@ -83,7 +103,9 @@ def drift_adj(a_vel, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
     factor_valgrad = value_and_grad(drift_factor, argnums=3)
     factor, cosmo_cot_drift = factor_valgrad(a_vel, a_prev, a_next, cosmo, conf)
     factor = factor.astype(conf.float_dtype)
-    share_only_right = conf.num_devices == 2
+    # Reverse halo reconstruction must allow both exchange directions. On 2 GPUs,
+    # reusing the forward `share_only_right` shortcut drops valid halo copies.
+    share_only_right = False
 
     # drift
     ptcl_before_halo = ptcl
