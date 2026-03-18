@@ -53,6 +53,138 @@ def white_noise(seed, conf, real=False, unit_abs=False):
     return modes
 
 
+def _complex_dtype_for(float_dtype):
+    if jnp.dtype(float_dtype) == jnp.float64:
+        return jnp.complex128
+    return jnp.complex64
+
+
+def _fft_mode_numbers(size):
+    idx = jnp.arange(size, dtype=jnp.int32)
+    return jnp.where(idx < (size + 1) // 2, idx, idx - size)
+
+
+def _rfft_mode_numbers(size):
+    return jnp.arange(size // 2 + 1, dtype=jnp.int32)
+
+
+def _mix_uint32(x):
+    x = jnp.asarray(x, dtype=jnp.uint32)
+    x = jnp.bitwise_xor(x, x >> 16)
+    x *= jnp.uint32(0x7FEB352D)
+    x = jnp.bitwise_xor(x, x >> 15)
+    x *= jnp.uint32(0x846CA68B)
+    x = jnp.bitwise_xor(x, x >> 16)
+    return x
+
+
+def _hash_mode_u32(seed, kx, ky, kz, salt):
+    h = _mix_uint32(jnp.uint32(seed) ^ jnp.uint32(salt))
+    h = _mix_uint32(h ^ _mix_uint32(jnp.asarray(kx, dtype=jnp.uint32) + jnp.uint32(0x9E3779B9)))
+    h = _mix_uint32(h ^ _mix_uint32(jnp.asarray(ky, dtype=jnp.uint32) + jnp.uint32(0x85EBCA6B)))
+    h = _mix_uint32(h ^ _mix_uint32(jnp.asarray(kz, dtype=jnp.uint32) + jnp.uint32(0xC2B2AE35)))
+    return h
+
+
+def _hash_to_uniform(hash_value, dtype):
+    dtype = jnp.dtype(dtype)
+    return (hash_value.astype(dtype) + jnp.asarray(0.5, dtype=dtype)) * jnp.asarray(2.3283064365386963e-10, dtype=dtype)
+
+
+def _box_muller(hash_real, hash_imag, dtype):
+    dtype = jnp.dtype(dtype)
+    u1 = _hash_to_uniform(hash_real, dtype)
+    u2 = _hash_to_uniform(hash_imag, dtype)
+    radius = jnp.sqrt(jnp.asarray(-2.0, dtype=dtype) * jnp.log(u1))
+    theta = jnp.asarray(2 * jnp.pi, dtype=dtype) * u2
+    return radius * jnp.cos(theta), radius * jnp.sin(theta)
+
+
+def _is_self_inverse_mode(k_mode, size):
+    mask = k_mode == 0
+    if size % 2 == 0:
+        mask = mask | (k_mode == -(size // 2))
+    return mask
+
+
+def _canonical_xy_pair(kx, ky, shape):
+    partner_x = jnp.where(_is_self_inverse_mode(kx, shape[0]), kx, -kx)
+    partner_y = jnp.where(_is_self_inverse_mode(ky, shape[1]), ky, -ky)
+    keep_self = (kx < partner_x) | ((kx == partner_x) & (ky <= partner_y))
+    rep_x = jnp.where(keep_self, kx, partner_x)
+    rep_y = jnp.where(keep_self, ky, partner_y)
+    self_point = _is_self_inverse_mode(kx, shape[0]) & _is_self_inverse_mode(ky, shape[1])
+    return rep_x, rep_y, ~keep_self, self_point
+
+
+def _nested_fourier_modes_from_numbers(seed, conf, kx_modes, ky_modes, kz_modes, unit_abs):
+    float_dtype = jnp.dtype(conf.float_dtype)
+    complex_dtype = _complex_dtype_for(float_dtype)
+    shape = tuple(int(s) for s in conf.ptcl_grid_shape)
+
+    kx = kx_modes[:, None, None]
+    ky = ky_modes[None, :, None]
+    kz = kz_modes[None, None, :]
+
+    plane_self_conj = kz == 0
+    if shape[2] % 2 == 0:
+        plane_self_conj = plane_self_conj | (kz == shape[2] // 2)
+
+    rep_x, rep_y, need_conj, self_point = _canonical_xy_pair(kx, ky, shape)
+    hash_x = jnp.where(plane_self_conj, rep_x, kx)
+    hash_y = jnp.where(plane_self_conj, rep_y, ky)
+
+    gaussian_real, gaussian_imag = _box_muller(
+        _hash_mode_u32(seed, hash_x, hash_y, kz, salt=0xA24BAED4),
+        _hash_mode_u32(seed, hash_x, hash_y, kz, salt=0x9FB21C65),
+        float_dtype,
+    )
+
+    sqrt_half = jnp.asarray(0.7071067811865476, dtype=float_dtype)
+    coeff = (gaussian_real + 1j * gaussian_imag).astype(complex_dtype) * sqrt_half
+    plane_coeff = jnp.where(self_point, gaussian_real.astype(complex_dtype), coeff)
+    plane_coeff = jnp.where(need_conj, jnp.conj(plane_coeff), plane_coeff)
+    modes = jnp.where(plane_self_conj, plane_coeff, coeff)
+
+    if unit_abs:
+        norm = jnp.abs(modes)
+        modes = jnp.where(norm != 0, modes / norm, jnp.ones_like(modes))
+
+    return modes
+
+
+@partial(jax.jit, static_argnames=('real', 'unit_abs'))
+def white_noise_nested(seed, conf, real=False, unit_abs=False):
+    """Nested white noise Fourier or real modes.
+
+    This path is resolution-consistent for fixed box size: the shared non-Nyquist low-k
+    Fourier modes are identical across resolutions for the same ``seed``.
+    """
+    kx_modes = _fft_mode_numbers(conf.ptcl_grid_shape[0])
+    ky_modes = _fft_mode_numbers(conf.ptcl_grid_shape[1])
+    kz_modes = _rfft_mode_numbers(conf.ptcl_grid_shape[2])
+
+    if conf.compute_mesh is not None:
+        kx_modes = jax.lax.with_sharding_constraint(kx_modes, NamedSharding(conf.compute_mesh, P(AXIS_NAME)))
+
+    modes = _nested_fourier_modes_from_numbers(seed, conf, kx_modes, ky_modes, kz_modes, unit_abs)
+
+    if conf.compute_mesh is not None:
+        modes = jax.lax.with_sharding_constraint(
+            modes,
+            NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None)),
+        )
+
+    if real:
+        if conf.compute_mesh is not None:
+            modes = conf.mGPU_irfftn(modes)
+            modes *= _fft_norm(s=jnp.array(conf.ptcl_grid_shape, dtype=modes.dtype), func_name="irfftn", norm="ortho")
+        else:
+            modes = jnp.fft.irfftn(modes, s=conf.ptcl_grid_shape, norm="ortho")
+
+    return modes
+
+
 @custom_vjp
 def _safe_sqrt(x):
     return jnp.sqrt(x)

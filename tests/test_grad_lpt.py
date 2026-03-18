@@ -42,7 +42,7 @@ except ImportError:
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
 
 
-def _init_confs():
+def _init_confs(lpt_order=1):
     box_size = 100.0
     num_ptcl = 8
     ptcl_grid_shape = (num_ptcl,) * 3
@@ -61,7 +61,7 @@ def _init_confs():
         max_share_gather_ptcl=8000,
         a_start=1 / 60,
         a_nbody_maxstep=1 / 60,
-        lpt_order=1,
+        lpt_order=lpt_order,
         cosmo_dtype=jnp.float64,
         float_dtype=jnp.float64,
     )
@@ -99,43 +99,58 @@ def test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients():
             pytest.skip("LPT gradient test requires 2 GPUs")
         raise SystemExit("LPT gradient test requires 2 GPUs")
 
-    conf_pmpp, conf_pmwd = _init_confs()
+    for lpt_order in (1, 2):
+        conf_pmpp, conf_pmwd = _init_confs(lpt_order=lpt_order)
 
-    base_cosmo_pmpp = SimpleLCDM_PP(conf_pmpp)
-    base_cosmo_pmwd = SimpleLCDM_PM(conf_pmwd)
+        base_cosmo_pmpp = SimpleLCDM_PP(conf_pmpp)
+        base_cosmo_pmwd = SimpleLCDM_PM(conf_pmwd)
 
-    modes_real_pmwd = white_noise_pmwd(0, conf_pmwd, real=True)
-    modes_real_pmpp = white_noise_pmpp(0, conf_pmpp, real=True)
-    assert np.allclose(
-        np.asarray(jax.device_get(modes_real_pmpp)),
-        np.asarray(jax.device_get(modes_real_pmwd)),
-        atol=1e-12,
-        rtol=1e-12,
-    )
+        modes_real_pmwd = white_noise_pmwd(0, conf_pmwd, real=True)
+        modes_real_pmpp = white_noise_pmpp(0, conf_pmpp, real=True)
+        assert np.allclose(
+            np.asarray(jax.device_get(modes_real_pmpp)),
+            np.asarray(jax.device_get(modes_real_pmwd)),
+            atol=1e-12,
+            rtol=1e-12,
+        )
 
-    target_modes_real = white_noise_pmwd(1, conf_pmwd, real=True)
-    target_dens = _dens_pmwd(target_modes_real, base_cosmo_pmwd, conf_pmwd)
+        target_modes_real = white_noise_pmwd(1, conf_pmwd, real=True)
+        target_dens = _dens_pmwd(target_modes_real, base_cosmo_pmwd, conf_pmwd)
 
-    dens_pmwd = _dens_pmwd(modes_real_pmwd, base_cosmo_pmwd, conf_pmwd)
-    dens_pmpp = _dens_pmpp(modes_real_pmpp, base_cosmo_pmpp, conf_pmpp)
-    assert np.allclose(
-        np.asarray(jax.device_get(dens_pmpp)),
-        np.asarray(jax.device_get(dens_pmwd)),
-        atol=1e-12,
-        rtol=1e-12,
-    )
+        dens_pmwd = _dens_pmwd(modes_real_pmwd, base_cosmo_pmwd, conf_pmwd)
+        dens_pmpp = _dens_pmpp(modes_real_pmpp, base_cosmo_pmpp, conf_pmpp)
+        assert np.allclose(
+            np.asarray(jax.device_get(dens_pmpp)),
+            np.asarray(jax.device_get(dens_pmwd)),
+            atol=1e-12,
+            rtol=1e-12,
+        )
 
-    def loss_pmwd(modes_real):
-        dens = _dens_pmwd(modes_real, base_cosmo_pmwd, conf_pmwd)
-        return jnp.mean((dens - target_dens) ** 2)
+        def loss_pmwd(modes_real):
+            dens = _dens_pmwd(modes_real, base_cosmo_pmwd, conf_pmwd)
+            return jnp.mean((dens - target_dens) ** 2)
 
-    def loss_pmpp(modes_real):
-        dens = _dens_pmpp(modes_real, base_cosmo_pmpp, conf_pmpp)
-        return jnp.mean((dens - target_dens) ** 2)
+        def loss_pmpp(modes_real):
+            dens = _dens_pmpp(modes_real, base_cosmo_pmpp, conf_pmpp)
+            return jnp.mean((dens - target_dens) ** 2)
 
-    grad_pmwd = np.asarray(jax.device_get(jax.jit(jax.grad(loss_pmwd))(modes_real_pmwd)))
-    grad_pmpp = np.asarray(jax.device_get(jax.jit(jax.grad(loss_pmpp))(modes_real_pmpp)))
-    assert np.allclose(grad_pmpp, grad_pmwd, atol=5e-6, rtol=1e-5)
+        grad_pmwd = np.asarray(jax.device_get(jax.jit(jax.grad(loss_pmwd))(modes_real_pmwd)))
+        grad_pmpp = np.asarray(jax.device_get(jax.jit(jax.grad(loss_pmpp))(modes_real_pmpp)))
+        assert np.allclose(grad_pmpp, grad_pmwd, atol=5e-6, rtol=1e-5)
+
+        probe = jax.random.normal(jax.random.PRNGKey(123), conf_pmwd.mesh_shape, dtype=conf_pmwd.float_dtype)
+
+        def linear_loss_pmwd(modes_real):
+            dens = _dens_pmwd(modes_real, base_cosmo_pmwd, conf_pmwd)
+            return jnp.sum(dens * probe)
+
+        def linear_loss_pmpp(modes_real):
+            dens = _dens_pmpp(modes_real, base_cosmo_pmpp, conf_pmpp)
+            return jnp.sum(dens * probe)
+
+        linear_grad_pmwd = np.asarray(jax.device_get(jax.jit(jax.grad(linear_loss_pmwd))(modes_real_pmwd)))
+        linear_grad_pmpp = np.asarray(jax.device_get(jax.jit(jax.grad(linear_loss_pmpp))(modes_real_pmpp)))
+        assert np.allclose(linear_grad_pmpp, linear_grad_pmwd, atol=1e-12, rtol=1e-12)
 
 
 if pytest is not None:

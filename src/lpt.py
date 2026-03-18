@@ -2,14 +2,14 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-from jax._src.numpy.fft import _fft_norm
 from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .cosmo import E2
 from .fft import fftinv, fftfwd, fftfreq
-from .gravity import laplace, neg_grad
+from .gravity import laplace, neg_grad, duplicate_slot_counts
 from .growth import growth
 from .particles import Particles
+from .steps import _halo_move_vjp
 from .utils import AXIS_NAME
 
 
@@ -34,7 +34,6 @@ def _strain(kvec, i, j, pot, conf):
     strain = -k_i * k_j * pot
 
     strain = conf.mGPU_irfftn(strain)
-    strain *= _fft_norm(s=jnp.array(conf.ptcl_grid_shape, dtype=strain.dtype), func_name="rfftn", norm="ortho")
     strain = strain.astype(conf.float_dtype)  # no jnp.complex32
 
     return strain
@@ -78,6 +77,50 @@ def _L(kvec, pot_m, pot_n, conf):
             L -= strain_m * strain_n
 
     return L
+
+
+@partial(jax.custom_vjp, nondiff_argnums=(6,))
+def _attach_lpt_halo_move_vjp(disp_before, vel_before, disp_after, vel_after, ptcl_before, duplicate_counts, conf):
+    return disp_after, vel_after
+
+
+def _attach_lpt_halo_move_vjp_fwd(disp_before, vel_before, disp_after, vel_after, ptcl_before, duplicate_counts, conf):
+    return (disp_after, vel_after), (disp_before, vel_before, ptcl_before, jax.lax.stop_gradient(duplicate_counts))
+
+
+def _attach_lpt_halo_move_vjp_bwd(conf, res, cotangents):
+    disp_before, vel_before, ptcl_before, duplicate_counts = res
+    disp_cot, vel_cot = cotangents
+    disp_cot = jnp.where(duplicate_counts != 0, disp_cot / duplicate_counts, 0)
+    vel_cot = jnp.where(duplicate_counts != 0, vel_cot / duplicate_counts, 0)
+    scratch_acc = disp_before[:, :0]
+
+    disp_before_cot, vel_before_cot, _ = _halo_move_vjp(
+        ptcl_before,
+        disp_before,
+        vel_before,
+        scratch_acc,
+        disp_cot,
+        vel_cot,
+        scratch_acc,
+        True,
+        conf,
+    )
+
+    return (
+        disp_before_cot,
+        vel_before_cot,
+        jnp.zeros_like(disp_cot),
+        jnp.zeros_like(vel_cot),
+        None,
+        None,
+    )
+
+
+_attach_lpt_halo_move_vjp.defvjp(
+    _attach_lpt_halo_move_vjp_fwd,
+    _attach_lpt_halo_move_vjp_bwd,
+)
 
 
 @partial(jax.jit, static_argnames=('conf',))
@@ -166,10 +209,30 @@ def lpt(modes, cosmo, conf):
             disp = disp.at[:, i].add(D * grad)
             vel = vel.at[:, i].add(a2HDp * grad)
 
+    disp_before_halo = disp
+    vel_before_halo = vel
     scratch_acc = disp[:, :0]
     pmid, disp, vel, acc, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
         ptcl.pmid, disp, vel, scratch_acc, conf.halo_start, conf.halo_end,
         ptcl.halo_mask, ptcl.unused_index, True)
+    ptcl_after = ptcl.replace(
+        pmid=pmid,
+        disp=disp,
+        vel=vel,
+        acc=None,
+        halo_mask=halo_mask,
+        unused_index=unused_indexes,
+    )
+    duplicate_counts = duplicate_slot_counts(ptcl_after, conf).astype(disp.dtype)
+    disp, vel = _attach_lpt_halo_move_vjp(
+        disp_before_halo,
+        vel_before_halo,
+        ptcl_after.disp,
+        ptcl_after.vel,
+        ptcl,
+        duplicate_counts,
+        conf,
+    )
 
     return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=None, halo_mask=halo_mask,
                         unused_index=unused_indexes)
