@@ -75,7 +75,7 @@ def test_scatter():
     print(f"Mean Relative Error: {jnp.mean(rel_err):.2e}")
 
     # Check specific failure cases
-    is_close = jnp.allclose(grad_ad, grad_ad_pmwd, atol=1e-5, rtol=1e-4)
+    is_close = jnp.allclose(grad_ad, grad_ad_pmwd, atol=1e-8, rtol=1e-8)
     if is_close:
         print("\nSUCCESS: Analytic gradients match Finite Differences.")
     else:

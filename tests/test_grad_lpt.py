@@ -136,7 +136,7 @@ def test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients():
 
         grad_pmwd = np.asarray(jax.device_get(jax.jit(jax.grad(loss_pmwd))(modes_real_pmwd)))
         grad_pmpp = np.asarray(jax.device_get(jax.jit(jax.grad(loss_pmpp))(modes_real_pmpp)))
-        assert np.allclose(grad_pmpp, grad_pmwd, atol=5e-6, rtol=1e-5)
+        assert np.allclose(grad_pmpp, grad_pmwd, atol=1e-8, rtol=1e-8)
 
         probe = jax.random.normal(jax.random.PRNGKey(123), conf_pmwd.mesh_shape, dtype=conf_pmwd.float_dtype)
 

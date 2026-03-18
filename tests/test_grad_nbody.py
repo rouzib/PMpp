@@ -159,14 +159,14 @@ def test_nbody_matches_pmwd_for_forward_and_notebook_style_mode_gradient():
     vel_pmpp = np.asarray(jax.device_get(ptcl_pmpp.vel))[first_slot]
     acc_pmpp = np.asarray(jax.device_get(ptcl_pmpp.acc))[first_slot]
 
-    assert np.allclose(disp_pmpp, disp_pmwd, atol=5e-3, rtol=1e-4)
-    assert np.allclose(vel_pmpp, vel_pmwd, atol=1e-3, rtol=1e-4)
-    assert np.allclose(acc_pmpp, acc_pmwd, atol=1e-3, rtol=1e-4)
+    assert np.allclose(disp_pmpp, disp_pmwd, atol=1e-8, rtol=1e-8)
+    assert np.allclose(vel_pmpp, vel_pmwd, atol=1e-8, rtol=1e-8)
+    assert np.allclose(acc_pmpp, acc_pmwd, atol=1e-8, rtol=1e-8)
     assert np.allclose(
         np.asarray(jax.device_get(dens_pmpp)),
         np.asarray(jax.device_get(dens_pmwd)),
-        atol=1e-3,
-        rtol=1e-4,
+        atol=1e-8,
+        rtol=1e-8,
     )
 
     def loss_pmwd(tgt_dens, modes_real, cosmo, conf):
@@ -186,8 +186,8 @@ def test_nbody_matches_pmwd_for_forward_and_notebook_style_mode_gradient():
     assert np.allclose(
         np.asarray(jax.device_get(grad_modes_pmpp)),
         np.asarray(jax.device_get(grad_modes_pmwd)),
-        atol=1e-4,
-        rtol=1e-4,
+        atol=1e-8,
+        rtol=1e-8,
     )
 
     for field_name in ("A_s_1e9", "n_s", "Omega_m", "Omega_b", "h"):
@@ -196,7 +196,7 @@ def test_nbody_matches_pmwd_for_forward_and_notebook_style_mode_gradient():
         assert np.array_equal(np.isnan(grad_pmpp), np.isnan(grad_pmwd))
         finite = np.isfinite(grad_pmwd) & np.isfinite(grad_pmpp)
         if finite.any():
-            assert np.allclose(grad_pmpp[finite], grad_pmwd[finite], atol=1e-4, rtol=1e-4)
+            assert np.allclose(grad_pmpp[finite], grad_pmwd[finite], atol=1e-8, rtol=1e-8)
 
 
 if pytest is not None:

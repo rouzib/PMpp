@@ -109,7 +109,8 @@ def test_gravity_matches_pmwd_for_forward_and_gradients():
     acc_pmwd = np.asarray(jax.device_get(acc_pmwd_fn(ptcl_pmwd)))
     acc_pmpp_slots = np.asarray(jax.device_get(acc_pmpp_fn(ptcl_pmpp)))
     acc_pmpp = acc_pmpp_slots[first_slot]
-    assert np.allclose(acc_pmpp, acc_pmwd, atol=1e-5, rtol=1e-4)
+    # This passes at 1e-8 in float64; float32 GPU accumulation differs at the 1e-7 level.
+    assert np.allclose(acc_pmpp, acc_pmwd, atol=1e-6, rtol=1e-6)
 
     def disp_loss_pmwd(disp_array):
         ptcl = ptcl_pmwd.replace(disp=disp_array)
@@ -126,12 +127,12 @@ def test_gravity_matches_pmwd_for_forward_and_gradients():
     grad_disp_pmwd = np.asarray(jax.device_get(grad_disp_pmwd_fn(ptcl_pmwd.disp)))
     grad_disp_pmpp_slots = np.asarray(jax.device_get(grad_disp_pmpp_fn(ptcl_pmpp.disp)))
     grad_disp_pmpp = grad_disp_pmpp_slots[first_slot]
-    assert np.allclose(grad_disp_pmpp, grad_disp_pmwd, atol=1e-5, rtol=1e-4)
+    assert np.allclose(grad_disp_pmpp, grad_disp_pmwd, atol=1e-6, rtol=1e-6)
 
     for pid in np.unique(pid_slots[valid_slots]):
         slots = np.flatnonzero(valid_slots & (pid_slots == pid))
         ref = grad_disp_pmpp_slots[slots[0]]
-        assert np.allclose(grad_disp_pmpp_slots[slots], ref, atol=1e-5, rtol=1e-4)
+        assert np.allclose(grad_disp_pmpp_slots[slots], ref, atol=1e-6, rtol=1e-6)
 
 
 if pytest is not None:

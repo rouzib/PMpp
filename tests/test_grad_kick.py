@@ -144,9 +144,9 @@ def test_kick_matches_pmwd_for_forward_and_adjoint():
     out_pmwd = kick_pmwd(a_acc, a_prev, a_next, ptcl_pmwd, cosmo_pmwd, conf_pmwd)
     out_pmpp = kick_pmpp(a_acc, a_prev, a_next, ptcl_pmpp, cosmo_pmpp, conf)
 
-    assert np.allclose(np.asarray(jax.device_get(out_pmpp.disp))[first_slot], np.asarray(jax.device_get(out_pmwd.disp)), atol=1e-6, rtol=1e-6)
-    assert np.allclose(np.asarray(jax.device_get(out_pmpp.vel))[first_slot], np.asarray(jax.device_get(out_pmwd.vel)), atol=1e-6, rtol=1e-6)
-    assert np.allclose(np.asarray(jax.device_get(out_pmpp.acc))[first_slot], np.asarray(jax.device_get(out_pmwd.acc)), atol=1e-6, rtol=1e-6)
+    assert np.allclose(np.asarray(jax.device_get(out_pmpp.disp))[first_slot], np.asarray(jax.device_get(out_pmwd.disp)), atol=1e-8, rtol=1e-8)
+    assert np.allclose(np.asarray(jax.device_get(out_pmpp.vel))[first_slot], np.asarray(jax.device_get(out_pmwd.vel)), atol=1e-8, rtol=1e-8)
+    assert np.allclose(np.asarray(jax.device_get(out_pmpp.acc))[first_slot], np.asarray(jax.device_get(out_pmwd.acc)), atol=1e-8, rtol=1e-8)
 
     key = jax.random.PRNGKey(1)
     key_disp, key_vel, key_acc = jax.random.split(key, 3)
@@ -178,9 +178,9 @@ def test_kick_matches_pmwd_for_forward_and_adjoint():
     vel_in_pmpp = _reduce_input_slots(np.asarray(jax.device_get(in_cot_pmpp.vel)), pid_slots, valid_slots, conf)
     acc_in_pmpp = _reduce_input_slots(np.asarray(jax.device_get(in_cot_pmpp.acc)), pid_slots, valid_slots, conf)
 
-    assert np.allclose(disp_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.disp)), atol=1e-6, rtol=1e-6)
-    assert np.allclose(vel_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.vel)), atol=1e-6, rtol=1e-6)
-    assert np.allclose(acc_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.acc)), atol=1e-6, rtol=1e-6)
+    assert np.allclose(disp_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.disp)), atol=1e-8, rtol=1e-8)
+    assert np.allclose(vel_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.vel)), atol=1e-8, rtol=1e-8)
+    assert np.allclose(acc_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.acc)), atol=1e-8, rtol=1e-8)
 
     assert _tree_max_abs_diff(cosmo_cot_pmwd, cosmo_cot_pmpp) < 1e-5
 

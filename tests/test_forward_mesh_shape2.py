@@ -158,8 +158,8 @@ def test_mesh_shape_two_forward_matches_pmwd():
     assert dens_pmpp.shape == (16, 16, 16)
     assert np.isclose(dens_pmpp.mean(), 1.0)
     assert np.isclose(dens_pmpp.sum(), 4096.0)
-    assert np.allclose(dens_pmpp, dens_pmwd, atol=6e-3, rtol=1e-4)
-    assert np.allclose(disp_pmpp, disp_pmwd, atol=3e-3, rtol=1e-4)
+    assert np.allclose(dens_pmpp, dens_pmwd, atol=1e-8, rtol=1e-8)
+    assert np.allclose(disp_pmpp, disp_pmwd, atol=1e-8, rtol=1e-8)
 
 
 if pytest is not None:

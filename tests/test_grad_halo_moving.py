@@ -125,9 +125,9 @@ def test_halo_move_vjp_matches_true_vjp():
     max_moved = int(np.asarray(jax.device_get(forward[-1])))
     assert max_moved > 0
 
-    assert np.allclose(np.asarray(jax.device_get(helper_disp)), np.asarray(jax.device_get(vjp_disp)), atol=1e-6, rtol=1e-6)
-    assert np.allclose(np.asarray(jax.device_get(helper_vel)), np.asarray(jax.device_get(vjp_vel)), atol=1e-6, rtol=1e-6)
-    assert np.allclose(np.asarray(jax.device_get(helper_acc)), np.asarray(jax.device_get(vjp_acc)), atol=1e-6, rtol=1e-6)
+    assert np.allclose(np.asarray(jax.device_get(helper_disp)), np.asarray(jax.device_get(vjp_disp)), atol=1e-8, rtol=1e-8)
+    assert np.allclose(np.asarray(jax.device_get(helper_vel)), np.asarray(jax.device_get(vjp_vel)), atol=1e-8, rtol=1e-8)
+    assert np.allclose(np.asarray(jax.device_get(helper_acc)), np.asarray(jax.device_get(vjp_acc)), atol=1e-8, rtol=1e-8)
 
     legacy_max = max(
         float(np.max(np.abs(np.asarray(jax.device_get(legacy_disp - vjp_disp))))),

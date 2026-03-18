@@ -113,6 +113,7 @@ def test_scatter_gradient_matches_pmwd_for_unique_pmid_particles():
 
     dens_pmpp_default = np.asarray(jax.device_get(scatter(ptcl_pmpp, conf)))
     dens_pmpp_explicit = np.asarray(jax.device_get(scatter(ptcl_pmpp, conf, val=default_val)))
+    # This passes at 1e-8 in float64; float32 GPU accumulation differs at the 1e-7 level.
     assert np.allclose(dens_pmpp_default, dens_pmpp_explicit, atol=1e-6, rtol=1e-6)
 
     grad_pmwd = np.asarray(jax.device_get(jax.grad(loss_pmwd)(ptcl_pmwd.disp)))
@@ -122,7 +123,7 @@ def test_scatter_gradient_matches_pmwd_for_unique_pmid_particles():
 
     grad_pmpp = _match_gradients_by_particle_id(grad_pmwd, grad_pmpp_slots, ptcl_pmwd, conf)
 
-    assert np.allclose(grad_pmpp, grad_pmwd, atol=1e-5, rtol=1e-4)
+    assert np.allclose(grad_pmpp, grad_pmwd, atol=1e-6, rtol=1e-6)
 
 
 if pytest is not None:

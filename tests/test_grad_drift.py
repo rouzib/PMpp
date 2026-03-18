@@ -43,8 +43,8 @@ def _build_crossing_state():
         box_size=100.0,
         num_devices=2,
         max_ptcl_per_slice=1.25,
-        max_share_ptcl=32,
-        max_share_gather_ptcl=128,
+        max_share_ptcl=1024,
+        max_share_gather_ptcl=2048,
     )
     conf_pmwd = ConfigurationPMWD(
         ptcl_spacing=conf.ptcl_spacing,
@@ -154,8 +154,8 @@ def test_drift_matches_pmwd_for_forward_and_adjoint():
     out_disp_pmwd = np.asarray(jax.device_get(out_pmwd.disp))
     out_vel_pmwd = np.asarray(jax.device_get(out_pmwd.vel))
 
-    assert np.allclose(out_disp_pmpp, out_disp_pmwd, atol=1e-6, rtol=1e-6)
-    assert np.allclose(out_vel_pmpp, out_vel_pmwd, atol=1e-6, rtol=1e-6)
+    assert np.allclose(out_disp_pmpp, out_disp_pmwd, atol=1e-8, rtol=1e-8)
+    assert np.allclose(out_vel_pmpp, out_vel_pmwd, atol=1e-8, rtol=1e-8)
 
     key = jax.random.PRNGKey(1)
     key_disp, key_vel, key_acc = jax.random.split(key, 3)
@@ -186,9 +186,9 @@ def test_drift_matches_pmwd_for_forward_and_adjoint():
     vel_in_pmpp = _reduce_input_slots(np.asarray(jax.device_get(in_cot_pmpp.vel)), ptcl_pmpp, conf)
     acc_in_pmpp = _reduce_input_slots(np.asarray(jax.device_get(in_cot_pmpp.acc)), ptcl_pmpp, conf)
 
-    assert np.allclose(disp_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.disp)), atol=1e-6, rtol=1e-6)
-    assert np.allclose(vel_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.vel)), atol=1e-6, rtol=1e-6)
-    assert np.allclose(acc_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.acc)), atol=1e-6, rtol=1e-6)
+    assert np.allclose(disp_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.disp)), atol=1e-8, rtol=1e-8)
+    assert np.allclose(vel_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.vel)), atol=1e-8, rtol=1e-8)
+    assert np.allclose(acc_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.acc)), atol=1e-8, rtol=1e-8)
 
     assert _tree_max_abs_diff(cosmo_cot_pmwd, cosmo_cot_pmpp) < 2e-5
 

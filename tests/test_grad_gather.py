@@ -111,7 +111,8 @@ def test_gather_gradients_match_pmwd_on_unique_particles():
     values_pmwd = np.asarray(jax.device_get(gather_pmwd(ptcl_pmwd, conf_pmwd, mesh)))
     values_pmpp_slots = np.asarray(jax.device_get(gather_pmpp(ptcl_pmpp, conf, mesh)))
     values_pmpp = values_pmpp_slots[first_slot]
-    assert np.allclose(values_pmpp, values_pmwd, atol=1e-5, rtol=1e-4)
+    # This passes at 1e-8 in float64; float32 GPU accumulation differs at the 1e-7 level.
+    assert np.allclose(values_pmpp, values_pmwd, atol=1e-6, rtol=1e-6)
 
     def disp_loss_pmwd(disp_array):
         ptcl = ptcl_pmwd.replace(disp=disp_array)
@@ -131,7 +132,7 @@ def test_gather_gradients_match_pmwd_on_unique_particles():
         valid_slots,
         conf.ptcl_num,
     )
-    assert np.allclose(grad_disp_pmpp, grad_disp_pmwd, atol=1e-5, rtol=1e-4)
+    assert np.allclose(grad_disp_pmpp, grad_disp_pmwd, atol=1e-6, rtol=1e-6)
 
     def mesh_loss_pmwd(mesh_array):
         values = gather_pmwd(ptcl_pmwd, conf_pmwd, mesh_array)
@@ -143,7 +144,7 @@ def test_gather_gradients_match_pmwd_on_unique_particles():
 
     grad_mesh_pmwd = np.asarray(jax.device_get(jax.grad(mesh_loss_pmwd)(mesh)))
     grad_mesh_pmpp = np.asarray(jax.device_get(jax.grad(mesh_loss_pmpp_unique)(mesh)))
-    assert np.allclose(grad_mesh_pmpp, grad_mesh_pmwd, atol=1e-5, rtol=1e-4)
+    assert np.allclose(grad_mesh_pmpp, grad_mesh_pmwd, atol=1e-6, rtol=1e-6)
 
 
 if pytest is not None:
