@@ -43,13 +43,44 @@ except ImportError:
 
 
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
+REQUIRES_TWO_GPUS = "forward mesh-shape tests require 2 GPUs"
+
+GEN_GRID_MESH_SHAPES = (1, 2, 5)
+SHORT_FORWARD_CASES = (
+    (1, 8, 1 / 32),
+    (2, 8, 1 / 32),
+)
+FULL_FORWARD_MASS_CASES = (
+    (1, 8, 1.0),
+    (2, 8, 1.0),
+    (2, 16, 1.0),
+    (5, 16, 1.0),
+)
 
 
-def _init_confs():
+def _require_two_gpus():
+    if GPU_COUNT >= 2:
+        return
+    if pytest is not None:
+        pytest.skip(REQUIRES_TWO_GPUS)
+    raise SystemExit(REQUIRES_TWO_GPUS)
+
+
+def _init_confs(
+    mesh_shape=2,
+    num_ptcl=8,
+    a_start=1 / 64,
+    a_stop=1 / 32,
+    a_nbody_maxstep=None,
+    max_ptcl_factor=3.0,
+    max_share_ptcl=12000,
+    max_share_gather_ptcl=30000,
+):
     box_size = 100.0
-    num_ptcl = 8
     ptcl_grid_shape = (num_ptcl,) * 3
     ptcl_spacing = box_size / num_ptcl
+    if a_nbody_maxstep is None:
+        a_nbody_maxstep = a_start
 
     gpu_devices = [device for device in jax.devices() if device.platform == "gpu"][:2]
     compute_mesh = create_compute_mesh(gpu_devices)
@@ -57,14 +88,14 @@ def _init_confs():
     conf_pmpp = Configuration(
         ptcl_spacing,
         ptcl_grid_shape,
-        mesh_shape=2,
+        mesh_shape=mesh_shape,
         compute_mesh=compute_mesh,
-        max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * 2.5),
-        max_share_ptcl=4000,
-        max_share_gather_ptcl=8000,
-        a_start=1 / 64,
-        a_stop=1 / 32,
-        a_nbody_maxstep=1 / 64,
+        max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * max_ptcl_factor),
+        max_share_ptcl=max_share_ptcl,
+        max_share_gather_ptcl=max_share_gather_ptcl,
+        a_start=a_start,
+        a_stop=a_stop,
+        a_nbody_maxstep=a_nbody_maxstep,
         cosmo_dtype=jnp.float64,
         float_dtype=jnp.float64,
     )
@@ -79,6 +110,37 @@ def _init_confs():
         float_dtype=jnp.float64,
     )
     return conf_pmpp, conf_pmwd
+
+
+def _run_pmwd_pmpp_forward(conf_pmpp, conf_pmwd):
+    cosmo_pmwd = boltzmann_pmwd(SimpleLCDM_PM(conf_pmwd), conf_pmwd)
+    cosmo_pmpp = boltzmann_pmpp(SimpleLCDM_PP(conf_pmpp), conf_pmpp)
+
+    modes_pmwd = linear_modes_pmwd(white_noise_pmwd(0, conf_pmwd), cosmo_pmwd, conf_pmwd)
+    modes_pmpp = linear_modes_pmpp(white_noise_pmpp(0, conf_pmpp), cosmo_pmpp, conf_pmpp)
+
+    ptcl_pmwd, _ = lpt_pmwd(modes_pmwd, cosmo_pmwd, conf_pmwd)
+    ptcl_pmpp = lpt_pmpp(modes_pmpp, cosmo_pmpp, conf_pmpp.replace(max_share_ptcl=conf_pmpp.max_share_ptcl * 4))
+    assert ptcl_pmpp.acc is None
+
+    ptcl_pmwd, _ = nbody_pmwd(ptcl_pmwd, None, cosmo_pmwd, conf_pmwd)
+    ptcl_pmpp = jax.jit(nbody_pmpp, static_argnames=("conf", "reverse"))(ptcl_pmpp, cosmo_pmpp, conf_pmpp)
+
+    dens_pmwd = np.asarray(jax.device_get(scatter_pmwd(ptcl_pmwd, conf_pmwd)))
+    dens_pmpp = np.asarray(jax.device_get(scatter_pmpp(ptcl_pmpp, conf_pmpp)))
+
+    return ptcl_pmwd, ptcl_pmpp, dens_pmwd, dens_pmpp
+
+
+def _run_pmpp_forward(conf_pmpp):
+    cosmo_pmpp = boltzmann_pmpp(SimpleLCDM_PP(conf_pmpp), conf_pmpp)
+    modes_pmpp = linear_modes_pmpp(white_noise_pmpp(0, conf_pmpp), cosmo_pmpp, conf_pmpp)
+    ptcl_pmpp = lpt_pmpp(modes_pmpp, cosmo_pmpp, conf_pmpp.replace(max_share_ptcl=conf_pmpp.max_share_ptcl * 4))
+    assert ptcl_pmpp.acc is None
+
+    ptcl_pmpp = jax.jit(nbody_pmpp, static_argnames=("conf", "reverse"))(ptcl_pmpp, cosmo_pmpp, conf_pmpp)
+    dens_pmpp = np.asarray(jax.device_get(scatter_pmpp(ptcl_pmpp, conf_pmpp)))
+    return dens_pmpp
 
 
 def _first_slot_mapping(ptcl_pmwd, ptcl_pmpp, conf_pmwd, conf_pmpp):
@@ -102,19 +164,26 @@ def _first_slot_mapping(ptcl_pmwd, ptcl_pmpp, conf_pmwd, conf_pmpp):
     return first_slot
 
 
-def test_mesh_shape_two_gen_grid_keeps_one_particle_slice_halo():
-    if GPU_COUNT < 2:
-        if pytest is not None:
-            pytest.skip("mesh_shape=2 forward test requires 2 GPUs")
-        raise SystemExit("mesh_shape=2 forward test requires 2 GPUs")
+def _expected_gen_grid_x(conf_pmpp):
+    step = int(conf_pmpp.ptcl_halo_width)
+    count = conf_pmpp.ptcl_grid_shape[0] // conf_pmpp.num_devices + 1
+    nmesh = int(conf_pmpp.nMesh)
+    expected = {}
+    for gpu_id, offset in zip(np.asarray(conf_pmpp.devices_index, dtype=int), np.asarray(conf_pmpp.offsets, dtype=int)):
+        expected[gpu_id] = np.asarray(
+            [int((offset - step + i * step) % nmesh) for i in range(count)],
+            dtype=np.float64,
+        )
+    return expected
 
-    conf_pmpp, _ = _init_confs()
+
+def test_gen_grid_keeps_one_particle_slice_halo(mesh_shape):
+    _require_two_gpus()
+
+    conf_pmpp, _ = _init_confs(mesh_shape=mesh_shape, num_ptcl=8)
     ptcl = Particles.gen_grid(conf_pmpp, vel=True)
 
-    expected_x = {
-        0: np.array([14.0, 0.0, 2.0, 4.0, 6.0]),
-        1: np.array([6.0, 8.0, 10.0, 12.0, 14.0]),
-    }
+    expected_x = _expected_gen_grid_x(conf_pmpp)
 
     for shard in ptcl.pmid.addressable_shards:
         gpu_id = shard.device.id
@@ -127,53 +196,62 @@ def test_mesh_shape_two_gen_grid_keeps_one_particle_slice_halo():
         assert np.array_equal(x_unique, expected_x[gpu_id])
 
 
-def test_mesh_shape_two_forward_matches_pmwd():
-    if GPU_COUNT < 2:
-        if pytest is not None:
-            pytest.skip("mesh_shape=2 forward test requires 2 GPUs")
-        raise SystemExit("mesh_shape=2 forward test requires 2 GPUs")
+def test_short_run_forward_matches_pmwd(mesh_shape, num_ptcl, a_stop):
+    _require_two_gpus()
 
-    conf_pmpp, conf_pmwd = _init_confs()
-
-    cosmo_pmwd = boltzmann_pmwd(SimpleLCDM_PM(conf_pmwd), conf_pmwd)
-    cosmo_pmpp = boltzmann_pmpp(SimpleLCDM_PP(conf_pmpp), conf_pmpp)
-
-    modes_pmwd = linear_modes_pmwd(white_noise_pmwd(0, conf_pmwd), cosmo_pmwd, conf_pmwd)
-    modes_pmpp = linear_modes_pmpp(white_noise_pmpp(0, conf_pmpp), cosmo_pmpp, conf_pmpp)
-
-    ptcl_pmwd, _ = lpt_pmwd(modes_pmwd, cosmo_pmwd, conf_pmwd)
-    ptcl_pmpp = lpt_pmpp(modes_pmpp, cosmo_pmpp, conf_pmpp.replace(max_share_ptcl=conf_pmpp.max_share_ptcl * 4))
-    assert ptcl_pmpp.acc is None
-
-    ptcl_pmwd, _ = nbody_pmwd(ptcl_pmwd, None, cosmo_pmwd, conf_pmwd)
-    ptcl_pmpp = jax.jit(nbody_pmpp, static_argnames=("conf", "reverse"))(ptcl_pmpp, cosmo_pmpp, conf_pmpp)
-
-    dens_pmwd = np.asarray(jax.device_get(scatter_pmwd(ptcl_pmwd, conf_pmwd)))
-    dens_pmpp = np.asarray(jax.device_get(scatter_pmpp(ptcl_pmpp, conf_pmpp)))
+    conf_pmpp, conf_pmwd = _init_confs(mesh_shape=mesh_shape, num_ptcl=num_ptcl, a_stop=a_stop)
+    ptcl_pmwd, ptcl_pmpp, dens_pmwd, dens_pmpp = _run_pmwd_pmpp_forward(conf_pmpp, conf_pmwd)
     first_slot = _first_slot_mapping(ptcl_pmwd, ptcl_pmpp, conf_pmwd, conf_pmpp)
 
     disp_pmwd = np.asarray(jax.device_get(ptcl_pmwd.disp))
     disp_pmpp = np.asarray(jax.device_get(ptcl_pmpp.disp))[first_slot]
 
-    assert dens_pmpp.shape == (16, 16, 16)
+    assert dens_pmpp.shape == tuple(int(s) for s in conf_pmpp.mesh_shape)
     assert np.isclose(dens_pmpp.mean(), 1.0)
-    assert np.isclose(dens_pmpp.sum(), 4096.0)
+    assert np.isclose(dens_pmpp.sum(), float(conf_pmpp.mesh_size))
     assert np.allclose(dens_pmpp, dens_pmwd, atol=1e-8, rtol=1e-8)
     assert np.allclose(disp_pmpp, disp_pmwd, atol=1e-8, rtol=1e-8)
 
 
+def test_forward_conserves_mass_across_mesh_shapes(mesh_shape, num_ptcl, a_stop):
+    _require_two_gpus()
+
+    conf_pmpp, _ = _init_confs(mesh_shape=mesh_shape, num_ptcl=num_ptcl, a_stop=a_stop)
+    dens_pmpp = _run_pmpp_forward(conf_pmpp)
+
+    assert dens_pmpp.shape == tuple(int(s) for s in conf_pmpp.mesh_shape)
+    assert np.isclose(dens_pmpp.mean(), 1.0)
+    assert np.isclose(dens_pmpp.sum(), float(conf_pmpp.mesh_size))
+
+
 if pytest is not None:
-    test_mesh_shape_two_gen_grid_keeps_one_particle_slice_halo = pytest.mark.skipif(
+    test_gen_grid_keeps_one_particle_slice_halo = pytest.mark.skipif(
         GPU_COUNT < 2,
-        reason="mesh_shape=2 forward test requires 2 GPUs",
-    )(test_mesh_shape_two_gen_grid_keeps_one_particle_slice_halo)
-    test_mesh_shape_two_forward_matches_pmwd = pytest.mark.skipif(
+        reason=REQUIRES_TWO_GPUS,
+    )(pytest.mark.parametrize("mesh_shape", GEN_GRID_MESH_SHAPES)(test_gen_grid_keeps_one_particle_slice_halo))
+    test_short_run_forward_matches_pmwd = pytest.mark.skipif(
         GPU_COUNT < 2,
-        reason="mesh_shape=2 forward test requires 2 GPUs",
-    )(test_mesh_shape_two_forward_matches_pmwd)
+        reason=REQUIRES_TWO_GPUS,
+    )(pytest.mark.parametrize(
+        ("mesh_shape", "num_ptcl", "a_stop"),
+        SHORT_FORWARD_CASES,
+        ids=[f"mesh{mesh_shape}_n{num_ptcl}" for mesh_shape, num_ptcl, _ in SHORT_FORWARD_CASES],
+    )(test_short_run_forward_matches_pmwd))
+    test_forward_conserves_mass_across_mesh_shapes = pytest.mark.skipif(
+        GPU_COUNT < 2,
+        reason=REQUIRES_TWO_GPUS,
+    )(pytest.mark.parametrize(
+        ("mesh_shape", "num_ptcl", "a_stop"),
+        FULL_FORWARD_MASS_CASES,
+        ids=[f"mesh{mesh_shape}_n{num_ptcl}_a{a_stop:g}" for mesh_shape, num_ptcl, a_stop in FULL_FORWARD_MASS_CASES],
+    )(test_forward_conserves_mass_across_mesh_shapes))
 
 
 if __name__ == "__main__":
-    test_mesh_shape_two_gen_grid_keeps_one_particle_slice_halo()
-    test_mesh_shape_two_forward_matches_pmwd()
-    print("mesh_shape=2 forward regression passed")
+    for mesh_shape in GEN_GRID_MESH_SHAPES:
+        test_gen_grid_keeps_one_particle_slice_halo(mesh_shape)
+    for mesh_shape, num_ptcl, a_stop in SHORT_FORWARD_CASES:
+        test_short_run_forward_matches_pmwd(mesh_shape, num_ptcl, a_stop)
+    for mesh_shape, num_ptcl, a_stop in FULL_FORWARD_MASS_CASES:
+        test_forward_conserves_mass_across_mesh_shapes(mesh_shape, num_ptcl, a_stop)
+    print("forward mesh-shape regressions passed")
