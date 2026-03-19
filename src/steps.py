@@ -103,9 +103,7 @@ def drift_adj(a_vel, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
     factor_valgrad = value_and_grad(drift_factor, argnums=3)
     factor, cosmo_cot_drift = factor_valgrad(a_vel, a_prev, a_next, cosmo, conf)
     factor = factor.astype(conf.float_dtype)
-    # Reverse halo reconstruction must allow both exchange directions. On 2 GPUs,
-    # reusing the forward `share_only_right` shortcut drops valid halo copies.
-    share_only_right = False
+    share_only_right = conf.num_devices == 2
 
     # drift
     ptcl_before_halo = ptcl
