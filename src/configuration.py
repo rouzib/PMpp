@@ -12,7 +12,7 @@ from mcfit import TophatVar
 
 from .FFT_distributed import create_ffts
 from .fft import fftfreq
-from .gather_old import initialize_mGPU_gather
+from .gather import initialize_mGPU_gather
 from .particles import Particles
 from .scatter import initialize_mGPU_scatter
 from .utils import pytree_dataclass, build_ring_permutations
@@ -76,6 +76,12 @@ class Configuration:
         respectively.
     lpt_order : int, optional
         LPT order, with 1 for Zel'dovich approximation, 2 for 2LPT, and 3 for 3LPT.
+    lpt_cache_strains : bool, optional
+        Whether to cache the diagonal strain arrays in the 2LPT tidal tensor computation.
+        When True (default), each unique strain is computed once and reused, saving
+        ``dim - 1`` redundant 3D irfftn calls per ``_L`` evaluation at the cost of keeping
+        ``dim`` extra strain arrays (each of shape ``ptcl_grid_shape``) alive simultaneously
+        on the GPU. Set to False to trade compute for memory when GPU memory is tight.
     a_start : float, optional
         LPT scale factor and N-body starting time.
     a_stop : float, optional
@@ -142,6 +148,7 @@ class Configuration:
     Tuple[Optional[float], Optional[float]]] = (1, None)
 
     lpt_order: int = 2
+    lpt_cache_strains: bool = True
 
     a_start: float = 1 / 64
     a_start: float = 1 / 64
@@ -305,6 +312,9 @@ class Configuration:
                         scaling = 1
                     object.__setattr__(self, "max_ptcl_per_slice",
                                        math.floor(self.ptcl_num // self.num_devices * scaling))
+                if self.num_devices == 1:
+                    object.__setattr__(self, "max_ptcl_per_slice",
+                                       min(self.max_ptcl_per_slice, self.ptcl_num))
                 object.__setattr__(self, "max_share_ptcl", min(self.max_share_ptcl, self.max_ptcl_per_slice // 2))
                 object.__setattr__(self, "max_share_gather_ptcl", min(self.max_share_gather_ptcl,
                                                                       self.max_ptcl_per_slice // 2))
