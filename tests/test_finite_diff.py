@@ -385,13 +385,13 @@ def test_fd_integrate_disp():
 @REQUIRE_2GPU
 def test_fd_linear_modes():
     """Linear modes gradient w.r.t. real-space white noise input."""
-    conf, cosmo, _ = _base_setup()
+    conf, cosmo, _ = _particle_fd_setup_x64()
     wn = white_noise(0, conf, real=True)
 
     def loss(m):
         return _sumsq(jnp.abs(linear_modes(m, cosmo, conf)))
 
-    _check_fd(loss, wn)
+    _check_fd(loss, wn, eps=1e-4, rtol=1e-7, atol=1e-9, fd_order=4)
 
 
 # ═══════════════════════════ LPT ═══════════════════════════
