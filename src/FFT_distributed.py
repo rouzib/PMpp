@@ -202,6 +202,55 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
         Among the returned functions, `rfftn` and `irfftn` functions are differentiable while `fftn` and `ifftn` are not.
 
     """
+    # Single-device shortcut: bypass distributed 2-pass FFT entirely.
+    # The strided-batched cuFFT plan created by the first pass is incompatible
+    # with some single-GPU hardware (e.g. GTX 1650 / cuFFT 12).
+    if compute_mesh.size == 1:
+        _fftn_jit = jax.jit(jnp.fft.fftn)
+        _ifftn_jit = jax.jit(jnp.fft.ifftn)
+        _rfftn_jit = jax.jit(jnp.fft.rfftn)
+        _irfftn_jit = jax.jit(jnp.fft.irfftn)
+
+        @custom_vjp
+        def rfftn(x):
+            return _rfftn_jit(x)
+
+        def rfftn_fwd(x):
+            return _rfftn_jit(x), x.shape
+
+        def rfftn_bwd(x_shape, g):
+            g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
+            g = _ifftn_jit(g.conj()).real
+            g *= jnp.prod(jnp.array(x_shape))
+            return (g,)
+
+        rfftn.defvjp(rfftn_fwd, rfftn_bwd)
+
+        @custom_vjp
+        def irfftn(x):
+            return _irfftn_jit(x)
+
+        def irfftn_fwd(x):
+            return _irfftn_jit(x), x.shape
+
+        def irfftn_bwd(res, g):
+            real_shape = g.shape
+            g = _rfftn_jit(g).conj()
+            n = g.shape[-1]
+            is_even = (real_shape[-1] % 2 == 0)
+            mask = jnp.ones((n,), dtype=g.real.dtype)
+            if n > 1:
+                mask = mask.at[1:].set(2.0)
+                if is_even:
+                    mask = mask.at[n - 1].set(1.0)
+            scale = jnp.asarray(1 / np.prod(real_shape), dtype=g.real.dtype)
+            out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
+            return (out,)
+
+        irfftn.defvjp(irfftn_fwd, irfftn_bwd)
+
+        return rfftn, irfftn, _fftn_jit, _ifftn_jit
+
     # Creating sharded versions of FFT and IFFT functions for specific GPU sharding
     fftn_first_pass = create_sharded_fft(_fftn_first_pass, P(None, "gpus", None), compute_mesh)
     fftn_second_pass = create_sharded_fft(_fftn_second_pass, P("gpus", None, None), compute_mesh)
@@ -260,15 +309,6 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
 
     def rfftn_bwd(x_shape, g):
         """ Backward pass for custom VJP of real-valued forward FFT """
-        # TODO: Weird behaviour when x_shape is not a power of 2
-        # TODO: See FFT shift
-        # TODO: Fix is maybe cropping before padding to ensure size on last dimension
-        #  if fft_type == xla_client.FftType.IRFFT:
-        #       in_s[-1] = (in_s[-1] // 2 + 1)
-        #     # Cropping
-        #     arr = arr[tuple(map(slice, in_s))]
-        #     # Padding
-        #     arr = jnp.pad(arr, [(0, x - y) for x, y in zip(in_s, arr.shape)])
         g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
         g = _ifftn_jit(g.conj()).real
         # the previous code is equivalent to jnp.fft.ifftn(g.conj(), s=x_shape).real
