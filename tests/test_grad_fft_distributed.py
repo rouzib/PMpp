@@ -25,10 +25,10 @@ GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"]
 
 
 def test_distributed_fft_matches_reference_for_forward_and_gradients():
-    if GPU_COUNT < 2:
+    if GPU_COUNT < 1:
         if pytest is not None:
-            pytest.skip("distributed FFT test requires 2 GPUs")
-        raise SystemExit("distributed FFT test requires 2 GPUs")
+            pytest.skip("distributed FFT test requires at least 1 GPU")
+        raise SystemExit("distributed FFT test requires at least 1 GPU")
 
     gpu_devices = [device for device in jax.devices() if device.platform == "gpu"][:2]
     compute_mesh = create_compute_mesh(gpu_devices)
@@ -87,8 +87,8 @@ def test_distributed_fft_matches_reference_for_forward_and_gradients():
 
 if pytest is not None:
     test_distributed_fft_matches_reference_for_forward_and_gradients = pytest.mark.skipif(
-        GPU_COUNT < 2,
-        reason="distributed FFT test requires 2 GPUs",
+        GPU_COUNT < 1,
+        reason="distributed FFT test requires at least 1 GPU",
     )(test_distributed_fft_matches_reference_for_forward_and_gradients)
 
 

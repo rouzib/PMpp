@@ -71,10 +71,10 @@ def _sum_duplicate_slot_gradients(grad_pmpp_slots, pid_slots, valid_slots, ptcl_
 
 
 def test_gather_gradients_match_pmwd_on_unique_particles():
-    if GPU_COUNT < 2:
+    if GPU_COUNT < 1:
         if pytest is not None:
-            pytest.skip("gather gradient test requires 2 GPUs")
-        raise SystemExit("gather gradient test requires 2 GPUs")
+            pytest.skip("gather gradient test requires at least 1 GPU")
+        raise SystemExit("gather gradient test requires at least 1 GPU")
 
     conf = init_conf(
         num_ptcl=6,
@@ -149,8 +149,8 @@ def test_gather_gradients_match_pmwd_on_unique_particles():
 
 if pytest is not None:
     test_gather_gradients_match_pmwd_on_unique_particles = pytest.mark.skipif(
-        GPU_COUNT < 2,
-        reason="gather gradient test requires 2 GPUs",
+        GPU_COUNT < 1,
+        reason="gather gradient test requires at least 1 GPU",
     )(test_gather_gradients_match_pmwd_on_unique_particles)
 
 

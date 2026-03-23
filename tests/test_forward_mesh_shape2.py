@@ -43,7 +43,7 @@ except ImportError:
 
 
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
-REQUIRES_TWO_GPUS = "forward mesh-shape tests require 2 GPUs"
+REQUIRES_ONE_GPU = "forward mesh-shape tests require at least 1 GPU"
 
 GEN_GRID_MESH_SHAPES = (1, 2, 5)
 SHORT_FORWARD_CASES = (
@@ -62,8 +62,8 @@ def _require_two_gpus():
     if GPU_COUNT >= 2:
         return
     if pytest is not None:
-        pytest.skip(REQUIRES_TWO_GPUS)
-    raise SystemExit(REQUIRES_TWO_GPUS)
+        pytest.skip(REQUIRES_ONE_GPU)
+    raise SystemExit(REQUIRES_ONE_GPU)
 
 
 def _init_confs(
@@ -226,20 +226,20 @@ def test_forward_conserves_mass_across_mesh_shapes(mesh_shape, num_ptcl, a_stop)
 
 if pytest is not None:
     test_gen_grid_keeps_one_particle_slice_halo = pytest.mark.skipif(
-        GPU_COUNT < 2,
-        reason=REQUIRES_TWO_GPUS,
+        GPU_COUNT < 1,
+        reason=REQUIRES_ONE_GPU,
     )(pytest.mark.parametrize("mesh_shape", GEN_GRID_MESH_SHAPES)(test_gen_grid_keeps_one_particle_slice_halo))
     test_short_run_forward_matches_pmwd = pytest.mark.skipif(
-        GPU_COUNT < 2,
-        reason=REQUIRES_TWO_GPUS,
+        GPU_COUNT < 1,
+        reason=REQUIRES_ONE_GPU,
     )(pytest.mark.parametrize(
         ("mesh_shape", "num_ptcl", "a_stop"),
         SHORT_FORWARD_CASES,
         ids=[f"mesh{mesh_shape}_n{num_ptcl}" for mesh_shape, num_ptcl, _ in SHORT_FORWARD_CASES],
     )(test_short_run_forward_matches_pmwd))
     test_forward_conserves_mass_across_mesh_shapes = pytest.mark.skipif(
-        GPU_COUNT < 2,
-        reason=REQUIRES_TWO_GPUS,
+        GPU_COUNT < 1,
+        reason=REQUIRES_ONE_GPU,
     )(pytest.mark.parametrize(
         ("mesh_shape", "num_ptcl", "a_stop"),
         FULL_FORWARD_MASS_CASES,

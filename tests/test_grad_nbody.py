@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 
 os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
+os.environ.setdefault('XLA_FLAGS', '--xla_gpu_use_runtime_fusion=false')
 
 import numpy as np
 
@@ -130,10 +131,10 @@ def _first_slot_mapping(ptcl_pmwd, ptcl_pmpp, conf_pmwd, conf_pmpp):
 
 
 def test_nbody_matches_pmwd_for_forward_and_notebook_style_mode_gradient():
-    if GPU_COUNT < 2:
+    if GPU_COUNT < 1:
         if pytest is not None:
-            pytest.skip("nbody gradient test requires 2 GPUs")
-        raise SystemExit("nbody gradient test requires 2 GPUs")
+            pytest.skip("nbody gradient test requires at least 1 GPU")
+        raise SystemExit("nbody gradient test requires at least 1 GPU")
 
     conf_pmpp, conf_pmwd = _init_confs()
     target_dens = _target_density(conf_pmwd)
@@ -201,8 +202,8 @@ def test_nbody_matches_pmwd_for_forward_and_notebook_style_mode_gradient():
 
 if pytest is not None:
     test_nbody_matches_pmwd_for_forward_and_notebook_style_mode_gradient = pytest.mark.skipif(
-        GPU_COUNT < 2,
-        reason="nbody gradient test requires 2 GPUs",
+        GPU_COUNT < 1,
+        reason="nbody gradient test requires at least 1 GPU",
     )(test_nbody_matches_pmwd_for_forward_and_notebook_style_mode_gradient)
 
 

@@ -52,10 +52,10 @@ def _build_probe_state(conf):
 
 
 def test_halo_move_vjp_matches_true_vjp():
-    if GPU_COUNT < 2:
+    if GPU_COUNT < 1:
         if pytest is not None:
-            pytest.skip("halo moving gradient test requires 2 GPUs")
-        raise SystemExit("halo moving gradient test requires 2 GPUs")
+            pytest.skip("halo moving gradient test requires at least 1 GPU")
+        raise SystemExit("halo moving gradient test requires at least 1 GPU")
 
     conf = init_conf(
         num_ptcl=8,
@@ -139,8 +139,8 @@ def test_halo_move_vjp_matches_true_vjp():
 
 if pytest is not None:
     test_halo_move_vjp_matches_true_vjp = pytest.mark.skipif(
-        GPU_COUNT < 2,
-        reason="halo moving gradient test requires 2 GPUs",
+        GPU_COUNT < 1,
+        reason="halo moving gradient test requires at least 1 GPU",
     )(test_halo_move_vjp_matches_true_vjp)
 
 

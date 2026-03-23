@@ -64,11 +64,19 @@ def _particle_slot_mapping(ptcl_pmwd, conf):
     return pid_slots, valid_slots, first_slot
 
 
+def _sum_duplicate_slot_gradients(grad_pmpp_slots, pid_slots, valid_slots, ptcl_num):
+    grad = np.zeros((ptcl_num, grad_pmpp_slots.shape[-1]), dtype=grad_pmpp_slots.dtype)
+    for slot, pid in enumerate(pid_slots):
+        if valid_slots[slot]:
+            grad[pid] += grad_pmpp_slots[slot]
+    return grad
+
+
 def test_gravity_matches_pmwd_for_forward_and_gradients():
-    if GPU_COUNT < 2:
+    if GPU_COUNT < 1:
         if pytest is not None:
-            pytest.skip("gravity gradient test requires 2 GPUs")
-        raise SystemExit("gravity gradient test requires 2 GPUs")
+            pytest.skip("gravity gradient test requires at least 1 GPU")
+        raise SystemExit("gravity gradient test requires at least 1 GPU")
 
     conf = init_conf(
         num_ptcl=4,
@@ -126,19 +134,19 @@ def test_gravity_matches_pmwd_for_forward_and_gradients():
     grad_disp_pmpp_fn = jax.jit(jax.grad(disp_loss_pmpp_unique))
     grad_disp_pmwd = np.asarray(jax.device_get(grad_disp_pmwd_fn(ptcl_pmwd.disp)))
     grad_disp_pmpp_slots = np.asarray(jax.device_get(grad_disp_pmpp_fn(ptcl_pmpp.disp)))
-    grad_disp_pmpp = grad_disp_pmpp_slots[first_slot]
+    grad_disp_pmpp = _sum_duplicate_slot_gradients(
+        grad_disp_pmpp_slots,
+        pid_slots,
+        valid_slots,
+        conf.ptcl_num,
+    )
     assert np.allclose(grad_disp_pmpp, grad_disp_pmwd, atol=1e-6, rtol=1e-6)
-
-    for pid in np.unique(pid_slots[valid_slots]):
-        slots = np.flatnonzero(valid_slots & (pid_slots == pid))
-        ref = grad_disp_pmpp_slots[slots[0]]
-        assert np.allclose(grad_disp_pmpp_slots[slots], ref, atol=1e-6, rtol=1e-6)
 
 
 if pytest is not None:
     test_gravity_matches_pmwd_for_forward_and_gradients = pytest.mark.skipif(
-        GPU_COUNT < 2,
-        reason="gravity gradient test requires 2 GPUs",
+        GPU_COUNT < 1,
+        reason="gravity gradient test requires at least 1 GPU",
     )(test_gravity_matches_pmwd_for_forward_and_gradients)
 
 

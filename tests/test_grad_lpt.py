@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 
 os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
+os.environ.setdefault('XLA_FLAGS', '--xla_gpu_use_runtime_fusion=false')
 
 import numpy as np
 
@@ -94,10 +95,10 @@ def _dens_pmpp(modes_real, base_cosmo, conf):
 
 
 def test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients():
-    if GPU_COUNT < 2:
+    if GPU_COUNT < 1:
         if pytest is not None:
-            pytest.skip("LPT gradient test requires 2 GPUs")
-        raise SystemExit("LPT gradient test requires 2 GPUs")
+            pytest.skip("LPT gradient test requires at least 1 GPU")
+        raise SystemExit("LPT gradient test requires at least 1 GPU")
 
     for lpt_order in (1, 2):
         conf_pmpp, conf_pmwd = _init_confs(lpt_order=lpt_order)
@@ -155,8 +156,8 @@ def test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients():
 
 if pytest is not None:
     test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients = pytest.mark.skipif(
-        GPU_COUNT < 2,
-        reason="LPT gradient test requires 2 GPUs",
+        GPU_COUNT < 1,
+        reason="LPT gradient test requires at least 1 GPU",
     )(test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients)
 
 

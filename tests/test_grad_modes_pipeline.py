@@ -71,10 +71,10 @@ def _init_confs():
 
 
 def test_linear_modes_gradients_match_pmwd():
-    if GPU_COUNT < 2:
+    if GPU_COUNT < 1:
         if pytest is not None:
-            pytest.skip("linear-modes gradient test requires 2 GPUs")
-        raise SystemExit("linear-modes gradient test requires 2 GPUs")
+            pytest.skip("linear-modes gradient test requires at least 1 GPU")
+        raise SystemExit("linear-modes gradient test requires at least 1 GPU")
 
     conf_pmpp, conf_pmwd = _init_confs()
 
@@ -149,8 +149,8 @@ def test_linear_modes_gradients_match_pmwd():
 
 if pytest is not None:
     test_linear_modes_gradients_match_pmwd = pytest.mark.skipif(
-        GPU_COUNT < 2,
-        reason="linear-modes gradient test requires 2 GPUs",
+        GPU_COUNT < 1,
+        reason="linear-modes gradient test requires at least 1 GPU",
     )(test_linear_modes_gradients_match_pmwd)
 
 
