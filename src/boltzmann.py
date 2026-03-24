@@ -2,6 +2,7 @@ from jax import jit, custom_vjp, ensure_compile_time_eval
 import jax.numpy as jnp
 
 from .cosmo import H_deriv, Omega_m_a
+from .growth import _linear_interp
 from .ode_util import odeint
 
 
@@ -264,7 +265,7 @@ def growth(a, cosmo, conf, order=1, deriv=0):
     a = jnp.asarray(a)
     float_dtype = jnp.promote_types(a.dtype, float)
 
-    D = a**order * jnp.interp(a, conf.growth_a, cosmo.growth[order-1][deriv])
+    D = a**order * _linear_interp(a, conf.growth_a, cosmo.growth[order - 1][deriv])
 
     return D.astype(float_dtype)
 

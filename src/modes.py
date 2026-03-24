@@ -141,8 +141,8 @@ def _nested_fourier_modes_from_numbers(seed, conf, kx_modes, ky_modes, kz_modes,
     )
 
     sqrt_half = jnp.asarray(0.7071067811865476, dtype=float_dtype)
-    coeff = (gaussian_real + 1j * gaussian_imag).astype(complex_dtype) * sqrt_half
-    plane_coeff = jnp.where(self_point, gaussian_real.astype(complex_dtype), coeff)
+    coeff = jax.lax.complex(gaussian_real, gaussian_imag) * sqrt_half
+    plane_coeff = jnp.where(self_point, jax.lax.complex(gaussian_real, jnp.zeros_like(gaussian_imag)), coeff)
     plane_coeff = jnp.where(need_conj, jnp.conj(plane_coeff), plane_coeff)
     modes = jnp.where(plane_self_conj, plane_coeff, coeff)
 

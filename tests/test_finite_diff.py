@@ -14,6 +14,7 @@ import os
 os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import jax
@@ -162,6 +163,33 @@ def _base_setup(num_ptcl=8, seed=42):
     return conf, cosmo, ptcl.replace(disp=disp, vel=vel, acc=acc)
 
 
+@lru_cache(maxsize=None)
+def _base_setup_x64(num_ptcl=8):
+    """Small float64 2-GPU setup for multi-step nbody FD checks."""
+    with jax.experimental.enable_x64():
+        gpu_devices = [d for d in jax.devices() if d.platform == "gpu"][:2]
+        compute_mesh = create_compute_mesh(gpu_devices)
+        conf = Configuration(
+            ptcl_spacing=100.0 / num_ptcl,
+            ptcl_grid_shape=(num_ptcl,) * 3,
+            mesh_shape=1,
+            compute_mesh=compute_mesh,
+            max_ptcl_per_slice=int(num_ptcl ** 3 / len(gpu_devices) * 1.8),
+            max_share_ptcl=20000,
+            max_share_gather_ptcl=50000,
+            to_save_z=[1, 2 / 3, 1 / 3, 0],
+            a_start=1 / 60,
+            a_stop=1,
+            a_nbody_maxstep=1 / 60,
+            float_dtype=jnp.float64,
+            cosmo_dtype=jnp.float64,
+        )
+        cosmo = boltzmann(SimpleLCDM(conf), conf)
+        ptcl = lpt(linear_modes(white_noise(0, conf), cosmo, conf), cosmo, conf)
+        return conf, cosmo, ptcl
+
+
+@lru_cache(maxsize=None)
 def _particle_fd_setup_x64(num_ptcl=4, seed=42):
     """Small float64 2-GPU setup for particle/mesh FD checks."""
     with jax.experimental.enable_x64():
@@ -398,14 +426,14 @@ def test_fd_linear_modes():
 @REQUIRE_2GPU
 def test_fd_lpt_modes():
     """LPT gradient w.r.t. real-space white noise (through linear_modes + lpt)."""
-    conf, cosmo, _ = _base_setup()
+    conf, cosmo, _ = _particle_fd_setup_x64()
     wn = white_noise(0, conf, real=True)
 
     def loss(m):
         p = lpt(linear_modes(m, cosmo, conf), cosmo, conf)
         return _sumsq(p.disp)
 
-    _check_fd(loss, wn, eps=5e-4)
+    _check_fd(loss, wn, eps=1e-4, rtol=1e-7, atol=1e-9, fd_order=4)
 
 
 # ═══════════════════════════ N-body (full manual adjoint) ═══════════════════════════
@@ -413,25 +441,23 @@ def test_fd_lpt_modes():
 @REQUIRE_2GPU
 def test_fd_nbody_disp():
     """N-body gradient w.r.t. initial displacement (tests nbody_adj)."""
-    conf, cosmo, _ = _base_setup()
-    ptcl = lpt(linear_modes(white_noise(0, conf), cosmo, conf), cosmo, conf)
+    conf, cosmo, ptcl = _base_setup_x64()
 
     def loss(disp):
         return _sumsq(nbody(ptcl.replace(disp=disp), cosmo, conf).disp)
 
-    _check_fd(loss, ptcl.disp, mask=_owned_mask_2d(ptcl), eps=1e-4)
+    _check_fd(loss, ptcl.disp, mask=_owned_mask_2d(ptcl), eps=1e-4, rtol=1e-7, atol=1e-9)
 
 
 @REQUIRE_2GPU
 def test_fd_nbody_omega_m():
     """N-body gradient w.r.t. Omega_m (tests adjoint cosmology gradient)."""
-    conf, cosmo, _ = _base_setup()
-    ptcl = lpt(linear_modes(white_noise(0, conf), cosmo, conf), cosmo, conf)
+    conf, cosmo, ptcl = _base_setup_x64()
 
     def loss(om):
         return _sumsq(nbody(ptcl, cosmo.replace(Omega_m=om), conf).disp)
 
-    _check_fd(loss, cosmo.Omega_m, eps=1e-5)
+    _check_fd(loss, cosmo.Omega_m, eps=1e-5, rtol=1e-7, atol=1e-9)
 
 
 # ═══════════════════════════ Cosmology / Boltzmann ═══════════════════════════

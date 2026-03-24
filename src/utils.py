@@ -11,60 +11,6 @@ from jax.tree_util import register_pytree_node, tree_leaves, tree_map
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 
-
-class _AuxDataWrapper:
-    """Wraps pytree aux_data to allow JAX arrays as metadata.
-
-    JAX requires pytree aux_data (metadata) to be hashable and support simple
-    equality.  When a ``pytree_dataclass`` stores JAX arrays in aux_data fields
-    (e.g. ``Configuration`` with ``aux_fields=Ellipsis``), the default tuple
-    comparison breaks because ``array == other`` returns an array rather than a
-    bool.
-
-    This wrapper overrides ``__eq__`` and ``__hash__`` to handle arrays
-    element-wise via numpy, falling back to object identity if all else fails.
-    """
-
-    __slots__ = ("_data",)
-
-    def __init__(self, data):
-        self._data = data
-
-    def __eq__(self, other):
-        if not isinstance(other, _AuxDataWrapper):
-            return NotImplemented
-        if len(self._data) != len(other._data):
-            return False
-        for a, b in zip(self._data, other._data):
-            try:
-                eq = a == b
-                # Array-valued result — use element-wise all()
-                if hasattr(eq, "shape") or (hasattr(eq, "__len__") and not isinstance(eq, str)):
-                    if not np.all(np.asarray(eq)):
-                        return False
-                else:
-                    if not bool(eq):
-                        return False
-            except Exception:
-                # Fall back to identity comparison
-                if a is not b:
-                    return False
-        return True
-
-    def __hash__(self):
-        h = 0
-        for item in self._data:
-            try:
-                item_hash = hash(item)
-            except TypeError:
-                try:
-                    item_hash = hash(np.asarray(item).tobytes())
-                except Exception:
-                    item_hash = id(item)
-            h = hash((h, item_hash))
-        return h
-
-
 def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
     """Register python dataclasses as custom pytree nodes.
 
@@ -150,13 +96,11 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
     cls.named_aux_data = named_aux_data
 
     def tree_flatten(obj):
-        # JAX doesn't like the flatten function to return iterators, and somehow
+        # FIXME JAX doesn't like the flatten function to return iterators, and somehow
         # triggered AssertionError by _closure_convert_for_avals in custom_derivatives.py
-        return tuple(obj.children()), _AuxDataWrapper(tuple(obj.aux_data()))
+        return tuple(obj.children()), tuple(obj.aux_data())
 
     def tree_unflatten(aux_data, children):
-        if isinstance(aux_data, _AuxDataWrapper):
-            aux_data = aux_data._data
         return cls(**dict(zip(children_names, children)),
                    **dict(zip(aux_data_names, aux_data)))
 
@@ -178,10 +122,10 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
             return all(is_placeholder(x) for x in tree_leaves(tree))
 
         # unnecessary to test for None's since they are empty pytree nodes
-        # Also check for str: JAX may pass string representations of abstract
-        # values (e.g. 'int16[N,3]') during custom_vjp backward tracing.
         return tree_leaves(self) and leaves_all(
-            lambda x: type(x) is object or isinstance(x, str), self)
+            lambda x: type(x) is object or isinstance(x, str),
+            self,
+        )
 
     cls._is_transforming = _is_transforming
 

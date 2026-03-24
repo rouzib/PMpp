@@ -8,7 +8,7 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .configuration import Configuration
 from .scatter import scatter, reduce_grad_across_gpus
-from .gather_old import gather
+from .gather import gather
 from .utils import AXIS_NAME
 
 
@@ -82,9 +82,7 @@ def neg_grad(k, pot, spacing):
 
 def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration):
     grad_meshes = _gravity_mesh_fields_from_density(dens, cosmo.Omega_m, conf)
-    disp = _gather_disp_with_duplicate_reduction(ptcl.pmid, ptcl.disp, ptcl.unused_index, conf)
-    gather_ptcl = ptcl.replace(disp=disp)
-    acc = [gather(gather_ptcl, conf, grad) for grad in grad_meshes]
+    acc = [gather(ptcl, conf, grad) for grad in grad_meshes]
     return jnp.stack(acc, axis=-1)
 
 
@@ -140,27 +138,6 @@ def reduce_duplicate_slot_cot(ptcl, cot, conf: Configuration):
     """Sum cotangents across halo-duplicated slots for one particle field."""
     unused_index = None if ptcl.unused_index is None else ptcl.unused_index
     return _reduce_gather_disp_cot(ptcl.pmid, ptcl.disp, unused_index, cot, conf)
-
-
-@partial(custom_vjp, nondiff_argnums=(3,))
-def _gather_disp_with_duplicate_reduction(pmid, disp, unused_index, conf):
-    return disp
-
-
-def _gather_disp_with_duplicate_reduction_fwd(pmid, disp, unused_index, conf):
-    return disp, (pmid, disp, unused_index)
-
-
-def _gather_disp_with_duplicate_reduction_bwd(conf, res, disp_cot):
-    pmid, disp, unused_index = res
-    disp_cot = _reduce_gather_disp_cot(pmid, disp, unused_index, disp_cot, conf)
-    return None, disp_cot, None
-
-
-_gather_disp_with_duplicate_reduction.defvjp(
-    _gather_disp_with_duplicate_reduction_fwd,
-    _gather_disp_with_duplicate_reduction_bwd,
-)
 
 
 def duplicate_slot_counts(ptcl, conf: Configuration):

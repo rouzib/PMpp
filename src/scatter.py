@@ -333,7 +333,15 @@ def _scatter_bwd(res, mesh_cot):
         disp_cot = _chunk_cat(disp_cot_0, disp_cot)
         val_cot = _chunk_cat(val_cot_0, val_cot)
 
-    disp_cot = reduce_grad_across_gpus(disp_cot, pmid, disp, val != 0, conf) * (val != 0)[:, None]
+    # The standalone scatter primitive is defined on the duplicated slot state.
+    # Keep the backward local to each slot and let higher-level callers decide
+    # when duplicate halo-slot cotangents should be aggregated back to unique
+    # particles.
+    val_nonzero = jnp.asarray(val != 0)
+    if val_nonzero.ndim == 0:
+        disp_cot = jnp.where(val_nonzero, disp_cot, 0)
+    else:
+        disp_cot = jnp.where(val_nonzero[:, None], disp_cot, 0)
 
     return None, disp_cot, None, mesh_cot, val_cot, None, None
 

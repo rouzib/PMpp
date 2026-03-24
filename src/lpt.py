@@ -6,7 +6,7 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .cosmo import E2
 from .fft import fftinv, fftfwd, fftfreq
-from .gravity import laplace, neg_grad, duplicate_slot_counts
+from .gravity import laplace, neg_grad
 from .growth import growth
 from .particles import Particles
 from .steps import _halo_move_vjp
@@ -47,19 +47,33 @@ def _L(kvec, pot_m, pot_n, conf):
     L = jnp.zeros(conf.ptcl_grid_shape, dtype=conf.float_dtype,
                   device=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None)))
 
-    for i in range(conf.dim):
-        strain_m = _strain(kvec, i, i, pot_m, conf)
+    if conf.lpt_cache_strains:
+        # Cache diagonal strains to avoid redundant irfftn calls (conf.lpt_cache_strains=True).
+        # Saves dim-1 irfftn calls per _L at the cost of keeping dim extra strain arrays
+        # (each of shape ptcl_grid_shape) alive simultaneously. Set lpt_cache_strains=False
+        # to recompute instead, trading compute for GPU memory.
+        diag_m = [_strain(kvec, i, i, pot_m, conf) for i in range(conf.dim)]
+        diag_n = diag_m if m_eq_n else [_strain(kvec, i, i, pot_n, conf) for i in range(conf.dim)]
 
-        for j in range(conf.dim - 1, i, -1):
-            strain_n = _strain(kvec, j, j, pot_n, conf)
+        for i in range(conf.dim):
+            for j in range(conf.dim - 1, i, -1):
+                L += diag_m[i] * diag_n[j]
 
-            L += strain_m * strain_n
+            if not m_eq_n:
+                for j in range(i - 1, -1, -1):
+                    L += diag_m[i] * diag_n[j]
+    else:
+        for i in range(conf.dim):
+            strain_m = _strain(kvec, i, i, pot_m, conf)
 
-        if not m_eq_n:
-            for j in range(i - 1, -1, -1):
+            for j in range(conf.dim - 1, i, -1):
                 strain_n = _strain(kvec, j, j, pot_n, conf)
-
                 L += strain_m * strain_n
+
+            if not m_eq_n:
+                for j in range(i - 1, -1, -1):
+                    strain_n = _strain(kvec, j, j, pot_n, conf)
+                    L += strain_m * strain_n
 
     if not m_eq_n:
         L *= 0.5
@@ -79,20 +93,18 @@ def _L(kvec, pot_m, pot_n, conf):
     return L
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(6,))
-def _attach_lpt_halo_move_vjp(disp_before, vel_before, disp_after, vel_after, ptcl_before, duplicate_counts, conf):
+@partial(jax.custom_vjp, nondiff_argnums=(5,))
+def _attach_lpt_halo_move_vjp(disp_before, vel_before, disp_after, vel_after, ptcl_before, conf):
     return disp_after, vel_after
 
 
-def _attach_lpt_halo_move_vjp_fwd(disp_before, vel_before, disp_after, vel_after, ptcl_before, duplicate_counts, conf):
-    return (disp_after, vel_after), (disp_before, vel_before, ptcl_before, jax.lax.stop_gradient(duplicate_counts))
+def _attach_lpt_halo_move_vjp_fwd(disp_before, vel_before, disp_after, vel_after, ptcl_before, conf):
+    return (disp_after, vel_after), (disp_before, vel_before, ptcl_before)
 
 
 def _attach_lpt_halo_move_vjp_bwd(conf, res, cotangents):
-    disp_before, vel_before, ptcl_before, duplicate_counts = res
+    disp_before, vel_before, ptcl_before = res
     disp_cot, vel_cot = cotangents
-    disp_cot = jnp.where(duplicate_counts != 0, disp_cot / duplicate_counts, 0)
-    vel_cot = jnp.where(duplicate_counts != 0, vel_cot / duplicate_counts, 0)
     scratch_acc = disp_before[:, :0]
 
     disp_before_cot, vel_before_cot, _ = _halo_move_vjp(
@@ -112,7 +124,6 @@ def _attach_lpt_halo_move_vjp_bwd(conf, res, cotangents):
         vel_before_cot,
         jnp.zeros_like(disp_cot),
         jnp.zeros_like(vel_cot),
-        None,
         None,
     )
 
@@ -223,14 +234,12 @@ def lpt(modes, cosmo, conf):
         halo_mask=halo_mask,
         unused_index=unused_indexes,
     )
-    duplicate_counts = duplicate_slot_counts(ptcl_after, conf).astype(disp.dtype)
     disp, vel = _attach_lpt_halo_move_vjp(
         disp_before_halo,
         vel_before_halo,
         ptcl_after.disp,
         ptcl_after.vel,
         ptcl,
-        duplicate_counts,
         conf,
     )
 
