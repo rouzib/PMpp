@@ -3,7 +3,6 @@ from pathlib import Path
 import os
 
 os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
-os.environ.setdefault('XLA_FLAGS', '--xla_gpu_use_runtime_fusion=false')
 
 import numpy as np
 
