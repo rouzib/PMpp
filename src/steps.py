@@ -1,34 +1,59 @@
 import jax
 from jax import vjp, value_and_grad
 import jax.numpy as jnp
-from jax.tree_util import tree_map
 
 from .configuration import Configuration
 from .cosmo import E2, H_deriv
-from .gravity import gravity, duplicate_slot_counts, reduce_duplicate_slot_cot
+from .gravity import gravity, duplicate_slot_counts
 from .growth import growth
 from .particles import Particles
 
 
-def _halo_move_float_outputs(ptcl, disp, vel, acc, share_only_right, conf):
+def _halo_move_float_outputs(ptcl, disp, vel, acc, conf):
     _, disp, vel, acc, _, _, _, _ = conf.mGPU_halo_moving(
         ptcl.pmid,
+        ptcl.disp,
         disp,
         vel,
         acc,
         conf.halo_start,
         conf.halo_end,
-        ptcl.halo_mask,
         ptcl.unused_index,
-        share_only_right,
     )
     return disp, vel, acc
 
 
-def _halo_move_vjp(ptcl, disp, vel, acc, disp_cot, vel_cot, acc_cot, share_only_right, conf):
+def _halo_move_float_outputs_with_aux(ptcl, disp, vel, acc, conf):
+    pmid, disp, vel, acc, halo_mask, unused_indexes, _, _ = conf.mGPU_halo_moving(
+        ptcl.pmid,
+        ptcl.disp,
+        disp,
+        vel,
+        acc,
+        conf.halo_start,
+        conf.halo_end,
+        ptcl.unused_index,
+    )
+    return (disp, vel, acc), (pmid, halo_mask, unused_indexes)
+
+
+def _halo_move_outputs_vjp_with_aux(ptcl, disp, vel, acc, conf):
+    (float_outputs, halo_move_vjp, aux) = vjp(
+        lambda disp_in, vel_in, acc_in: _halo_move_float_outputs_with_aux(
+            ptcl, disp_in, vel_in, acc_in, conf
+        ),
+        disp,
+        vel,
+        acc,
+        has_aux=True,
+    )
+    return float_outputs, aux, halo_move_vjp
+
+
+def _halo_move_vjp(ptcl, disp, vel, acc, disp_cot, vel_cot, acc_cot, conf):
     _, halo_move_vjp = vjp(
         lambda disp_in, vel_in, acc_in: _halo_move_float_outputs(
-            ptcl, disp_in, vel_in, acc_in, share_only_right, conf
+            ptcl, disp_in, vel_in, acc_in, conf
         ),
         disp,
         vel,
@@ -88,60 +113,102 @@ def drift(a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configuration):
     """Drift."""
     factor = drift_factor(a_vel, a_prev, a_next, cosmo, conf)
     factor = factor.astype(conf.float_dtype)
-    share_only_right = conf.num_devices == 2
-
     disp = ptcl.disp + ptcl.vel * factor
 
     pmid, disp, vel, acc, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
-        ptcl.pmid, disp, ptcl.vel, ptcl.acc, conf.halo_start, conf.halo_end,
-        ptcl.halo_mask, ptcl.unused_index, share_only_right)
+        ptcl.pmid,
+        ptcl.disp,
+        disp,
+        ptcl.vel,
+        ptcl.acc,
+        conf.halo_start,
+        conf.halo_end,
+        ptcl.unused_index,
+    )
     return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, halo_mask=halo_mask, unused_index=unused_indexes)
 
 
 def drift_adj(a_vel, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
-    """Drift, and particle and cosmology adjoints."""
+    """Drift stage adjoint from the pre-drift particle state."""
     factor_valgrad = value_and_grad(drift_factor, argnums=3)
     factor, cosmo_cot_drift = factor_valgrad(a_vel, a_prev, a_next, cosmo, conf)
     factor = factor.astype(conf.float_dtype)
-    share_only_right = conf.num_devices == 2
-
-    # drift
-    ptcl_before_halo = ptcl
     disp_before_halo = ptcl.disp + ptcl.vel * factor
+    vel_before_halo = ptcl.vel
+    acc_before_halo = ptcl.acc
 
-    pmid, disp, vel, acc, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
-        ptcl_before_halo.pmid,
-        disp_before_halo,
-        ptcl_before_halo.vel,
-        ptcl_before_halo.acc,
+    (disp_out, vel_out, acc_out), (pmid, halo_mask, unused_indexes), halo_move_vjp = (
+        _halo_move_outputs_vjp_with_aux(
+            ptcl,
+            disp_before_halo,
+            vel_before_halo,
+            acc_before_halo,
+            conf,
+        )
+    )
+    ptcl_out = ptcl.replace(
+        pmid=pmid,
+        disp=disp_out,
+        vel=vel_out,
+        acc=acc_out,
+        halo_mask=halo_mask,
+        unused_index=unused_indexes,
+    )
+
+    disp, vel, acc = halo_move_vjp((ptcl_cot.disp, ptcl_cot.vel, ptcl_cot.acc))
+    vel_cot = vel - disp * factor
+    ptcl_cot = ptcl_cot.replace(disp=disp, vel=vel_cot, acc=acc)
+
+    cosmo_cot_drift *= (disp * vel_before_halo).sum()
+    cosmo_cot -= cosmo_cot_drift
+
+    return ptcl_out, ptcl_cot, cosmo_cot
+
+
+def drift_adj_from_output(a_vel, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
+    """Drift stage adjoint from the post-drift particle state."""
+    factor_valgrad = value_and_grad(drift_factor, argnums=3)
+    factor, cosmo_cot_drift = factor_valgrad(a_vel, a_prev, a_next, cosmo, conf)
+    factor = factor.astype(conf.float_dtype)
+    # The adjoint scan only has the post-drift state, so rebuild the exact
+    # canonical pre-drift layout before pulling the cotangent through halo move.
+    pmid, disp_input, vel_before_halo, acc_before_halo, unused_indexes, halo_mask_input = conf.mGPU_reconstruct_pre_drift(
+        ptcl.pmid,
+        ptcl.disp,
+        ptcl.vel,
+        ptcl.acc,
         conf.halo_start,
         conf.halo_end,
-        ptcl_before_halo.halo_mask,
-        ptcl_before_halo.unused_index,
-        share_only_right,
+        ptcl.unused_index,
+        factor,
     )
-    ptcl = ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, halo_mask=halo_mask, unused_index=unused_indexes)
+    ptcl = ptcl.replace(
+        pmid=pmid,
+        disp=disp_input,
+        vel=vel_before_halo,
+        acc=acc_before_halo,
+        halo_mask=halo_mask_input,
+        unused_index=unused_indexes,
+    )
+    disp_before_halo = disp_input + vel_before_halo * factor
 
-    disp, vel, acc = _halo_move_vjp(
-        ptcl_before_halo,
+    disp, vel, acc = conf.mGPU_halo_move_pullback(
+        ptcl.pmid,
+        ptcl.disp,
         disp_before_halo,
-        ptcl_before_halo.vel,
-        ptcl_before_halo.acc,
+        vel_before_halo,
+        acc_before_halo,
+        conf.halo_end,
+        ptcl.unused_index,
         ptcl_cot.disp,
         ptcl_cot.vel,
         ptcl_cot.acc,
-        share_only_right,
-        conf,
     )
-    ptcl_cot = ptcl_cot.replace(disp=disp, vel=vel, acc=acc)
+    vel_cot = vel + disp * factor
+    ptcl_cot = ptcl_cot.replace(disp=disp, vel=vel_cot, acc=acc)
 
-    # particle adjoint
-    vel_cot = ptcl_cot.vel - ptcl_cot.disp * factor
-    ptcl_cot = ptcl_cot.replace(vel=vel_cot)
-
-    # cosmology adjoint
-    cosmo_cot_drift *= (ptcl_cot.disp * ptcl_before_halo.vel).sum()
-    cosmo_cot -= cosmo_cot_drift
+    cosmo_cot_drift *= (disp * vel_before_halo).sum()
+    cosmo_cot += cosmo_cot_drift
 
     return ptcl, ptcl_cot, cosmo_cot
 
@@ -156,24 +223,24 @@ def kick(a_acc, a_prev, a_next, ptcl, cosmo, conf):
     return ptcl.replace(vel=vel)
 
 
-def kick_adj(a_acc, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, cosmo_cot_force, conf):
+def kick_adj(a_acc, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
     """Kick, and particle and cosmology adjoints."""
     factor_valgrad = value_and_grad(kick_factor, argnums=3)
     factor, cosmo_cot_kick = factor_valgrad(a_acc, a_prev, a_next, cosmo, conf)
     factor = factor.astype(conf.float_dtype)
 
     # kick
-    vel = ptcl.vel + ptcl.acc * factor
+    vel = ptcl.vel - ptcl.acc * factor
     ptcl = ptcl.replace(vel=vel)
 
-    # particle adjoint
-    disp_cot = ptcl_cot.disp - ptcl_cot.acc * factor
-    ptcl_cot = ptcl_cot.replace(disp=disp_cot)
+    # Kick only updates velocity, so the velocity cotangent feeds both the
+    # input velocity and the input acceleration.
+    vel_out_cot = ptcl_cot.vel
+    acc_cot = ptcl_cot.acc + vel_out_cot * factor
+    ptcl_cot = ptcl_cot.replace(vel=vel_out_cot, acc=acc_cot)
 
-    # cosmology adjoint
-    cosmo_cot_kick *= (ptcl_cot.vel * ptcl.acc).sum()
-    cosmo_cot_force *= factor
-    cosmo_cot -= cosmo_cot_kick + cosmo_cot_force
+    cosmo_cot_kick *= (vel_out_cot * ptcl.acc).sum()
+    cosmo_cot += cosmo_cot_kick
 
     return ptcl, ptcl_cot, cosmo_cot
 
@@ -191,25 +258,16 @@ def force_adj(a, ptcl, ptcl_cot, cosmo, conf):
 
     ptcl = ptcl.replace(acc=acc)
 
-    # particle and cosmology vjp
-    acc_out_cot = ptcl_cot.vel
-    _, ptcl_cot_force, _, _ = gravity_vjp(acc_out_cot)
-    counts = duplicate_slot_counts(ptcl, conf).astype(ptcl_cot_force.disp.dtype)
-    acc_cot = jnp.where(counts != 0, ptcl_cot_force.disp / counts, 0)
-    ptcl_cot = ptcl_cot.replace(acc=acc_cot)
-
-    # Gravity only depends on cosmology through Omega_m, and the dependence is linear.
-    # Compute this cotangent analytically after reducing duplicated halo-slot cotangents.
-    acc_out_cot = reduce_duplicate_slot_cot(ptcl, acc_out_cot, conf).astype(acc.dtype)
-    acc_out_cot = jnp.where(counts != 0, acc_out_cot / counts, 0)
-    omega_scale = cosmo.Omega_m.astype(acc.dtype)
-    omega_cot = jnp.where(
-        omega_scale != 0,
-        jnp.sum(acc_out_cot * acc) / omega_scale,
-        jnp.asarray(0, dtype=acc.dtype),
-    ).astype(cosmo.Omega_m.dtype)
-    cosmo_cot_force = tree_map(lambda x: jnp.zeros_like(x) if x is not None else None, cosmo)
-    cosmo_cot_force = cosmo_cot_force.replace(Omega_m=omega_cot)
+    # The force output only differs from the input in the acceleration field.
+    # Pull the acceleration cotangent through gravity and pass the untouched
+    # displacement / velocity cotangents straight through.
+    acc_out_cot = ptcl_cot.acc
+    _, ptcl_cot_force, cosmo_cot_force, _ = gravity_vjp(acc_out_cot)
+    disp_cot_force = ptcl_cot_force.disp
+    disp_cot = ptcl_cot.disp + disp_cot_force
+    vel_cot = ptcl_cot.vel
+    acc_cot = jnp.zeros_like(ptcl.acc)
+    ptcl_cot = ptcl_cot.replace(disp=disp_cot, vel=vel_cot, acc=acc_cot)
 
     return ptcl, ptcl_cot, cosmo_cot_force
 
@@ -236,24 +294,61 @@ def integrate(a_prev, a_next, ptcl, cosmo, conf):
     return ptcl
 
 
-def integrate_adj(a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, cosmo_cot_force, conf):
-    """Symplectic integration adjoint for one step."""
-    K = D = 0
+def _integrate_stage_schedule(a_prev, a_next, conf):
+    """Record the forward substep times so the adjoint can traverse them exactly."""
+    D = K = 0
     a_disp = a_vel = a_acc = a_prev
-    for d, k in reversed(conf.symp_splits):
-        if k != 0:
-            K += k
-            a_vel_next = a_prev * (1 - K) + a_next * K
-            ptcl, ptcl_cot, cosmo_cot = kick_adj(a_acc, a_vel, a_vel_next, ptcl, ptcl_cot, cosmo, cosmo_cot,
-                                                 cosmo_cot_force, conf)
-            a_vel = a_vel_next
-
+    stages = []
+    for d, k in conf.symp_splits:
         if d != 0:
             D += d
             a_disp_next = a_prev * (1 - D) + a_next * D
-            ptcl, ptcl_cot, cosmo_cot = drift_adj(a_vel, a_disp, a_disp_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf)
+            stages.append(("drift", a_vel, a_disp, a_disp_next, a_acc))
             a_disp = a_disp_next
-            ptcl, ptcl_cot, cosmo_cot_force = force_adj(a_disp, ptcl, ptcl_cot, cosmo, conf)
             a_acc = a_disp
 
-    return ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force
+        if k != 0:
+            K += k
+            a_vel_next = a_prev * (1 - K) + a_next * K
+            stages.append(("kick", a_acc, a_vel, a_vel_next))
+            a_vel = a_vel_next
+    return stages
+
+
+def integrate_adj(a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
+    """Symplectic integration adjoint for one step."""
+
+    for stage in reversed(_integrate_stage_schedule(a_prev, a_next, conf)):
+        if stage[0] == "kick":
+            _, a_acc_stage, a_vel_stage, a_vel_next = stage
+            ptcl, ptcl_cot, cosmo_cot = kick_adj(
+                a_acc_stage,
+                a_vel_stage,
+                a_vel_next,
+                ptcl,
+                ptcl_cot,
+                cosmo,
+                cosmo_cot,
+                conf,
+            )
+            continue
+
+        _, a_vel_stage, a_disp_stage, a_disp_next, a_acc_in = stage
+        ptcl, ptcl_cot, cosmo_cot_force_stage = force_adj(a_disp_next, ptcl, ptcl_cot, cosmo, conf)
+        cosmo_cot += cosmo_cot_force_stage
+        ptcl, ptcl_cot, cosmo_cot = drift_adj_from_output(
+            a_vel_stage,
+            a_disp_stage,
+            a_disp_next,
+            ptcl,
+            ptcl_cot,
+            cosmo,
+            cosmo_cot,
+            conf,
+        )
+
+        # The force stage overwrites acceleration, so restore the incoming
+        # acceleration field before any earlier kick adjoint consumes it.
+        ptcl = force(a_acc_in, ptcl, cosmo, conf)
+
+    return ptcl, ptcl_cot, cosmo_cot

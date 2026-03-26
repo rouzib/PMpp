@@ -8,7 +8,7 @@ from jax.lax import scan
 from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .enmesh import _chunk_split, enmesh, _chunk_cat
-from .particles import Particles
+from .halo_moving import particles_in_slice_mask
 from .utils import AXIS_NAME, raise_error, pmid_to_idx
 
 
@@ -21,8 +21,8 @@ def reduce_grad_across_gpus(disp_cot, pmid, disp, valid_mask, conf):
     max_values_to_share = conf.max_share_gather_ptcl
 
     x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % global_nmesh
-    to_share_left = Particles.particles_in_slice_mask(x_mod, *halo_start) & valid_mask
-    to_share_right = Particles.particles_in_slice_mask(x_mod, *halo_end) & valid_mask
+    to_share_left = particles_in_slice_mask(x_mod, *halo_start) & valid_mask
+    to_share_right = particles_in_slice_mask(x_mod, *halo_end) & valid_mask
 
     check_fraction_and_share = (
         (jnp.sum(to_share_right) > max_values_to_share) |
@@ -101,26 +101,25 @@ def reduce_grad_across_gpus(disp_cot, pmid, disp, valid_mask, conf):
         missing_key,
     )
 
-    incoming_idx_left = jnp.where(incoming_valid_left, pmid_to_idx(incoming_pmid_left, conf), -1)
-    incoming_idx_right = jnp.where(incoming_valid_right, pmid_to_idx(incoming_pmid_right, conf), -1)
+    incoming_left_keys = jnp.where(incoming_valid_left, pmid_to_idx(incoming_pmid_left, conf), missing_key)
+    incoming_right_keys = jnp.where(incoming_valid_right, pmid_to_idx(incoming_pmid_right, conf), missing_key)
 
-    sorted_left_order = jnp.argsort(local_left_keys)
-    sorted_left_keys = local_left_keys[sorted_left_order]
-    sorted_left_slots = local_left_slot[sorted_left_order]
+    # The canonical mover packs the local halo subsets and the incoming neighbor
+    # exports in the same sorted packed-key order, so the compacted sequences
+    # align slot-for-slot. A direct positional match is enough here.
+    matched_left = (
+        incoming_valid_left
+        & (local_left_slot >= 0)
+        & (local_left_keys == incoming_left_keys)
+    )
+    update_indices_left = jnp.where(matched_left, local_left_slot, 0)
 
-    matching_left = jnp.searchsorted(sorted_left_keys, incoming_idx_left, method="sort")
-    matching_left = jnp.clip(matching_left, 0, sorted_left_keys.shape[0] - 1)
-    update_indices_left = sorted_left_slots[matching_left]
-    matched_left = incoming_valid_left & (sorted_left_keys[matching_left] == incoming_idx_left) & (update_indices_left >= 0)
-
-    sorted_right_order = jnp.argsort(local_right_keys)
-    sorted_right_keys = local_right_keys[sorted_right_order]
-    sorted_right_slots = local_right_slot[sorted_right_order]
-
-    matching_right = jnp.searchsorted(sorted_right_keys, incoming_idx_right, method="sort")
-    matching_right = jnp.clip(matching_right, 0, sorted_right_keys.shape[0] - 1)
-    update_indices_right = sorted_right_slots[matching_right]
-    matched_right = incoming_valid_right & (sorted_right_keys[matching_right] == incoming_idx_right) & (update_indices_right >= 0)
+    matched_right = (
+        incoming_valid_right
+        & (local_right_slot >= 0)
+        & (local_right_keys == incoming_right_keys)
+    )
+    update_indices_right = jnp.where(matched_right, local_right_slot, 0)
 
     disp_cot = disp_cot.at[update_indices_left].add(incoming_grad_left * matched_left[:, None].astype(disp_cot.dtype))
     disp_cot = disp_cot.at[update_indices_right].add(incoming_grad_right * matched_right[:, None].astype(disp_cot.dtype))

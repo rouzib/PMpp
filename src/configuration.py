@@ -13,7 +13,12 @@ from mcfit import TophatVar
 from .FFT_distributed import create_ffts
 from .fft import fftfreq
 from .gather import initialize_mGPU_gather
-from .particles import Particles
+from .halo_moving import (
+    initialize_mGPU_compute_halo_mask,
+    initialize_mGPU_halo_move_pullback,
+    initialize_mGPU_halo_movement_canonical,
+    initialize_mGPU_reconstruct_pre_drift,
+)
 from .scatter import initialize_mGPU_scatter
 from .utils import pytree_dataclass, build_ring_permutations
 
@@ -192,6 +197,9 @@ class Configuration:
 
     # mGPU functions that need initialization
     mGPU_halo_moving: Callable = lambda x: x
+    mGPU_reconstruct_pre_drift: Callable = lambda x: x
+    mGPU_halo_move_pullback: Callable = lambda x: x
+    mGPU_compute_halo_mask: Callable = lambda x: x
     mGPU_rfftn: Callable = lambda x: x
     mGPU_irfftn: Callable = lambda x: x
     mGPU_scatter: Callable = lambda x: x
@@ -327,7 +335,10 @@ class Configuration:
                 rfftn_jit, irfftn_jit, _, _ = create_ffts(self.compute_mesh)
                 object.__setattr__(self, "mGPU_rfftn", rfftn_jit)
                 object.__setattr__(self, "mGPU_irfftn", irfftn_jit)
-                object.__setattr__(self, "mGPU_halo_moving", Particles.initialize_mGPU_halo_movement(self))
+                object.__setattr__(self, "mGPU_halo_moving", initialize_mGPU_halo_movement_canonical(self))
+                object.__setattr__(self, "mGPU_reconstruct_pre_drift", initialize_mGPU_reconstruct_pre_drift(self))
+                object.__setattr__(self, "mGPU_halo_move_pullback", initialize_mGPU_halo_move_pullback(self))
+                object.__setattr__(self, "mGPU_compute_halo_mask", initialize_mGPU_compute_halo_mask(self))
                 object.__setattr__(self, "mGPU_scatter", initialize_mGPU_scatter(self))
                 object.__setattr__(self, "mGPU_gather", initialize_mGPU_gather(self))
         else:

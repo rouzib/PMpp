@@ -11,7 +11,7 @@ from .utils import AXIS_NAME
 from .boltzmann import linear_power
 
 
-@partial(jax.jit, static_argnames=('real', 'unit_abs'))
+@partial(jax.jit, static_argnames=('conf', 'real', 'unit_abs'))
 def white_noise(seed, conf, real=False, unit_abs=False):
     """White noise Fourier or real modes.
 
@@ -153,7 +153,7 @@ def _nested_fourier_modes_from_numbers(seed, conf, kx_modes, ky_modes, kz_modes,
     return modes
 
 
-@partial(jax.jit, static_argnames=('real', 'unit_abs'))
+@partial(jax.jit, static_argnames=('conf', 'real', 'unit_abs'))
 def white_noise_nested(seed, conf, real=False, unit_abs=False):
     """Nested white noise Fourier or real modes.
 

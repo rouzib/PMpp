@@ -115,7 +115,6 @@ def _attach_lpt_halo_move_vjp_bwd(conf, res, cotangents):
         disp_cot,
         vel_cot,
         scratch_acc,
-        True,
         conf,
     )
 
@@ -224,8 +223,15 @@ def lpt(modes, cosmo, conf):
     vel_before_halo = vel
     scratch_acc = disp[:, :0]
     pmid, disp, vel, acc, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
-        ptcl.pmid, disp, vel, scratch_acc, conf.halo_start, conf.halo_end,
-        ptcl.halo_mask, ptcl.unused_index, True)
+        ptcl.pmid,
+        ptcl.disp,
+        disp,
+        vel,
+        scratch_acc,
+        conf.halo_start,
+        conf.halo_end,
+        ptcl.unused_index,
+    )
     ptcl_after = ptcl.replace(
         pmid=pmid,
         disp=disp,

@@ -8,7 +8,7 @@ from jax.lax import scan
 from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .enmesh import _chunk_split, enmesh, _chunk_cat
-from .particles import Particles
+from .halo_moving import particles_in_slice_mask
 from .utils import AXIS_NAME, raise_error, pmid_to_idx
 
 
@@ -35,29 +35,18 @@ def _match_exchange_routing(local_left_pmid, local_left_slot, local_left_valid,
     missing_key = jnp.asarray(conf.mesh_size, dtype=jnp.int32)
     local_left_keys = jnp.where(local_left_valid, pmid_to_idx(local_left_pmid, conf), missing_key)
     local_right_keys = jnp.where(local_right_valid, pmid_to_idx(local_right_pmid, conf), missing_key)
+    incoming_left_keys = jnp.where(incoming_valid_left, pmid_to_idx(incoming_pmid_left, conf), missing_key)
+    incoming_right_keys = jnp.where(incoming_valid_right, pmid_to_idx(incoming_pmid_right, conf), missing_key)
 
-    incoming_idx_left = jnp.where(incoming_valid_left, pmid_to_idx(incoming_pmid_left, conf), -1)
-    incoming_idx_right = jnp.where(incoming_valid_right, pmid_to_idx(incoming_pmid_right, conf), -1)
+    # Canonical storage builds left-halo copies directly from the neighbor's
+    # sorted right-boundary export, and local right-boundary slots are packed in
+    # that same sorted packed-key order. The compacted local and incoming halo
+    # sequences therefore align slot-for-slot and do not need a key lookup.
+    match_left = local_left_valid & incoming_valid_left & (local_left_keys == incoming_left_keys)
+    update_indices_left = jnp.where(match_left, local_left_slot, 0)
 
-    sorted_left_order = jnp.argsort(local_left_keys)
-    sorted_left_keys = local_left_keys[sorted_left_order]
-    sorted_left_slots = local_left_slot[sorted_left_order]
-
-    matching_left = jnp.searchsorted(sorted_left_keys, incoming_idx_left, method="sort")
-    matching_left = jnp.clip(matching_left, 0, sorted_left_keys.shape[0] - 1)
-    update_indices_left = sorted_left_slots[matching_left]
-    match_left = incoming_valid_left & (sorted_left_keys[matching_left] == incoming_idx_left)
-    update_indices_left = jnp.where(match_left, update_indices_left, 0)
-
-    sorted_right_order = jnp.argsort(local_right_keys)
-    sorted_right_keys = local_right_keys[sorted_right_order]
-    sorted_right_slots = local_right_slot[sorted_right_order]
-
-    matching_right = jnp.searchsorted(sorted_right_keys, incoming_idx_right, method="sort")
-    matching_right = jnp.clip(matching_right, 0, sorted_right_keys.shape[0] - 1)
-    update_indices_right = sorted_right_slots[matching_right]
-    match_right = incoming_valid_right & (sorted_right_keys[matching_right] == incoming_idx_right)
-    update_indices_right = jnp.where(match_right, update_indices_right, 0)
+    match_right = local_right_valid & incoming_valid_right & (local_right_keys == incoming_right_keys)
+    update_indices_right = jnp.where(match_right, local_right_slot, 0)
 
     return (
         update_indices_left,
@@ -79,8 +68,8 @@ def _apply_exchange(val_in, pmid, disp, unused_index, conf, gpu_id, return_routi
 
     val = jnp.where(dummy_mask, jnp.asarray(0, val_in.dtype), val_in)
 
-    to_share_left = Particles.particles_in_slice_mask(x_mod, *halo_start) & ~dummy_mask
-    to_share_right = Particles.particles_in_slice_mask(x_mod, *halo_end) & ~dummy_mask
+    to_share_left = particles_in_slice_mask(x_mod, *halo_start) & ~dummy_mask
+    to_share_right = particles_in_slice_mask(x_mod, *halo_end) & ~dummy_mask
 
     check_fraction_and_share = (
             (jnp.sum(to_share_right) > max_values_to_share) |
