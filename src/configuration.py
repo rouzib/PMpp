@@ -1,26 +1,18 @@
 import math
 from functools import partial
-from typing import ClassVar, Optional, Tuple, Union, List, Callable
+from typing import ClassVar, List, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.tree_util import tree_map
 from jax.sharding import Mesh
-from jax.typing import ArrayLike, DTypeLike
+from jax.typing import DTypeLike
 from mcfit import TophatVar
 
-from .FFT_distributed import create_ffts
 from .fft import fftfreq
-from .gather import initialize_mGPU_gather
-from .halo_moving import (
-    initialize_mGPU_compute_halo_mask,
-    initialize_mGPU_halo_move_pullback,
-    initialize_mGPU_halo_movement_canonical,
-    initialize_mGPU_reconstruct_pre_drift,
-)
-from .scatter import initialize_mGPU_scatter
-from .utils import pytree_dataclass, build_ring_permutations
+from .multigpu_configuration import build_multigpu_configuration, initialize_multigpu_runtime
+from .utils import pytree_dataclass
 
 
 @partial(pytree_dataclass,
@@ -156,7 +148,6 @@ class Configuration:
     lpt_cache_strains: bool = True
 
     a_start: float = 1 / 64
-    a_start: float = 1 / 64
     a_stop: float = 1
     a_lpt_maxstep: float = 1 / 128
     a_nbody_maxstep: float = 1 / 64
@@ -171,39 +162,12 @@ class Configuration:
     slice_to_save: List[int] = None
     max_slice_width: int = None
 
-    # mGPU setup
-    use_mGPU: bool = False
-    num_devices: int = None
-    devices: List[jax.Device] = None
-    devices_index: List[int] = None
-
-    local_mesh_shape: Tuple[int, ...] = None
-
-    # mGPU halos
-    ptcl_halo_width: int = None
-    slice_start: List[int] = None
-    slice_end: List[int] = None
-    halo_start: ArrayLike = None
-    halo_end: ArrayLike = None
-    offsets: List[int] = None
-    scatter_offsets: List[List[int]] = None
-
     max_ptcl_per_slice: int = None
     max_share_ptcl: int = 50000
+    max_halo_share_ptcl: Optional[int] = None
     max_share_gather_ptcl: int = 200000
 
-    left_perm: Tuple[Tuple[int, int]] = None
-    right_perm: Tuple[Tuple[int, int]] = None
-
-    # mGPU functions that need initialization
-    mGPU_halo_moving: Callable = lambda x: x
-    mGPU_reconstruct_pre_drift: Callable = lambda x: x
-    mGPU_halo_move_pullback: Callable = lambda x: x
-    mGPU_compute_halo_mask: Callable = lambda x: x
-    mGPU_rfftn: Callable = lambda x: x
-    mGPU_irfftn: Callable = lambda x: x
-    mGPU_scatter: Callable = lambda x: x
-    mGPU_gather: Callable = lambda x: x
+    _multigpu: object = None
 
     def __post_init__(self):
         if self._is_transforming():
@@ -271,85 +235,68 @@ class Configuration:
         #         TophatVar(self.transfer_k[1:], lowring=True, backend='jax'),
         #     )
 
-        # mGPU setup
-        if self.compute_mesh is not None:
-            if self.compute_mesh.size < 1:
-                raise ValueError(
-                    f"mGPU used, but less than 1 device was set in the compute_mesh (actual: {self.compute_mesh.size}).")
-            with jax.ensure_compile_time_eval():
-                object.__setattr__(self, "use_mGPU", True)
-                object.__setattr__(self, "num_devices", self.compute_mesh.size)
-                object.__setattr__(self, "devices", self.compute_mesh.devices)
-                object.__setattr__(self, "devices_index", list(device.id for device in self.devices))
-
-                object.__setattr__(self, "local_mesh_shape",
-                                   (self.mesh_shape[0] // self.num_devices, self.mesh_shape[1], self.mesh_shape[2]))
-
-                global_nMesh = self.mesh_shape[0]
-                ptcl_halo_width = 0 if self.num_devices == 1 else max(
-                    1,
-                    int(round(self.mesh_shape[0] / self.ptcl_grid_shape[0])),
-                )
-                object.__setattr__(self, "ptcl_halo_width", ptcl_halo_width)
-                slice_start = list(
-                    (global_nMesh // self.num_devices * device_idx) % global_nMesh for device_idx in self.devices_index)
-                slice_end = list((global_nMesh // self.num_devices * (device_idx + 1)) % global_nMesh for device_idx in
-                                 self.devices_index)
-                halo_start = list(
-                    [(slice_s - ptcl_halo_width) % global_nMesh, slice_s] for slice_s in
-                    slice_start)
-                halo_end = list([(slice_e - ptcl_halo_width) % global_nMesh, slice_e] for slice_e in slice_end)
-                object.__setattr__(self, "slice_start", jnp.array(halo_start)[:, 0])
-                object.__setattr__(self, "slice_end",
-                                   jnp.array(halo_end)[:, 1] if self.num_devices > 1 else jnp.array([global_nMesh]))
-                object.__setattr__(self, "halo_start", jnp.array(halo_start))
-                object.__setattr__(self, "halo_end", jnp.array(halo_end))
-
-                offsets = jnp.array(slice_start)
-                object.__setattr__(self, "offsets", offsets)
-                object.__setattr__(self, "scatter_offsets", jnp.array([[o, 0., 0.] for o in offsets]) * self.cell_size)
-
-                """print(f"slice_start = {self.slice_start}")
-                print(f"slice_end = {self.slice_end}")
-                print(f"halo_start = {self.halo_start}")
-                print(f"halo_end = {self.halo_end}")"""
-
-                if self.max_ptcl_per_slice is None:
-                    scaling = 1.3 + (self.num_devices.bit_length() - 3) * 0.1
-                    if self.num_devices == 1:
-                        scaling = 1
-                    object.__setattr__(self, "max_ptcl_per_slice",
-                                       math.floor(self.ptcl_num // self.num_devices * scaling))
-                if self.num_devices == 1:
-                    object.__setattr__(self, "max_ptcl_per_slice",
-                                       min(self.max_ptcl_per_slice, self.ptcl_num))
-                object.__setattr__(self, "max_share_ptcl", min(self.max_share_ptcl, self.max_ptcl_per_slice // 2))
-                object.__setattr__(self, "max_share_gather_ptcl", min(self.max_share_gather_ptcl,
-                                                                      self.max_ptcl_per_slice // 2))
-
-                left_perm, right_perm = build_ring_permutations(self.num_devices)
-                object.__setattr__(self, "left_perm", left_perm)
-                object.__setattr__(self, "right_perm", right_perm)
-
-                # initialization of mGPU functions
-                rfftn_jit, irfftn_jit, _, _ = create_ffts(self.compute_mesh)
-                object.__setattr__(self, "mGPU_rfftn", rfftn_jit)
-                object.__setattr__(self, "mGPU_irfftn", irfftn_jit)
-                object.__setattr__(self, "mGPU_halo_moving", initialize_mGPU_halo_movement_canonical(self))
-                object.__setattr__(self, "mGPU_reconstruct_pre_drift", initialize_mGPU_reconstruct_pre_drift(self))
-                object.__setattr__(self, "mGPU_halo_move_pullback", initialize_mGPU_halo_move_pullback(self))
-                object.__setattr__(self, "mGPU_compute_halo_mask", initialize_mGPU_compute_halo_mask(self))
-                object.__setattr__(self, "mGPU_scatter", initialize_mGPU_scatter(self))
-                object.__setattr__(self, "mGPU_gather", initialize_mGPU_gather(self))
-        else:
-            object.__setattr__(self, "local_mesh_shape", self.mesh_shape)
-            object.__setattr__(self, "ptcl_halo_width", 0)
+        # Multi-GPU topology and initialized helper functions live in a dedicated
+        # runtime object so the main configuration can stay focused on the
+        # physical simulation parameters and their derived scalar/array values.
+        with jax.ensure_compile_time_eval():
+            runtime = build_multigpu_configuration(self)
+            object.__setattr__(self, "_multigpu", runtime)
+            if runtime is not None:
+                object.__setattr__(self, "max_ptcl_per_slice", runtime.max_ptcl_per_slice)
+                object.__setattr__(self, "max_share_ptcl", runtime.max_share_ptcl)
+                object.__setattr__(self, "max_halo_share_ptcl", runtime.max_halo_share_ptcl)
+                object.__setattr__(self, "max_share_gather_ptcl", runtime.max_share_gather_ptcl)
+                object.__setattr__(self, "_multigpu", initialize_multigpu_runtime(self, runtime))
 
         # finalize
         dtype = self.cosmo_dtype
         for name, value in self.named_children():
             value = tree_map(lambda x: jnp.asarray(x, dtype=dtype), value)
             object.__setattr__(self, name, value)
+
+    @property
+    def multigpu(self):
+        return self._multigpu
+
+    @property
+    def use_mGPU(self):
+        return self._multigpu is not None
+
+    _MULTIGPU_FORWARD = {
+        "num_devices": "num_devices",
+        "devices": "devices",
+        "devices_index": "devices_index",
+        "local_mesh_shape": "local_mesh_shape",
+        "ptcl_halo_width": "ptcl_halo_width",
+        "slice_start": "slice_start",
+        "slice_end": "slice_end",
+        "halo_start": "halo_start",
+        "halo_end": "halo_end",
+        "offsets": "offsets",
+        "scatter_offsets": "scatter_offsets",
+        "left_perm": "left_perm",
+        "right_perm": "right_perm",
+        "mGPU_halo_moving": "halo_moving",
+        "mGPU_reconstruct_pre_drift": "reconstruct_pre_drift",
+        "mGPU_halo_move_pullback": "halo_move_pullback",
+        "mGPU_compute_halo_mask": "compute_halo_mask",
+        "mGPU_rfftn": "rfftn",
+        "mGPU_irfftn": "irfftn",
+        "mGPU_scatter": "scatter",
+        "mGPU_gather": "gather",
+    }
+
+    def __getattr__(self, name):
+        runtime_name = self._MULTIGPU_FORWARD.get(name)
+        if runtime_name is None:
+            raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
+        if self._multigpu is None:
+            if name == "local_mesh_shape":
+                return self.mesh_shape
+            if name == "ptcl_halo_width":
+                return 0
+            return None
+        return getattr(self._multigpu, runtime_name)
 
     @property
     def dim(self):

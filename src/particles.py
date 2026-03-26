@@ -1523,7 +1523,7 @@ class Particles:
             max_halo_values_to_share,
             key_fill,
             "[ERROR] Exceeded halo-share capacity while rebuilding canonical storage. "
-            "particles_to_share={x}, max_share_ptcl={y}.",
+            "particles_to_share={x}, max_halo_share_ptcl={y}.",
         )
         incoming_left_halo = jax.lax.ppermute(outbound_right_halo, axis_name=AXIS_NAME, perm=right_perm)
         return Particles._pack_left_halo_and_authoritative(

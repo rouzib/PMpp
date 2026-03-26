@@ -764,7 +764,7 @@ def _canonical_build_full_from_authoritative(
         max_halo_values_to_share,
         key_fill,
         "[ERROR] Exceeded halo-share capacity while rebuilding canonical storage. "
-        "particles_to_share={x}, max_share_ptcl={y}.",
+        "particles_to_share={x}, max_halo_share_ptcl={y}.",
     )
     incoming_left_halo = jax.lax.ppermute(outbound_right_halo, axis_name=AXIS_NAME, perm=right_perm)
     return _pack_left_halo_and_authoritative(
@@ -928,6 +928,8 @@ def compute_halo_mask_shard_map(pmid, disp, unused_indexes, halo_start, halo_end
 
 
 def _halo_capacity(conf):
+    if conf.max_halo_share_ptcl is not None:
+        return conf.max_halo_share_ptcl
     return min(
         conf.max_ptcl_per_slice,
         (conf.max_ptcl_per_slice * conf.ptcl_halo_width + conf.local_mesh_shape[0] - 1)
