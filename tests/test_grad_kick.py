@@ -8,7 +8,7 @@ import numpy as np
 
 import jax
 import jax.numpy as jnp
-from jax.tree_util import tree_leaves, tree_map
+from jax.tree_util import tree_leaves
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -17,13 +17,14 @@ if str(REPO_ROOT) not in sys.path:
 from pmwd.boltzmann import boltzmann as boltzmann_pmwd
 from pmwd.configuration import Configuration as ConfigurationPMWD
 from pmwd.cosmology import SimpleLCDM as SimpleLCDM_PMWD
-from pmwd.nbody import kick as kick_pmwd, kick_adj as kick_adj_pmwd
+from pmwd.nbody import kick as kick_pmwd
 from pmwd.particles import Particles as ParticlesPMWD
 
 from src.boltzmann import boltzmann as boltzmann_pmpp
 from src.cosmo import SimpleLCDM as SimpleLCDM_PMPP
 from src.particles import Particles
 from src.steps import kick as kick_pmpp, kick_adj as kick_adj_pmpp
+from src.utils import pmid_to_idx
 
 from test_utils import init_conf
 
@@ -73,46 +74,25 @@ def _build_state():
     return conf, conf_pmwd, cosmo_pmpp, cosmo_pmwd, ptcl_pmpp, ptcl_pmwd
 
 
-def _slot_mapping(ptcl_pmwd, conf):
-    pid_payload = jnp.repeat(jnp.arange(conf.ptcl_num, dtype=jnp.int32)[:, None], 3, axis=1)
+def _first_slot_mapping(ptcl_pmwd, ptcl_pmpp, conf_pmwd, conf_pmpp):
+    particle_keys = np.asarray(jax.device_get(pmid_to_idx(ptcl_pmwd.pmid, conf_pmwd)))
+    slot_keys = np.asarray(jax.device_get(pmid_to_idx(ptcl_pmpp.pmid, conf_pmpp, ptcl_pmpp.unused_index)))
 
-    pid_slots = []
-    unused_slots = []
-    for i in range(conf.num_devices):
-        gpu_id = conf.devices_index[i]
-        _, _, pid_vel, _, unused_index, _ = Particles.distribute_ptcl_pos(
-            ptcl_pmwd.pmid,
-            ptcl_pmwd.disp,
-            pid_payload,
-            None,
-            conf,
-            gpu_id,
-        )
-        pid_slots.append(np.asarray(pid_vel[:, 0]))
-        unused_slots.append(np.asarray(unused_index))
+    key_to_particle = {int(key): pid for pid, key in enumerate(particle_keys)}
+    first_slot = np.full(conf_pmpp.ptcl_num, -1, dtype=np.int32)
 
-    pid_slots = np.concatenate(pid_slots, axis=0)
-    unused_slots = np.concatenate(unused_slots, axis=0)
-    valid_slots = ~unused_slots
-
-    first_slot = np.full(conf.ptcl_num, -1, dtype=np.int32)
-    for slot, pid in enumerate(pid_slots):
-        if valid_slots[slot] and first_slot[pid] < 0:
+    for slot, key in enumerate(slot_keys):
+        if key < 0:
+            continue
+        pid = key_to_particle.get(int(key))
+        if pid is not None and first_slot[pid] < 0:
             first_slot[pid] = slot
 
     missing = np.flatnonzero(first_slot < 0)
     if missing.size:
         raise AssertionError(f"Missing particle ids: {missing[:10].tolist()}")
 
-    return pid_slots, valid_slots, first_slot
-
-
-def _reduce_input_slots(slot_values, pid_slots, valid_slots, conf):
-    reduced = np.zeros((conf.ptcl_num, slot_values.shape[-1]), dtype=np.float64)
-    for slot, pid in enumerate(pid_slots):
-        if valid_slots[slot]:
-            reduced[pid] += slot_values[slot]
-    return reduced
+    return first_slot
 
 
 def _tree_max_abs_diff(ref_tree, got_tree):
@@ -128,14 +108,14 @@ def _tree_max_abs_diff(ref_tree, got_tree):
     return max(diffs, default=0.0)
 
 
-def test_kick_matches_pmwd_for_forward_and_adjoint():
+def test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp():
     if GPU_COUNT < 1:
         if pytest is not None:
             pytest.skip("kick gradient test requires at least 1 GPU")
         raise SystemExit("kick gradient test requires at least 1 GPU")
 
     conf, conf_pmwd, cosmo_pmpp, cosmo_pmwd, ptcl_pmpp, ptcl_pmwd = _build_state()
-    pid_slots, valid_slots, first_slot = _slot_mapping(ptcl_pmwd, conf)
+    first_slot = _first_slot_mapping(ptcl_pmwd, ptcl_pmpp, conf_pmwd, conf)
 
     a_acc = conf.a_start
     a_prev = conf.a_start
@@ -150,48 +130,34 @@ def test_kick_matches_pmwd_for_forward_and_adjoint():
 
     key = jax.random.PRNGKey(1)
     key_disp, key_vel, key_acc = jax.random.split(key, 3)
-    cot_disp_unique = jax.random.normal(key_disp, out_pmwd.disp.shape, dtype=out_pmwd.disp.dtype)
-    cot_vel_unique = jax.random.normal(key_vel, out_pmwd.vel.shape, dtype=out_pmwd.vel.dtype)
-    cot_acc_unique = jax.random.normal(key_acc, out_pmwd.acc.shape, dtype=out_pmwd.acc.dtype)
-    ptcl_cot_pmwd = out_pmwd.replace(disp=cot_disp_unique, vel=cot_vel_unique, acc=cot_acc_unique)
-
-    first_slot_j = jnp.asarray(first_slot)
     ptcl_cot_pmpp = out_pmpp.replace(
-        disp=jnp.zeros(out_pmpp.disp.shape, dtype=out_pmpp.disp.dtype).at[first_slot_j].set(cot_disp_unique),
-        vel=jnp.zeros(out_pmpp.vel.shape, dtype=out_pmpp.vel.dtype).at[first_slot_j].set(cot_vel_unique),
-        acc=jnp.zeros(out_pmpp.acc.shape, dtype=out_pmpp.acc.dtype).at[first_slot_j].set(cot_acc_unique),
+        disp=jax.random.normal(key_disp, out_pmpp.disp.shape, dtype=out_pmpp.disp.dtype),
+        vel=jax.random.normal(key_vel, out_pmpp.vel.shape, dtype=out_pmpp.vel.dtype),
+        acc=jax.random.normal(key_acc, out_pmpp.acc.shape, dtype=out_pmpp.acc.dtype),
     )
 
-    zero_cosmo_pmwd = tree_map(lambda x: jnp.zeros_like(x) if x is not None else None, cosmo_pmwd)
-    zero_cosmo_pmpp = tree_map(lambda x: jnp.zeros_like(x) if x is not None else None, cosmo_pmpp)
-    zero_force_pmwd = tree_map(lambda x: jnp.zeros_like(x) if x is not None else None, cosmo_pmwd)
-    zero_force_pmpp = tree_map(lambda x: jnp.zeros_like(x) if x is not None else None, cosmo_pmpp)
-
-    _, in_cot_pmwd, cosmo_cot_pmwd = kick_adj_pmwd(
-        a_acc, a_prev, a_next, ptcl_pmwd, ptcl_cot_pmwd, cosmo_pmwd, zero_cosmo_pmwd, zero_force_pmwd, conf_pmwd
-    )
+    zero_cosmo_pmpp = jax.tree.map(lambda x: jnp.zeros_like(x) if x is not None else None, cosmo_pmpp)
     _, in_cot_pmpp, cosmo_cot_pmpp = kick_adj_pmpp(
-        a_acc, a_prev, a_next, ptcl_pmpp, ptcl_cot_pmpp, cosmo_pmpp, zero_cosmo_pmpp, zero_force_pmpp, conf
+        a_acc, a_prev, a_next, ptcl_pmpp, ptcl_cot_pmpp, cosmo_pmpp, zero_cosmo_pmpp, conf
     )
 
-    disp_in_pmpp = _reduce_input_slots(np.asarray(jax.device_get(in_cot_pmpp.disp)), pid_slots, valid_slots, conf)
-    vel_in_pmpp = _reduce_input_slots(np.asarray(jax.device_get(in_cot_pmpp.vel)), pid_slots, valid_slots, conf)
-    acc_in_pmpp = _reduce_input_slots(np.asarray(jax.device_get(in_cot_pmpp.acc)), pid_slots, valid_slots, conf)
+    def kick_only(ptcl, cosmo):
+        return kick_pmpp(a_acc, a_prev, a_next, ptcl, cosmo, conf)
 
-    assert np.allclose(disp_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.disp)), atol=1e-8, rtol=1e-8)
-    assert np.allclose(vel_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.vel)), atol=1e-8, rtol=1e-8)
-    assert np.allclose(acc_in_pmpp, np.asarray(jax.device_get(in_cot_pmwd.acc)), atol=1e-8, rtol=1e-8)
+    _, kick_vjp = jax.vjp(kick_only, ptcl_pmpp, cosmo_pmpp)
+    true_ptcl_cot, true_cosmo_cot = kick_vjp(ptcl_cot_pmpp)
 
-    assert _tree_max_abs_diff(cosmo_cot_pmwd, cosmo_cot_pmpp) < 1e-5
+    assert _tree_max_abs_diff(true_ptcl_cot, in_cot_pmpp) < 1e-8
+    assert _tree_max_abs_diff(true_cosmo_cot, cosmo_cot_pmpp) < 1e-8
 
 
 if pytest is not None:
-    test_kick_matches_pmwd_for_forward_and_adjoint = pytest.mark.skipif(
+    test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp = pytest.mark.skipif(
         GPU_COUNT < 1,
         reason="kick gradient test requires at least 1 GPU",
-    )(test_kick_matches_pmwd_for_forward_and_adjoint)
+    )(test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp)
 
 
 if __name__ == "__main__":
-    test_kick_matches_pmwd_for_forward_and_adjoint()
+    test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp()
     print("kick regression passed")

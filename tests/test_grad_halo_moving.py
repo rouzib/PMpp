@@ -67,19 +67,16 @@ def test_halo_move_vjp_matches_true_vjp():
         max_share_gather_ptcl=128,
     )
     ptcl, disp, vel, acc, cot_disp, cot_vel, cot_acc = _build_probe_state(conf)
-    share_only_right = conf.num_devices == 2
-
     def outputs_only(disp_in, vel_in, acc_in):
         _, disp_out, vel_out, acc_out, *_ = conf.mGPU_halo_moving(
             ptcl.pmid,
+            ptcl.disp,
             disp_in,
             vel_in,
             acc_in,
             conf.halo_start,
             conf.halo_end,
-            ptcl.halo_mask,
             ptcl.unused_index,
-            share_only_right,
         )
         return disp_out, vel_out, acc_out
 
@@ -94,47 +91,23 @@ def test_halo_move_vjp_matches_true_vjp():
         cot_disp,
         cot_vel,
         cot_acc,
-        share_only_right,
         conf,
     )
 
     forward = conf.mGPU_halo_moving(
         ptcl.pmid,
+        ptcl.disp,
         disp,
         vel,
         acc,
         conf.halo_start,
         conf.halo_end,
-        ptcl.halo_mask,
         ptcl.unused_index,
-        share_only_right,
     )
-    pmid_out, halo_out, unused_out = forward[0], forward[4], forward[5]
-    legacy_disp, legacy_vel, legacy_acc = conf.mGPU_halo_moving(
-        pmid_out,
-        cot_disp,
-        cot_vel,
-        cot_acc,
-        conf.halo_start,
-        conf.halo_end,
-        halo_out,
-        unused_out,
-        False,
-    )[1:4]
-
-    max_moved = int(np.asarray(jax.device_get(forward[-1])))
-    assert max_moved > 0
 
     assert np.allclose(np.asarray(jax.device_get(helper_disp)), np.asarray(jax.device_get(vjp_disp)), atol=1e-8, rtol=1e-8)
     assert np.allclose(np.asarray(jax.device_get(helper_vel)), np.asarray(jax.device_get(vjp_vel)), atol=1e-8, rtol=1e-8)
     assert np.allclose(np.asarray(jax.device_get(helper_acc)), np.asarray(jax.device_get(vjp_acc)), atol=1e-8, rtol=1e-8)
-
-    legacy_max = max(
-        float(np.max(np.abs(np.asarray(jax.device_get(legacy_disp - vjp_disp))))),
-        float(np.max(np.abs(np.asarray(jax.device_get(legacy_vel - vjp_vel))))),
-        float(np.max(np.abs(np.asarray(jax.device_get(legacy_acc - vjp_acc))))),
-    )
-    assert legacy_max > 1e-2
 
 
 if pytest is not None:
