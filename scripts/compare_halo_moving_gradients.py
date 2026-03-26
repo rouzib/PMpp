@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Compare true halo-move VJPs against the legacy cotangent replay."""
+"""Compare the halo-move helper VJP against the true local VJP."""
 
 from __future__ import annotations
 
@@ -216,8 +216,8 @@ def save_slot_count_plot(count_path: Path, conf, x_before, x_after, crossing_mas
     plt.close(fig)
 
 
-def save_parity_plot(path: Path, reference, legacy, fixed, valid_mask, crossing_mask, metrics):
-    fig, axes = plt.subplots(2, 3, figsize=(12.5, 7.8), constrained_layout=True)
+def save_parity_plot(path: Path, reference, helper, valid_mask, crossing_mask, metrics):
+    fig, axes = plt.subplots(1, 3, figsize=(12.5, 4.2), constrained_layout=True)
     field_names = ["disp", "vel", "acc"]
     colors = {
         "other": "#4e79a7",
@@ -226,34 +226,29 @@ def save_parity_plot(path: Path, reference, legacy, fixed, valid_mask, crossing_
 
     for col, name in enumerate(field_names):
         ref = reference[name][valid_mask].reshape(-1)
-        probe_legacy = legacy[name][valid_mask].reshape(-1)
-        probe_fixed = fixed[name][valid_mask].reshape(-1)
+        probe_helper = helper[name][valid_mask].reshape(-1)
         crossing = np.repeat(crossing_mask[valid_mask], 3)
 
-        lo = min(ref.min(), probe_legacy.min(), probe_fixed.min())
-        hi = max(ref.max(), probe_legacy.max(), probe_fixed.max())
+        lo = min(ref.min(), probe_helper.min())
+        hi = max(ref.max(), probe_helper.max())
 
-        for row, probe, title_prefix, key in [
-            (0, probe_legacy, "Legacy Replay", "legacy_vs_true"),
-            (1, probe_fixed, "Fixed VJP", "fixed_vs_true"),
-        ]:
-            ax = axes[row, col]
-            ax.scatter(ref[~crossing], probe[~crossing], s=6, alpha=0.30, color=colors["other"], linewidths=0)
-            ax.scatter(ref[crossing], probe[crossing], s=10, alpha=0.65, color=colors["crossing"], linewidths=0)
-            ax.plot([lo, hi], [lo, hi], color="black", linewidth=1.0, alpha=0.8)
-            ax.set_title(f"{title_prefix}: {name}")
-            ax.set_xlabel("true VJP")
-            ax.set_ylabel("probe")
-            ax.text(
-                0.03,
-                0.94,
-                f"max |d| = {metrics[key][name]['max_abs_diff']:.2e}",
-                transform=ax.transAxes,
-                ha="left",
-                va="top",
-                fontsize=8,
-                bbox={"facecolor": "white", "alpha": 0.80, "pad": 2},
-            )
+        ax = axes[col]
+        ax.scatter(ref[~crossing], probe_helper[~crossing], s=6, alpha=0.30, color=colors["other"], linewidths=0)
+        ax.scatter(ref[crossing], probe_helper[crossing], s=10, alpha=0.65, color=colors["crossing"], linewidths=0)
+        ax.plot([lo, hi], [lo, hi], color="black", linewidth=1.0, alpha=0.8)
+        ax.set_title(f"Helper VJP: {name}")
+        ax.set_xlabel("true VJP")
+        ax.set_ylabel("helper")
+        ax.text(
+            0.03,
+            0.94,
+            f"max |d| = {metrics[name]['max_abs_diff']:.2e}",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=8,
+            bbox={"facecolor": "white", "alpha": 0.80, "pad": 2},
+        )
 
     fig.savefig(path, dpi=180)
     plt.close(fig)
@@ -279,7 +274,7 @@ def save_residual_plot(path: Path, mesh_pos, valid_mask, residual_norm, conf):
             aspect="equal",
         )
         decorate_gpu_layout(ax, projection, gpu_layout)
-        ax.set_title(f"Legacy Residual Projection: {projection}")
+        ax.set_title(f"Helper Residual Projection: {projection}")
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
@@ -298,32 +293,28 @@ def main() -> None:
     conf = init_conf(args, gpu_devices)
 
     ptcl, disp, vel, acc, crossing_mask, cot_disp, cot_vel, cot_acc = build_probe_state(conf)
-    share_only_right = conf.num_devices == 2
-
     def outputs_only(disp_in, vel_in, acc_in):
         _, disp_out, vel_out, acc_out, *_ = conf.mGPU_halo_moving(
             ptcl.pmid,
+            ptcl.disp,
             disp_in,
             vel_in,
             acc_in,
             conf.halo_start,
             conf.halo_end,
-            ptcl.halo_mask,
             ptcl.unused_index,
-            share_only_right,
         )
         return disp_out, vel_out, acc_out
 
     forward = conf.mGPU_halo_moving(
         ptcl.pmid,
+        ptcl.disp,
         disp,
         vel,
         acc,
         conf.halo_start,
         conf.halo_end,
-        ptcl.halo_mask,
         ptcl.unused_index,
-        share_only_right,
     )
     pmid_out, disp_out, vel_out, acc_out, halo_out, unused_out, forward_failed, max_ptcl_moved = forward
 
@@ -338,23 +329,9 @@ def main() -> None:
         cot_disp,
         cot_vel,
         cot_acc,
-        share_only_right,
+        conf.num_devices == 2,
         conf,
     )
-
-    legacy = conf.mGPU_halo_moving(
-        pmid_out,
-        cot_disp,
-        cot_vel,
-        cot_acc,
-        conf.halo_start,
-        conf.halo_end,
-        halo_out,
-        unused_out,
-        False,
-    )
-    legacy_disp, legacy_vel, legacy_acc = legacy[1], legacy[2], legacy[3]
-    legacy_failed, legacy_moved = legacy[-2], legacy[-1]
 
     valid_before = ~to_numpy(ptcl.unused_index)
     valid_after = ~to_numpy(unused_out)
@@ -368,24 +345,18 @@ def main() -> None:
         "vel": to_numpy(vjp_vel),
         "acc": to_numpy(vjp_acc),
     }
-    legacy_np = {
-        "disp": to_numpy(legacy_disp),
-        "vel": to_numpy(legacy_vel),
-        "acc": to_numpy(legacy_acc),
-    }
-    fixed_np = {
+    helper_np = {
         "disp": to_numpy(fixed_disp),
         "vel": to_numpy(fixed_vel),
         "acc": to_numpy(fixed_acc),
     }
 
-    legacy_metrics = {name: compare_fields(reference[name], legacy_np[name]) for name in reference}
-    fixed_metrics = {name: compare_fields(reference[name], fixed_np[name]) for name in reference}
+    helper_metrics = {name: compare_fields(reference[name], helper_np[name]) for name in reference}
 
     residual_norm = np.sqrt(
-        np.sum((legacy_np["disp"] - reference["disp"]) ** 2, axis=1)
-        + np.sum((legacy_np["vel"] - reference["vel"]) ** 2, axis=1)
-        + np.sum((legacy_np["acc"] - reference["acc"]) ** 2, axis=1)
+        np.sum((helper_np["disp"] - reference["disp"]) ** 2, axis=1)
+        + np.sum((helper_np["vel"] - reference["vel"]) ** 2, axis=1)
+        + np.sum((helper_np["acc"] - reference["acc"]) ** 2, axis=1)
     )
 
     save_slot_count_plot(
@@ -398,16 +369,15 @@ def main() -> None:
         valid_after,
     )
     save_parity_plot(
-        output_dir / "halo_moving_grad_parity.png",
+        output_dir / "halo_moving_helper_grad_parity.png",
         reference,
-        legacy_np,
-        fixed_np,
+        helper_np,
         valid_before,
         crossing_mask_np,
-        {"legacy_vs_true": legacy_metrics, "fixed_vs_true": fixed_metrics},
+        helper_metrics,
     )
     save_residual_plot(
-        output_dir / "halo_moving_grad_residual_projections.png",
+        output_dir / "halo_moving_helper_residual_projections.png",
         mesh_pos_before,
         valid_before,
         residual_norm,
@@ -424,18 +394,14 @@ def main() -> None:
             "max_share_gather_ptcl": int(conf.max_share_gather_ptcl),
         },
         "forward": {
-            "share_only_right": bool(share_only_right),
             "forward_failed": bool(np.asarray(jax.device_get(forward_failed))),
-            "legacy_failed": bool(np.asarray(jax.device_get(legacy_failed))),
             "max_ptcl_moved": int(np.asarray(jax.device_get(max_ptcl_moved))),
-            "legacy_replay_max_ptcl_moved": int(np.asarray(jax.device_get(legacy_moved))),
             "valid_slots_before": int(valid_before.sum()),
             "valid_slots_after": int(valid_after.sum()),
             "forced_crossing_slots": int((crossing_mask_np & valid_before).sum()),
         },
-        "legacy_vs_true": legacy_metrics,
-        "fixed_vs_true": fixed_metrics,
-        "legacy_combined_residual": {
+        "helper_vs_true": helper_metrics,
+        "helper_combined_residual": {
             "max_norm_diff": float(np.max(residual_norm)),
             "mean_norm_diff": float(np.mean(residual_norm)),
         },

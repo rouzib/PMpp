@@ -48,17 +48,26 @@ from src.utils import create_compute_mesh, pmid_to_idx
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--box-size", type=float, default=100.0)
-    parser.add_argument("--num-ptcl", type=int, default=4)
+    parser.add_argument("--num-ptcl", type=int, default=128)
     parser.add_argument("--mesh-shape", type=int, default=1)
     parser.add_argument("--num-devices", type=int, default=2)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--target-seed", type=int, default=0)
-    parser.add_argument("--a-start", type=float, default=1 / 60)
-    parser.add_argument("--a-stop", type=float, default=1 / 15)
-    parser.add_argument("--a-nbody-maxstep", type=float, default=1 / 60)
-    parser.add_argument("--max-ptcl-factor", type=float, default=2.5)
-    parser.add_argument("--max-share-ptcl", type=int, default=4000)
-    parser.add_argument("--max-share-gather-ptcl", type=int, default=8000)
+    parser.add_argument("--a-start", type=float, default=1 / 64)
+    parser.add_argument("--a-stop", type=float, default=1)
+    parser.add_argument("--a-nbody-maxstep", type=float, default=1 / 64)
+    parser.add_argument("--max-ptcl-factor", type=float, default=1.4)
+    parser.add_argument("--max-share-ptcl", type=int, default=40000)
+    parser.add_argument("--max-share-gather-ptcl", type=int, default=120000)
+    parser.add_argument("--projection", choices=("all", "x", "y", "z"), default="all")
+    parser.add_argument("--gpu-layout-panels", choices=("all", "pmpp", "none"), default="all")
+    parser.add_argument("--forward-plot-layout", choices=("full", "pair"), default="full")
+    parser.add_argument("--forward-plot-themes", nargs="*", choices=("light", "dark"), default=[])
+    parser.add_argument("--forward-transparent", action="store_true")
+    parser.add_argument("--forward-only", action="store_true")
+    parser.add_argument("--gradient-plot-layout", choices=("full", "pair"), default="full")
+    parser.add_argument("--gradient-plot-themes", nargs="*", choices=("light", "dark"), default=[])
+    parser.add_argument("--gradient-transparent", action="store_true")
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -130,7 +139,7 @@ def pmwd_forward(modes_real, base_cosmo, conf):
     return ptcl, dens
 
 
-def pmpp_forward(modes_real, base_cosmo, conf):
+def pmpp_forward_adjoint(modes_real, base_cosmo, conf):
     cosmo = boltzmann_pmpp(base_cosmo, conf)
     modes = linear_modes_pmpp(modes_real, cosmo, conf)
     ptcl = lpt_pmpp(modes, cosmo, conf.replace(max_share_ptcl=conf.max_share_ptcl * 4))
@@ -262,6 +271,44 @@ def projection_metrics(reference: np.ndarray, candidate: np.ndarray) -> dict[str
     return report
 
 
+def selected_projections(projection: str) -> tuple[str, ...]:
+    if projection == "all":
+        return ("x", "y", "z")
+    return (projection,)
+
+
+def should_draw_gpu_layout(panel: str, gpu_layout_panels: str) -> bool:
+    if gpu_layout_panels == "none":
+        return False
+    if gpu_layout_panels == "all":
+        return True
+    return panel == "pmpp"
+
+
+def artifact_path(output_dir: Path, stem: str, projection: str) -> Path:
+    suffix = "" if projection == "all" else f"_{projection}"
+    return output_dir / f"{stem}{suffix}.png"
+
+
+def themed_artifact_path(output_dir: Path, stem: str, projection: str, theme: str) -> Path:
+    suffix = "" if projection == "all" else f"_{projection}"
+    return output_dir / f"{stem}{suffix}_{theme}.png"
+
+
+MINIMAL_PLOT_THEMES = {
+    "light": {
+        "text_color": "#111111",
+        "spine_color": "#111111",
+        "tick_color": "#111111",
+    },
+    "dark": {
+        "text_color": "#f4f4f4",
+        "spine_color": "#f4f4f4",
+        "tick_color": "#f4f4f4",
+    },
+}
+
+
 def decorate_gpu_layout(ax, projection: str, gpu_layout: dict) -> None:
     if projection == "x":
         ax.text(
@@ -282,7 +329,7 @@ def decorate_gpu_layout(ax, projection: str, gpu_layout: dict) -> None:
             slab["start"] - 0.5,
             slab["start"] + slab["width"] - 0.5,
             color=color,
-            alpha=0.10,
+            alpha=0.16,
             lw=0,
         )
         ax.axvline(slab["start"] - 0.5, color=color, linestyle="--", linewidth=1.0, alpha=0.8)
@@ -300,7 +347,7 @@ def decorate_gpu_layout(ax, projection: str, gpu_layout: dict) -> None:
     ax.axvline(gpu_layout["nmesh"] - 0.5, color=colors[0], linestyle="--", linewidth=1.0, alpha=0.8)
 
     for halo_x in gpu_layout["halo_cell_bands"]:
-        ax.axvspan(halo_x - 0.5, halo_x + 0.5, color="#ff6f61", alpha=0.14, lw=0)
+        ax.axvspan(halo_x - 0.5, halo_x + 0.5, color="#ff6f61", alpha=0.20, lw=0)
 
 
 def save_particle_plot(
@@ -366,13 +413,15 @@ def save_density_plot(
     metrics: dict[str, float],
     gpu_layout: dict,
     output_path: Path,
+    projection: str,
+    gpu_layout_panels: str,
 ) -> None:
     projections = []
-    for projection in ("x", "y", "z"):
-        ref_proj, x_label, y_label = projection_image(dens_pmwd, projection)
-        cand_proj, _, _ = projection_image(dens_pmpp, projection)
+    for projection_name in selected_projections(projection):
+        ref_proj, x_label, y_label = projection_image(dens_pmwd, projection_name)
+        cand_proj, _, _ = projection_image(dens_pmpp, projection_name)
         diff_proj = cand_proj - ref_proj
-        projections.append((projection, ref_proj, cand_proj, diff_proj, x_label, y_label))
+        projections.append((projection_name, ref_proj, cand_proj, diff_proj, x_label, y_label))
 
     log_arrays = [
         np.log10(np.clip(array, 1e-8, None))
@@ -384,7 +433,13 @@ def save_density_plot(
     diff_vmax = max(float(np.abs(diff).max()) for _, _, _, diff, _, _ in projections)
     diff_vmax = diff_vmax if diff_vmax > 0 else 1e-12
 
-    fig, axes = plt.subplots(3, 3, figsize=(13, 12), constrained_layout=True)
+    fig, axes = plt.subplots(
+        len(projections),
+        3,
+        figsize=(13, max(4.4 * len(projections), 4.8)),
+        constrained_layout=True,
+        squeeze=False,
+    )
     log_im = None
     diff_im = None
 
@@ -422,11 +477,12 @@ def save_density_plot(
         )
         axes[row, 2].set_title("PMPP - PMWD")
 
-        for col in range(3):
+        for col, panel in enumerate(("pmwd", "pmpp", "diff")):
             axes[row, col].set_ylabel(y_label if col == 0 else "")
-            axes[row, col].set_xlabel(x_label if row == 2 else "")
-            decorate_gpu_layout(axes[row, col], projection, gpu_layout)
-            if row != 2:
+            axes[row, col].set_xlabel(x_label if row == len(projections) - 1 else "")
+            if should_draw_gpu_layout(panel, gpu_layout_panels):
+                decorate_gpu_layout(axes[row, col], projection, gpu_layout)
+            if row != len(projections) - 1:
                 axes[row, col].set_xticks([])
             if col != 0:
                 axes[row, col].set_yticks([])
@@ -463,12 +519,214 @@ def save_density_plot(
 
     fig.colorbar(log_im, ax=axes[:, :2], shrink=0.86, label="log10 projected density")
     fig.colorbar(diff_im, ax=axes[:, 2], shrink=0.86, label="projected density residual")
+    layout_caption = (
+        "PM++ panel shading = owned x-slab per GPU, red bands = 1-cell particle halo exchange bands"
+        if gpu_layout_panels == "pmpp"
+        else "Background shading = owned x-slab per GPU, red bands = 1-cell particle halo exchange bands"
+    )
     fig.suptitle(
         "Final density parity after LPT + nbody + scatter\n"
-        "Background shading = owned x-slab per GPU, red bands = 1-cell particle halo exchange bands",
+        f"{layout_caption}",
         fontsize=15,
     )
     fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+
+
+def save_density_pair_plot(
+    dens_pmwd: np.ndarray,
+    dens_pmpp: np.ndarray,
+    gpu_layout: dict,
+    output_path: Path,
+    projection: str,
+    gpu_layout_panels: str,
+    theme: str,
+    transparent: bool,
+) -> None:
+    projections = []
+    for projection_name in selected_projections(projection):
+        ref_proj, _, _ = projection_image(dens_pmwd, projection_name)
+        cand_proj, _, _ = projection_image(dens_pmpp, projection_name)
+        diff_proj = cand_proj - ref_proj
+        projections.append(
+            (
+                projection_name,
+                np.log10(np.clip(ref_proj, 1e-8, None)),
+                np.log10(np.clip(cand_proj, 1e-8, None)),
+                diff_proj,
+            )
+        )
+
+    style = MINIMAL_PLOT_THEMES[theme]
+    log_vmin = min(
+        float(array.min())
+        for _, ref_proj, cand_proj, _ in projections
+        for array in (ref_proj, cand_proj)
+    )
+    log_vmax = max(
+        float(array.max())
+        for _, ref_proj, cand_proj, _ in projections
+        for array in (ref_proj, cand_proj)
+    )
+    diff_vmax = max(float(np.abs(diff_proj).max()) for _, _, _, diff_proj in projections)
+    diff_vmax = diff_vmax if diff_vmax > 0 else 1e-12
+
+    fig, axes = plt.subplots(
+        len(projections),
+        3,
+        figsize=(13.4, max(4.2 * len(projections), 4.2)),
+        constrained_layout=True,
+        squeeze=False,
+    )
+    fig.patch.set_alpha(0.0 if transparent else 1.0)
+    image_artist = None
+    diff_artist = None
+
+    for row, (projection_name, ref_proj, cand_proj, diff_proj) in enumerate(projections):
+        image_artist = axes[row, 0].imshow(
+            ref_proj,
+            origin="lower",
+            cmap="viridis",
+            vmin=log_vmin,
+            vmax=log_vmax,
+            aspect="auto",
+        )
+        axes[row, 1].imshow(
+            cand_proj,
+            origin="lower",
+            cmap="viridis",
+            vmin=log_vmin,
+            vmax=log_vmax,
+            aspect="auto",
+        )
+        diff_artist = axes[row, 2].imshow(
+            diff_proj,
+            origin="lower",
+            cmap="coolwarm",
+            vmin=-diff_vmax,
+            vmax=diff_vmax,
+            aspect="auto",
+        )
+
+        axes[row, 0].set_title("PMWD", color=style["text_color"], fontsize=16, pad=10)
+        axes[row, 1].set_title("PM++", color=style["text_color"], fontsize=16, pad=10)
+        axes[row, 2].set_title("Residual", color=style["text_color"], fontsize=16, pad=10)
+
+        if should_draw_gpu_layout("pmpp", gpu_layout_panels):
+            decorate_gpu_layout(axes[row, 1], projection_name, gpu_layout)
+        if should_draw_gpu_layout("pmwd", gpu_layout_panels):
+            decorate_gpu_layout(axes[row, 0], projection_name, gpu_layout)
+
+        for ax in axes[row]:
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.patch.set_alpha(0.0 if transparent else 1.0)
+            for spine in ax.spines.values():
+                spine.set_edgecolor(style["spine_color"])
+                spine.set_linewidth(0.8)
+
+    cbar_signal = fig.colorbar(
+        image_artist,
+        ax=axes[:, :2],
+        shrink=0.92,
+        fraction=0.046,
+        pad=0.03,
+    )
+    cbar_signal.outline.set_edgecolor(style["spine_color"])
+    cbar_signal.ax.tick_params(colors=style["tick_color"], labelsize=11)
+    for label in cbar_signal.ax.get_yticklabels():
+        label.set_color(style["tick_color"])
+    cbar_signal.set_label("", color=style["text_color"])
+
+    cbar_diff = fig.colorbar(
+        diff_artist,
+        ax=axes[:, 2],
+        shrink=0.92,
+        fraction=0.046,
+        pad=0.03,
+    )
+    cbar_diff.outline.set_edgecolor(style["spine_color"])
+    cbar_diff.ax.tick_params(colors=style["tick_color"], labelsize=11)
+    for label in cbar_diff.ax.get_yticklabels():
+        label.set_color(style["tick_color"])
+    cbar_diff.set_label("", color=style["text_color"])
+
+    fig.savefig(output_path, dpi=220, transparent=transparent, bbox_inches="tight", pad_inches=0.04)
+    plt.close(fig)
+
+
+def save_gradient_pair_plot(
+    grad_pmwd: np.ndarray,
+    grad_pmpp: np.ndarray,
+    gpu_layout: dict,
+    output_path: Path,
+    projection: str,
+    theme: str,
+    transparent: bool,
+) -> None:
+    projections = []
+    for projection_name in selected_projections(projection):
+        ref_proj, _, _ = projection_image(grad_pmwd, projection_name)
+        cand_proj, _, _ = projection_image(grad_pmpp, projection_name)
+        projections.append((projection_name, ref_proj, cand_proj))
+
+    style = MINIMAL_PLOT_THEMES[theme]
+    signal_vmax = max(
+        float(np.max(np.abs(array)))
+        for _, ref_proj, cand_proj in projections
+        for array in (ref_proj, cand_proj)
+    )
+    signal_vmax = signal_vmax if signal_vmax > 0 else 1e-12
+
+    fig, axes = plt.subplots(
+        len(projections),
+        2,
+        figsize=(9.6, max(4.2 * len(projections), 4.2)),
+        constrained_layout=True,
+        squeeze=False,
+    )
+    fig.patch.set_alpha(0.0 if transparent else 1.0)
+    image_artist = None
+
+    for row, (projection_name, ref_proj, cand_proj) in enumerate(projections):
+        image_artist = axes[row, 0].imshow(
+            ref_proj,
+            origin="lower",
+            cmap="RdBu_r",
+            vmin=-signal_vmax,
+            vmax=signal_vmax,
+            aspect="auto",
+        )
+        axes[row, 1].imshow(
+            cand_proj,
+            origin="lower",
+            cmap="RdBu_r",
+            vmin=-signal_vmax,
+            vmax=signal_vmax,
+            aspect="auto",
+        )
+
+        axes[row, 0].set_title("PMWD", color=style["text_color"], fontsize=16, pad=10)
+        axes[row, 1].set_title("PM++", color=style["text_color"], fontsize=16, pad=10)
+
+        decorate_gpu_layout(axes[row, 1], projection_name, gpu_layout)
+
+        for ax in axes[row]:
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.patch.set_alpha(0.0 if transparent else 1.0)
+            for spine in ax.spines.values():
+                spine.set_edgecolor(style["spine_color"])
+                spine.set_linewidth(0.8)
+
+    cbar = fig.colorbar(image_artist, ax=axes.ravel().tolist(), shrink=0.92, fraction=0.046, pad=0.03)
+    cbar.outline.set_edgecolor(style["spine_color"])
+    cbar.ax.tick_params(colors=style["tick_color"], labelsize=11)
+    for label in cbar.ax.get_yticklabels():
+        label.set_color(style["tick_color"])
+    cbar.set_label("", color=style["text_color"])
+
+    fig.savefig(output_path, dpi=220, transparent=transparent, bbox_inches="tight", pad_inches=0.04)
     plt.close(fig)
 
 
@@ -478,13 +736,15 @@ def save_gradient_plot(
     metrics: dict[str, float],
     gpu_layout: dict,
     output_path: Path,
+    projection: str,
+    gpu_layout_panels: str,
 ) -> None:
     projections = []
-    for projection in ("x", "y", "z"):
-        ref_proj, x_label, y_label = projection_image(grad_pmwd, projection)
-        cand_proj, _, _ = projection_image(grad_pmpp, projection)
+    for projection_name in selected_projections(projection):
+        ref_proj, x_label, y_label = projection_image(grad_pmwd, projection_name)
+        cand_proj, _, _ = projection_image(grad_pmpp, projection_name)
         diff_proj = cand_proj - ref_proj
-        projections.append((projection, ref_proj, cand_proj, diff_proj, x_label, y_label))
+        projections.append((projection_name, ref_proj, cand_proj, diff_proj, x_label, y_label))
 
     signal_vmax = max(
         float(np.max(np.abs(array)))
@@ -495,7 +755,13 @@ def save_gradient_plot(
     diff_vmax = max(float(np.max(np.abs(diff_proj))) for _, _, _, diff_proj, _, _ in projections)
     diff_vmax = diff_vmax if diff_vmax > 0 else 1e-12
 
-    fig, axes = plt.subplots(3, 3, figsize=(13, 12), constrained_layout=True)
+    fig, axes = plt.subplots(
+        len(projections),
+        3,
+        figsize=(13, max(4.4 * len(projections), 4.8)),
+        constrained_layout=True,
+        squeeze=False,
+    )
     signal_im = None
     diff_im = None
 
@@ -530,11 +796,12 @@ def save_gradient_plot(
         )
         axes[row, 2].set_title("PMPP - PMWD")
 
-        for col in range(3):
+        for col, panel in enumerate(("pmwd", "pmpp", "diff")):
             axes[row, col].set_ylabel(y_label if col == 0 else "")
-            axes[row, col].set_xlabel(x_label if row == 2 else "")
-            decorate_gpu_layout(axes[row, col], projection, gpu_layout)
-            if row != 2:
+            axes[row, col].set_xlabel(x_label if row == len(projections) - 1 else "")
+            if should_draw_gpu_layout(panel, gpu_layout_panels):
+                decorate_gpu_layout(axes[row, col], projection, gpu_layout)
+            if row != len(projections) - 1:
                 axes[row, col].set_xticks([])
             if col != 0:
                 axes[row, col].set_yticks([])
@@ -571,9 +838,14 @@ def save_gradient_plot(
 
     fig.colorbar(signal_im, ax=axes[:, :2], shrink=0.86, label="projected mode gradient")
     fig.colorbar(diff_im, ax=axes[:, 2], shrink=0.86, label="projected gradient residual")
+    layout_caption = (
+        "PM++ panel shading = owned x-slab per GPU, red bands = 1-cell particle halo exchange bands"
+        if gpu_layout_panels == "pmpp"
+        else "Background shading = owned x-slab per GPU, red bands = 1-cell particle halo exchange bands"
+    )
     fig.suptitle(
         "Notebook-style mode-gradient parity through nbody\n"
-        "Background shading = owned x-slab per GPU, red bands = 1-cell particle halo exchange bands",
+        f"{layout_caption}",
         fontsize=15,
     )
     fig.savefig(output_path, dpi=180)
@@ -582,17 +854,29 @@ def save_gradient_plot(
 
 def main() -> None:
     args = parse_args()
+    if args.forward_plot_layout == "pair" and not args.forward_plot_themes:
+        args.forward_plot_themes = ["light", "dark"]
+    if args.gradient_plot_layout == "pair" and not args.gradient_plot_themes:
+        args.gradient_plot_themes = ["light", "dark"]
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    pmpp_forward_impl = pmpp_forward_adjoint
 
     particle_plot_path = args.output_dir / "nbody_particle_forward_parity.png"
-    density_plot_path = args.output_dir / "nbody_density_forward_parity.png"
-    gradient_plot_path = args.output_dir / "nbody_mode_gradient_parity.png"
+    density_plot_path = artifact_path(args.output_dir, "nbody_density_forward_parity", args.projection)
+    density_pair_plot_paths = {
+        theme: themed_artifact_path(args.output_dir, "nbody_density_forward_pair", args.projection, theme)
+        for theme in args.forward_plot_themes
+    }
+    gradient_plot_path = artifact_path(args.output_dir, "nbody_mode_gradient_parity", args.projection)
+    gradient_pair_plot_paths = {
+        theme: themed_artifact_path(args.output_dir, "nbody_mode_gradient_pair", args.projection, theme)
+        for theme in args.gradient_plot_themes
+    }
     metrics_path = args.output_dir / "nbody_gradient_metrics.json"
 
     gpu_devices = resolve_gpu_devices(args.num_devices)
     conf_pmpp, conf_pmwd = init_confs(args, gpu_devices)
 
-    target_dens = notebook_target_density(args.target_seed, conf_pmwd)
     base_cosmo_pmwd = SimpleLCDM_PM(conf_pmwd)
     base_cosmo_pmpp = SimpleLCDM_PP(conf_pmpp)
     modes_real_pmwd = white_noise_pmwd(args.seed, conf_pmwd, real=True)
@@ -600,62 +884,40 @@ def main() -> None:
 
     start = perf_counter()
     pmwd_forward_jit = jax.jit(pmwd_forward, static_argnames=("conf",))
-    pmpp_forward_jit = jax.jit(pmpp_forward, static_argnames=("conf",))
+    pmpp_forward_jit = jax.jit(pmpp_forward_impl, static_argnames=("conf",))
     ptcl_pmwd, dens_pmwd = pmwd_forward_jit(modes_real_pmwd, base_cosmo_pmwd, conf_pmwd)
     ptcl_pmpp, dens_pmpp = pmpp_forward_jit(modes_real_pmpp, base_cosmo_pmpp, conf_pmpp)
     forward_elapsed = perf_counter() - start
 
-    first_slot = first_slot_mapping(ptcl_pmwd, ptcl_pmpp, conf_pmwd, conf_pmpp)
-
-    disp_pmwd = to_numpy(ptcl_pmwd.disp)
-    vel_pmwd = to_numpy(ptcl_pmwd.vel)
-    acc_pmwd = to_numpy(ptcl_pmwd.acc)
-    disp_pmpp = to_numpy(ptcl_pmpp.disp)[first_slot]
-    vel_pmpp = to_numpy(ptcl_pmpp.vel)[first_slot]
-    acc_pmpp = to_numpy(ptcl_pmpp.acc)[first_slot]
     dens_pmwd_np = to_numpy(dens_pmwd)
     dens_pmpp_np = to_numpy(dens_pmpp)
 
-    disp_metrics, _ = vector_metrics(disp_pmwd, disp_pmpp, atol=5e-3, rtol=1e-4)
-    vel_metrics, _ = vector_metrics(vel_pmwd, vel_pmpp, atol=1e-3, rtol=1e-4)
-    acc_metrics, _ = vector_metrics(acc_pmwd, acc_pmpp, atol=1e-3, rtol=1e-4)
     density_metrics, _ = vector_metrics(dens_pmwd_np, dens_pmpp_np, atol=1e-3, rtol=1e-4)
     gpu_layout = gpu_layout_from_conf(conf_pmpp)
     density_projection_metrics = projection_metrics(dens_pmwd_np, dens_pmpp_np)
 
-    def loss_pmwd(tgt_dens, modes_real, cosmo, conf):
-        dens = pmwd_forward(modes_real, cosmo, conf)[1]
-        return (dens - tgt_dens).var()
-
-    def loss_pmpp(tgt_dens, modes_real, cosmo, conf):
-        dens = pmpp_forward(modes_real, cosmo, conf)[1]
-        return (dens - tgt_dens).var()
-
-    start = perf_counter()
-    grad_pmwd_fn = jax.jit(jax.grad(loss_pmwd, argnums=(1, 2)), static_argnames=("conf",))
-    grad_pmpp_fn = jax.jit(jax.grad(loss_pmpp, argnums=(1, 2)), static_argnames=("conf",))
-    grad_modes_pmwd, grad_cosmo_pmwd = grad_pmwd_fn(target_dens, modes_real_pmwd, base_cosmo_pmwd, conf_pmwd)
-    grad_modes_pmpp, grad_cosmo_pmpp = grad_pmpp_fn(target_dens, modes_real_pmpp, base_cosmo_pmpp, conf_pmpp)
-    grad_elapsed = perf_counter() - start
-
-    grad_modes_pmwd_np = to_numpy(grad_modes_pmwd)
-    grad_modes_pmpp_np = to_numpy(grad_modes_pmpp)
-    mode_grad_metrics, _ = vector_metrics(grad_modes_pmwd_np, grad_modes_pmpp_np, atol=1e-4, rtol=1e-4)
-    mode_gradient_projection_metrics = projection_metrics(grad_modes_pmwd_np, grad_modes_pmpp_np)
-    cosmo_metrics = cosmo_grad_metrics(grad_cosmo_pmwd, grad_cosmo_pmpp)
-
-    save_particle_plot(
-        disp_pmwd,
-        disp_pmpp,
-        vel_pmwd,
-        vel_pmpp,
-        acc_pmwd,
-        acc_pmpp,
-        density_metrics,
-        particle_plot_path,
-    )
-    save_density_plot(dens_pmwd_np, dens_pmpp_np, density_metrics, gpu_layout, density_plot_path)
-    save_gradient_plot(grad_modes_pmwd_np, grad_modes_pmpp_np, mode_grad_metrics, gpu_layout, gradient_plot_path)
+    if args.forward_plot_layout == "pair":
+        for theme, themed_path in density_pair_plot_paths.items():
+            save_density_pair_plot(
+                dens_pmwd_np,
+                dens_pmpp_np,
+                gpu_layout,
+                themed_path,
+                args.projection,
+                args.gpu_layout_panels,
+                theme,
+                args.forward_transparent,
+            )
+    else:
+        save_density_plot(
+            dens_pmwd_np,
+            dens_pmpp_np,
+            density_metrics,
+            gpu_layout,
+            density_plot_path,
+            args.projection,
+            args.gpu_layout_panels,
+        )
 
     report = {
         "config": {
@@ -667,35 +929,136 @@ def main() -> None:
             "a_stop": args.a_stop,
             "a_nbody_maxstep": args.a_nbody_maxstep,
             "num_devices": args.num_devices,
+            "projection": args.projection,
+            "gpu_layout_panels": args.gpu_layout_panels,
+            "forward_plot_layout": args.forward_plot_layout,
+            "forward_plot_themes": args.forward_plot_themes,
+            "forward_transparent": args.forward_transparent,
+            "forward_only": args.forward_only,
+            "gradient_plot_layout": args.gradient_plot_layout,
+            "gradient_plot_themes": args.gradient_plot_themes,
+            "gradient_transparent": args.gradient_transparent,
+            # "pmpp_nbody_path": args.pmpp_nbody_path,
         },
         "runtime_seconds": {
             "forward": forward_elapsed,
-            "mode_gradient": grad_elapsed,
         },
-        "disp_metrics": disp_metrics,
-        "vel_metrics": vel_metrics,
-        "acc_metrics": acc_metrics,
         "density_metrics": density_metrics,
         "density_projection_metrics": density_projection_metrics,
-        "mode_gradient_metrics": mode_grad_metrics,
-        "mode_gradient_projection_metrics": mode_gradient_projection_metrics,
-        "cosmo_gradient_metrics": cosmo_metrics,
         "gpu_layout": gpu_layout,
         "artifacts": {
-            "particle_plot": str(particle_plot_path),
-            "density_plot": str(density_plot_path),
-            "gradient_plot": str(gradient_plot_path),
             "metrics_json": str(metrics_path),
         },
     }
+    if args.forward_plot_layout == "pair":
+        report["artifacts"]["density_pair_plots"] = {
+            theme: str(path) for theme, path in density_pair_plot_paths.items()
+        }
+    else:
+        report["artifacts"]["density_plot"] = str(density_plot_path)
+
+    if not args.forward_only:
+        first_slot = first_slot_mapping(ptcl_pmwd, ptcl_pmpp, conf_pmwd, conf_pmpp)
+
+        disp_pmwd = to_numpy(ptcl_pmwd.disp)
+        vel_pmwd = to_numpy(ptcl_pmwd.vel)
+        acc_pmwd = to_numpy(ptcl_pmwd.acc)
+        disp_pmpp = to_numpy(ptcl_pmpp.disp)[first_slot]
+        vel_pmpp = to_numpy(ptcl_pmpp.vel)[first_slot]
+        acc_pmpp = to_numpy(ptcl_pmpp.acc)[first_slot]
+
+        disp_metrics, _ = vector_metrics(disp_pmwd, disp_pmpp, atol=5e-3, rtol=1e-4)
+        vel_metrics, _ = vector_metrics(vel_pmwd, vel_pmpp, atol=1e-3, rtol=1e-4)
+        acc_metrics, _ = vector_metrics(acc_pmwd, acc_pmpp, atol=1e-3, rtol=1e-4)
+
+        def loss_pmwd(tgt_dens, modes_real, cosmo, conf):
+            dens = pmwd_forward(modes_real, cosmo, conf)[1]
+            return (dens - tgt_dens).var()
+
+        def loss_pmpp(tgt_dens, modes_real, cosmo, conf):
+            dens = pmpp_forward_impl(modes_real, cosmo, conf)[1]
+            return (dens - tgt_dens).var()
+
+        target_dens = notebook_target_density(args.target_seed, conf_pmwd)
+        start = perf_counter()
+        grad_pmwd_fn = jax.jit(jax.grad(loss_pmwd, argnums=(1, 2)), static_argnames=("conf",))
+        grad_pmpp_fn = jax.jit(jax.grad(loss_pmpp, argnums=(1, 2)), static_argnames=("conf",))
+        grad_modes_pmwd, grad_cosmo_pmwd = grad_pmwd_fn(target_dens, modes_real_pmwd, base_cosmo_pmwd, conf_pmwd)
+        grad_modes_pmpp, grad_cosmo_pmpp = grad_pmpp_fn(target_dens, modes_real_pmpp, base_cosmo_pmpp, conf_pmpp)
+        grad_elapsed = perf_counter() - start
+
+        grad_modes_pmwd_np = to_numpy(grad_modes_pmwd)
+        grad_modes_pmpp_np = to_numpy(grad_modes_pmpp)
+        mode_grad_metrics, _ = vector_metrics(grad_modes_pmwd_np, grad_modes_pmpp_np, atol=1e-4, rtol=1e-4)
+        mode_gradient_projection_metrics = projection_metrics(grad_modes_pmwd_np, grad_modes_pmpp_np)
+        cosmo_metrics = cosmo_grad_metrics(grad_cosmo_pmwd, grad_cosmo_pmpp)
+
+        save_particle_plot(
+            disp_pmwd,
+            disp_pmpp,
+            vel_pmwd,
+            vel_pmpp,
+            acc_pmwd,
+            acc_pmpp,
+            density_metrics,
+            particle_plot_path,
+        )
+        if args.gradient_plot_layout == "pair":
+            for theme, themed_path in gradient_pair_plot_paths.items():
+                save_gradient_pair_plot(
+                    grad_modes_pmwd_np,
+                    grad_modes_pmpp_np,
+                    gpu_layout,
+                    themed_path,
+                    args.projection,
+                    theme,
+                    args.gradient_transparent,
+                )
+        else:
+            save_gradient_plot(
+                grad_modes_pmwd_np,
+                grad_modes_pmpp_np,
+                mode_grad_metrics,
+                gpu_layout,
+                gradient_plot_path,
+                args.projection,
+                args.gpu_layout_panels,
+            )
+
+        report["runtime_seconds"]["mode_gradient"] = grad_elapsed
+        report["disp_metrics"] = disp_metrics
+        report["vel_metrics"] = vel_metrics
+        report["acc_metrics"] = acc_metrics
+        report["mode_gradient_metrics"] = mode_grad_metrics
+        report["mode_gradient_projection_metrics"] = mode_gradient_projection_metrics
+        report["cosmo_gradient_metrics"] = cosmo_metrics
+        report["artifacts"]["particle_plot"] = str(particle_plot_path)
+        if args.gradient_plot_layout == "pair":
+            report["artifacts"]["gradient_pair_plots"] = {
+                theme: str(path) for theme, path in gradient_pair_plot_paths.items()
+            }
+        else:
+            report["artifacts"]["gradient_plot"] = str(gradient_plot_path)
 
     metrics_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
-    print(f"Saved particle plot to {particle_plot_path}")
-    print(f"Saved density plot to {density_plot_path}")
-    print(f"Saved gradient plot to {gradient_plot_path}")
+    if args.forward_plot_layout == "pair":
+        for theme, path in density_pair_plot_paths.items():
+            print(f"Saved density pair plot ({theme}) to {path}")
+    else:
+        print(f"Saved density plot to {density_plot_path}")
+    if not args.forward_only:
+        print(f"Saved particle plot to {particle_plot_path}")
+        if args.gradient_plot_layout == "pair":
+            for theme, path in gradient_pair_plot_paths.items():
+                print(f"Saved gradient pair plot ({theme}) to {path}")
+        else:
+            print(f"Saved gradient plot to {gradient_plot_path}")
     print(f"Saved metrics to {metrics_path}")
-    print(json.dumps(report["mode_gradient_metrics"], indent=2))
+    if args.forward_only:
+        print(json.dumps(report["density_metrics"], indent=2))
+    else:
+        print(json.dumps(report["mode_gradient_metrics"], indent=2))
 
 
 if __name__ == "__main__":
