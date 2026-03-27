@@ -11,7 +11,11 @@ from jax.typing import DTypeLike
 from mcfit import TophatVar
 
 from .fft import fftfreq
-from .multigpu_configuration import build_multigpu_configuration, initialize_multigpu_runtime
+from .multigpu_configuration import (
+    MultiGPUConfiguration,
+    build_multigpu_configuration,
+    initialize_multigpu_runtime,
+)
 from .utils import pytree_dataclass
 
 
@@ -107,8 +111,10 @@ class Configuration:
     ptcl_spacing: float
     ptcl_grid_shape: Tuple[int, ...]  # tuple[int, ...] for python >= 3.9 (PEP 585)
 
-    # mGPU compute_mesh
+    # Legacy top-level multigpu inputs remain as compatibility fallbacks.
     compute_mesh: Mesh = None
+    multigpu_mode: str = "particle_halo"
+    multigpu: Optional[MultiGPUConfiguration] = None
 
     mesh_shape: Union[float, Tuple[int, ...]] = 1
     nMesh: int = None
@@ -166,8 +172,6 @@ class Configuration:
     max_share_ptcl: int = 50000
     max_halo_share_ptcl: Optional[int] = None
     max_share_gather_ptcl: int = 200000
-
-    _multigpu: object = None
 
     def __post_init__(self):
         if self._is_transforming():
@@ -239,14 +243,17 @@ class Configuration:
         # runtime object so the main configuration can stay focused on the
         # physical simulation parameters and their derived scalar/array values.
         with jax.ensure_compile_time_eval():
-            runtime = build_multigpu_configuration(self)
-            object.__setattr__(self, "_multigpu", runtime)
+            runtime_seed = self._build_multigpu_seed()
+            runtime = build_multigpu_configuration(self, runtime_seed)
+            object.__setattr__(self, "multigpu", runtime)
             if runtime is not None:
+                object.__setattr__(self, "compute_mesh", runtime.compute_mesh)
+                object.__setattr__(self, "multigpu_mode", runtime.mode)
                 object.__setattr__(self, "max_ptcl_per_slice", runtime.max_ptcl_per_slice)
                 object.__setattr__(self, "max_share_ptcl", runtime.max_share_ptcl)
                 object.__setattr__(self, "max_halo_share_ptcl", runtime.max_halo_share_ptcl)
                 object.__setattr__(self, "max_share_gather_ptcl", runtime.max_share_gather_ptcl)
-                object.__setattr__(self, "_multigpu", initialize_multigpu_runtime(self, runtime))
+                object.__setattr__(self, "multigpu", initialize_multigpu_runtime(self, runtime))
 
         # finalize
         dtype = self.cosmo_dtype
@@ -254,19 +261,36 @@ class Configuration:
             value = tree_map(lambda x: jnp.asarray(x, dtype=dtype), value)
             object.__setattr__(self, name, value)
 
-    @property
-    def multigpu(self):
-        return self._multigpu
+    def _build_multigpu_seed(self):
+        runtime_seed = self.multigpu
+        if runtime_seed is None:
+            if self.compute_mesh is None:
+                return None
+            return MultiGPUConfiguration(
+                compute_mesh=self.compute_mesh,
+                mode=self.multigpu_mode,
+            )
+
+        if runtime_seed.compute_mesh is None and self.compute_mesh is not None:
+            runtime_seed = runtime_seed.replace(compute_mesh=self.compute_mesh)
+        if runtime_seed.mode is None:
+            runtime_seed = runtime_seed.replace(mode=self.multigpu_mode)
+        return runtime_seed
 
     @property
     def use_mGPU(self):
-        return self._multigpu is not None
+        return self.multigpu is not None
 
     _MULTIGPU_FORWARD = {
         "num_devices": "num_devices",
         "devices": "devices",
         "devices_index": "devices_index",
+        "mesh_halo_width": "mesh_halo_width",
+        "mesh_halo_offsets": "mesh_halo_offsets",
         "local_mesh_shape": "local_mesh_shape",
+        "local_mesh_with_halo_shape": "local_mesh_with_halo_shape",
+        "owned_slice_start": "owned_slice_start",
+        "owned_slice_end": "owned_slice_end",
         "ptcl_halo_width": "ptcl_halo_width",
         "slice_start": "slice_start",
         "slice_end": "slice_end",
@@ -290,13 +314,17 @@ class Configuration:
         runtime_name = self._MULTIGPU_FORWARD.get(name)
         if runtime_name is None:
             raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
-        if self._multigpu is None:
+        if self.multigpu is None:
             if name == "local_mesh_shape":
                 return self.mesh_shape
+            if name == "local_mesh_with_halo_shape":
+                return self.mesh_shape
+            if name == "mesh_halo_width":
+                return 0
             if name == "ptcl_halo_width":
                 return 0
             return None
-        return getattr(self._multigpu, runtime_name)
+        return getattr(self.multigpu, runtime_name)
 
     @property
     def dim(self):

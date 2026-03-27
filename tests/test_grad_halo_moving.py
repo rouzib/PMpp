@@ -24,6 +24,10 @@ GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"]
 
 
 def _build_probe_state(conf):
+    runtime = conf.multigpu
+    if runtime is None:
+        raise RuntimeError("Halo-moving test requires an initialized multi-GPU runtime.")
+
     key = jax.random.PRNGKey(0)
     ptcl = Particles.gen_grid(conf, vel=True, acc=True)
 
@@ -31,9 +35,9 @@ def _build_probe_state(conf):
     vel = jax.random.normal(key_vel, ptcl.vel.shape, dtype=ptcl.vel.dtype) * 0.2
     acc = jax.random.normal(key_acc, ptcl.acc.shape, dtype=ptcl.acc.dtype) * 0.2
 
-    pmid = ptcl.pmid.reshape(conf.num_devices, conf.max_ptcl_per_slice, 3)
-    disp = ptcl.disp.reshape(conf.num_devices, conf.max_ptcl_per_slice, 3)
-    unused = ptcl.unused_index.reshape(conf.num_devices, conf.max_ptcl_per_slice)
+    pmid = ptcl.pmid.reshape(runtime.num_devices, conf.max_ptcl_per_slice, 3)
+    disp = ptcl.disp.reshape(runtime.num_devices, conf.max_ptcl_per_slice, 3)
+    unused = ptcl.unused_index.reshape(runtime.num_devices, conf.max_ptcl_per_slice)
     slot_ids = jnp.arange(conf.max_ptcl_per_slice)[None, :]
 
     x = pmid[..., 0]
@@ -66,16 +70,20 @@ def test_halo_move_vjp_matches_true_vjp():
         max_share_ptcl=32,
         max_share_gather_ptcl=128,
     )
+    runtime = conf.multigpu
+    if runtime is None:
+        raise RuntimeError("Halo-moving test requires an initialized multi-GPU runtime.")
     ptcl, disp, vel, acc, cot_disp, cot_vel, cot_acc = _build_probe_state(conf)
+
     def outputs_only(disp_in, vel_in, acc_in):
-        _, disp_out, vel_out, acc_out, *_ = conf.mGPU_halo_moving(
+        _, disp_out, vel_out, acc_out, *_ = runtime.halo_moving(
             ptcl.pmid,
             ptcl.disp,
             disp_in,
             vel_in,
             acc_in,
-            conf.halo_start,
-            conf.halo_end,
+            runtime.halo_start,
+            runtime.halo_end,
             ptcl.unused_index,
         )
         return disp_out, vel_out, acc_out
@@ -94,14 +102,14 @@ def test_halo_move_vjp_matches_true_vjp():
         conf,
     )
 
-    forward = conf.mGPU_halo_moving(
+    forward = runtime.halo_moving(
         ptcl.pmid,
         ptcl.disp,
         disp,
         vel,
         acc,
-        conf.halo_start,
-        conf.halo_end,
+        runtime.halo_start,
+        runtime.halo_end,
         ptcl.unused_index,
     )
 

@@ -9,6 +9,7 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .enmesh import _chunk_split, enmesh, _chunk_cat
 from .halo_moving import particles_in_slice_mask
+from .mesh_halo import reduce_mesh_halo_to_owned, zero_pad_owned_mesh_halo
 from .utils import AXIS_NAME, raise_error, pmid_to_idx
 
 
@@ -128,6 +129,21 @@ def reduce_grad_across_gpus(disp_cot, pmid, disp, valid_mask, conf):
 
 
 def initialize_mGPU_scatter(conf):
+    if conf.multigpu_mode == "mesh_halo":
+        return shard_map(
+            _scatter_mGPU_mesh_halo,
+            mesh=conf.compute_mesh,
+            in_specs=(
+                P(AXIS_NAME, None),  # pmid
+                P(AXIS_NAME, None),  # disp
+                None,  # conf
+                P(AXIS_NAME, None, None),  # mesh
+                P(AXIS_NAME),  # val
+                None,  # cell_size
+            ),
+            out_specs=(P(AXIS_NAME, None, None)),
+            check_rep=False,
+        )
     return shard_map(
         _scatter_mGPU,
         mesh=conf.compute_mesh,
@@ -142,6 +158,14 @@ def initialize_mGPU_scatter(conf):
         out_specs=(P(AXIS_NAME, None, None)),
         check_rep=False
     )
+
+
+def _scatter_mGPU_mesh_halo(pmid, disp, conf, mesh, val, cell_size):
+    gpu_id = jax.lax.axis_index(AXIS_NAME)
+    mesh_halo = zero_pad_owned_mesh_halo(mesh, conf.mesh_halo_width)
+    offset = conf.mesh_halo_offsets[gpu_id]
+    mesh_halo = _scatter(pmid, disp, conf, mesh_halo, val, offset, cell_size)
+    return reduce_mesh_halo_to_owned(mesh_halo, conf.mesh_halo_width, conf.left_perm, conf.right_perm)
 
 
 @partial(custom_vjp, nondiff_argnums=(2,))

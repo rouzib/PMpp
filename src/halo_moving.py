@@ -196,6 +196,54 @@ def _pack_left_halo_and_authoritative(
     return pmid, disp, vel, acc, halo_mask, unused_index
 
 
+def _pack_authoritative_only(
+    auth_pmid,
+    auth_disp,
+    auth_vel,
+    auth_acc,
+    auth_valid,
+    max_ptcl_per_slice,
+):
+    """Pack the canonical authoritative block without duplicating halo particles."""
+    auth_count = jnp.sum(auth_valid)
+    _capacity_check(
+        auth_count,
+        max_ptcl_per_slice,
+        "[ERROR] Exceeded authoritative-only storage capacity. "
+        "required_slots={x}, max_ptcl_per_slice={y}.",
+    )
+
+    pmid = jnp.zeros((max_ptcl_per_slice, auth_pmid.shape[1]), dtype=auth_pmid.dtype)
+    disp = jnp.zeros((max_ptcl_per_slice, auth_disp.shape[1]), dtype=auth_disp.dtype)
+    vel = jnp.zeros((max_ptcl_per_slice, auth_vel.shape[1]), dtype=auth_vel.dtype)
+    acc = jnp.zeros((max_ptcl_per_slice, auth_acc.shape[1]), dtype=auth_acc.dtype)
+    slots = jnp.arange(max_ptcl_per_slice, dtype=jnp.int32)
+    auth_mask = slots < auth_count
+    auth_idx = jnp.minimum(slots, auth_pmid.shape[0] - 1)
+
+    pmid = jnp.where(auth_mask[:, None], auth_pmid[auth_idx], pmid)
+    disp = jnp.where(auth_mask[:, None], auth_disp[auth_idx], disp)
+    vel = jnp.where(auth_mask[:, None], auth_vel[auth_idx], vel)
+    acc = jnp.where(auth_mask[:, None], auth_acc[auth_idx], acc)
+
+    unused_index = slots >= auth_count
+    halo_mask = jnp.zeros_like(unused_index)
+    return pmid, disp, vel, acc, halo_mask, unused_index
+
+
+def _reverse_build_owned_only_cot(full_cot, auth_size, auth_valid):
+    """Transpose of `_pack_authoritative_only` for one payload field stack."""
+    auth_count = jnp.sum(auth_valid)
+    auth_mask = jnp.arange(full_cot.shape[0], dtype=jnp.int32) < auth_count
+    return jnp.compress(
+        auth_mask,
+        full_cot,
+        axis=0,
+        size=auth_size,
+        fill_value=jnp.asarray(0, full_cot.dtype),
+    )
+
+
 def _canonical_authoritative_from_full(
     pmid,
     source_disp,
@@ -730,6 +778,114 @@ def halo_move_pullback_from_prestate_shard_map(
     return input_payload_cot[..., 0], input_payload_cot[..., 1], input_payload_cot[..., 2]
 
 
+def halo_move_pullback_mesh_halo_from_prestate_shard_map(
+    pmid,
+    source_disp,
+    carried_disp,
+    vel,
+    acc,
+    halo_end,
+    unused_indexes,
+    disp_cot,
+    vel_cot,
+    acc_cot,
+    global_nMesh,
+    max_values_to_share,
+    max_halo_values_to_share,
+    max_ptcl_per_slice,
+    left_perm,
+    right_perm,
+    num_gpus,
+    disp_size,
+    offsets,
+    conf,
+):
+    del halo_end, max_halo_values_to_share, max_ptcl_per_slice
+    (
+        auth_keys,
+        auth_pmid,
+        auth_disp,
+        auth_vel,
+        auth_acc,
+        auth_valid,
+        auth_slots,
+    ) = _canonical_authoritative_from_full_with_slots(
+        pmid,
+        source_disp,
+        carried_disp,
+        vel,
+        acc,
+        unused_indexes,
+        global_nMesh,
+        disp_size,
+        num_gpus,
+        offsets,
+        conf,
+    )
+    (
+        _merged_keys,
+        _merged_pmid,
+        _merged_disp,
+        _merged_vel,
+        _merged_acc,
+        merged_valid,
+    ), route_aux = _canonical_route_authoritative_with_aux(
+        auth_keys,
+        auth_pmid,
+        auth_disp,
+        auth_vel,
+        auth_acc,
+        auth_valid,
+        global_nMesh,
+        max_values_to_share,
+        left_perm,
+        right_perm,
+        num_gpus,
+        disp_size,
+        offsets,
+        conf,
+    )
+    (
+        stay_pos,
+        stay_valid,
+        send_left_pos,
+        send_left_valid,
+        send_right_pos,
+        send_right_valid,
+        merge_src_tag,
+        merge_src_idx,
+    ) = route_aux
+
+    payload_cot = jnp.stack((disp_cot, vel_cot, acc_cot), axis=-1)
+    merged_payload_cot = _reverse_build_owned_only_cot(
+        payload_cot,
+        auth_pmid.shape[0],
+        merged_valid,
+    )
+    auth_payload_cot = _reverse_route_cot(
+        merged_payload_cot,
+        stay_pos,
+        stay_valid,
+        send_left_pos,
+        send_left_valid,
+        send_right_pos,
+        send_right_valid,
+        merge_src_tag,
+        merge_src_idx,
+        auth_pmid.shape[0],
+        max_values_to_share,
+        left_perm,
+        right_perm,
+    )
+    input_payload_cot = _scatter_compact_to_dense(
+        auth_payload_cot,
+        auth_slots,
+        auth_valid,
+        pmid.shape[0],
+    )
+    return input_payload_cot[..., 0], input_payload_cot[..., 1], input_payload_cot[..., 2]
+
+
 def _canonical_build_full_from_authoritative(
     auth_keys,
     auth_pmid,
@@ -852,6 +1008,64 @@ def move_particles_canonical_shard_map(
     return pmid, disp, vel, acc, halo_mask, unused_indexes, jnp.bool_(False), max_particles_moved
 
 
+def move_particles_mesh_halo_shard_map(
+    pmid,
+    disp_before,
+    disp_after,
+    vel,
+    acc,
+    halo_start,
+    halo_end,
+    unused_indexes,
+    global_nMesh,
+    max_values_to_share,
+    max_halo_values_to_share,
+    max_ptcl_per_slice,
+    left_perm,
+    right_perm,
+    num_gpus,
+    disp_size,
+    offsets,
+    conf,
+):
+    del halo_start, halo_end, max_halo_values_to_share
+    auth = _canonical_authoritative_from_full(
+        pmid,
+        disp_before,
+        disp_after,
+        vel,
+        acc,
+        unused_indexes,
+        global_nMesh,
+        disp_size,
+        num_gpus,
+        offsets,
+        conf,
+    )
+    (_auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid), max_particles_moved = (
+        _canonical_route_authoritative(
+            *auth,
+            global_nMesh,
+            max_values_to_share,
+            left_perm,
+            right_perm,
+            num_gpus,
+            disp_size,
+            offsets,
+            conf,
+        )
+    )
+    pmid, disp, vel, acc, halo_mask, unused_indexes = _pack_authoritative_only(
+        auth_pmid,
+        auth_disp,
+        auth_vel,
+        auth_acc,
+        auth_valid,
+        max_ptcl_per_slice,
+    )
+    return pmid, disp, vel, acc, halo_mask, unused_indexes, jnp.bool_(False), max_particles_moved
+
+
 def reconstruct_pre_drift_canonical_shard_map(
     pmid,
     disp,
@@ -921,6 +1135,68 @@ def reconstruct_pre_drift_canonical_shard_map(
     return pmid, disp, vel, acc, unused_index, halo_mask
 
 
+def reconstruct_pre_drift_mesh_halo_shard_map(
+    pmid,
+    disp,
+    vel,
+    acc,
+    halo_start,
+    halo_end,
+    unused_indexes,
+    drift_factor,
+    global_nMesh,
+    max_values_to_share,
+    max_halo_values_to_share,
+    max_ptcl_per_slice,
+    left_perm,
+    right_perm,
+    num_gpus,
+    disp_size,
+    offsets,
+    conf,
+):
+    del halo_start, halo_end, max_halo_values_to_share
+    auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid = _canonical_authoritative_from_full(
+        pmid,
+        disp,
+        disp,
+        vel,
+        acc,
+        unused_indexes,
+        global_nMesh,
+        disp_size,
+        num_gpus,
+        offsets,
+        conf,
+    )
+    auth_disp = auth_disp - auth_vel * drift_factor.astype(auth_disp.dtype)
+    (_auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid), _ = _canonical_route_authoritative(
+        auth_keys,
+        auth_pmid,
+        auth_disp,
+        auth_vel,
+        auth_acc,
+        auth_valid,
+        global_nMesh,
+        max_values_to_share,
+        left_perm,
+        right_perm,
+        num_gpus,
+        disp_size,
+        offsets,
+        conf,
+    )
+    pmid, disp, vel, acc, halo_mask, unused_index = _pack_authoritative_only(
+        auth_pmid,
+        auth_disp,
+        auth_vel,
+        auth_acc,
+        auth_valid,
+        max_ptcl_per_slice,
+    )
+    return pmid, disp, vel, acc, unused_index, halo_mask
+
+
 @partial(jax.jit, static_argnames=["global_nMesh", "disp_size"])
 def compute_halo_mask_shard_map(pmid, disp, unused_indexes, halo_start, halo_end, global_nMesh, disp_size):
     x_mod = (pmid[:, 0] + disp[:, 0] * disp_size) % global_nMesh
@@ -953,8 +1229,12 @@ def initialize_mGPU_halo_movement_canonical(conf):
             )
         return _halo_noop
 
+    move_fn = move_particles_canonical_shard_map
+    if conf.multigpu_mode == "mesh_halo":
+        move_fn = move_particles_mesh_halo_shard_map
+
     func = partial(
-        move_particles_canonical_shard_map,
+        move_fn,
         global_nMesh=conf.nMesh,
         max_values_to_share=conf.max_share_ptcl,
         max_halo_values_to_share=_halo_capacity(conf),
@@ -1001,8 +1281,12 @@ def initialize_mGPU_reconstruct_pre_drift(conf):
             return pmid, disp, vel, acc, unused_indexes, halo_mask
         return _reconstruct_noop
 
+    reconstruct_fn = reconstruct_pre_drift_canonical_shard_map
+    if conf.multigpu_mode == "mesh_halo":
+        reconstruct_fn = reconstruct_pre_drift_mesh_halo_shard_map
+
     func = partial(
-        reconstruct_pre_drift_canonical_shard_map,
+        reconstruct_fn,
         global_nMesh=conf.nMesh,
         max_values_to_share=conf.max_share_ptcl,
         max_halo_values_to_share=_halo_capacity(conf),
@@ -1057,8 +1341,12 @@ def initialize_mGPU_halo_move_pullback(conf):
             return disp_cot, vel_cot, acc_cot
         return _pullback_noop
 
+    pullback_fn = halo_move_pullback_from_prestate_shard_map
+    if conf.multigpu_mode == "mesh_halo":
+        pullback_fn = halo_move_pullback_mesh_halo_from_prestate_shard_map
+
     func = partial(
-        halo_move_pullback_from_prestate_shard_map,
+        pullback_fn,
         global_nMesh=conf.nMesh,
         max_values_to_share=conf.max_share_ptcl,
         max_halo_values_to_share=_halo_capacity(conf),
@@ -1095,6 +1383,31 @@ def initialize_mGPU_halo_move_pullback(conf):
 
 
 def initialize_mGPU_compute_halo_mask(conf):
+    if conf.multigpu_mode == "mesh_halo":
+        if conf.num_devices == 1:
+            def _compute_halo_mask_mesh_halo_noop(pmid, disp, unused_indexes, halo_start, halo_end):
+                del pmid, disp, halo_start, halo_end
+                return jnp.zeros_like(unused_indexes)
+            return _compute_halo_mask_mesh_halo_noop
+
+        def _zero_halo_mask_shard(pmid, disp, unused_indexes, halo_start, halo_end):
+            del pmid, disp, halo_start, halo_end
+            return jnp.zeros_like(unused_indexes)
+
+        return shard_map(
+            _zero_halo_mask_shard,
+            mesh=conf.compute_mesh,
+            in_specs=(
+                P(AXIS_NAME, None),
+                P(AXIS_NAME, None),
+                P(AXIS_NAME),
+                P(AXIS_NAME),
+                P(AXIS_NAME),
+            ),
+            out_specs=P(AXIS_NAME),
+            check_rep=False,
+        )
+
     if conf.num_devices == 1:
         def _compute_halo_mask_noop(pmid, disp, unused_indexes, halo_start, halo_end):
             del halo_start, halo_end

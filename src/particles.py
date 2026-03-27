@@ -116,8 +116,20 @@ class Particles:
 
     @staticmethod
     def distribute_ptcl_pos(pmid, disp, vel, acc, conf, gpu_id):
+        runtime = conf.multigpu
+        store_particle_halos = runtime is not None and runtime.store_particle_halos
+        if runtime is None:
+            slice_start = conf.slice_start[gpu_id]
+            slice_end = conf.slice_end[gpu_id]
+        elif store_particle_halos:
+            slice_start = runtime.slice_start[gpu_id]
+            slice_end = runtime.slice_end[gpu_id]
+        else:
+            slice_start = runtime.owned_slice_start[gpu_id]
+            slice_end = runtime.owned_slice_end[gpu_id]
+
         x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % conf.nMesh
-        in_slice_mask = Particles.particles_in_slice_mask(x_mod, conf.slice_start[gpu_id], conf.slice_end[gpu_id])
+        in_slice_mask = Particles.particles_in_slice_mask(x_mod, slice_start, slice_end)
         indices = jnp.compress(in_slice_mask, jnp.arange(pmid.shape[0]), axis=0,
                                size=min(conf.max_ptcl_per_slice, pmid.shape[0]),
                                fill_value=-1)
@@ -238,10 +250,12 @@ class Particles:
 
         unused_index = jnp.all(pmid_sliced == 0, axis=1) & jnp.all(disp_sliced == 0, axis=1)
         unused_index = unused_index.at[0].set(False)
-        # unused_index = (indices == -1)
-        x_mod = (pmid_sliced[:, 0] + disp_sliced[:, 0] * conf.disp_size) % conf.nMesh
-        halo_mask = Particles.compute_halo_mask(x_mod, conf.halo_start[gpu_id],
-                                                conf.halo_end[gpu_id], unused_index)
+        if runtime is not None and not store_particle_halos:
+            halo_mask = jnp.zeros_like(unused_index)
+        else:
+            x_mod = (pmid_sliced[:, 0] + disp_sliced[:, 0] * conf.disp_size) % conf.nMesh
+            halo_mask = Particles.compute_halo_mask(x_mod, conf.halo_start[gpu_id],
+                                                    conf.halo_end[gpu_id], unused_index)
 
         unused_index.astype(jnp.bool)
         halo_mask.astype(jnp.bool)
@@ -503,9 +517,17 @@ class Particles:
             pmid, disp = [], []
 
             sp = conf.ptcl_grid_shape[0]
-            sm = conf.local_mesh_shape[0] + conf.ptcl_halo_width
+            runtime = conf.multigpu
+            store_particle_halos = runtime is not None and runtime.store_particle_halos
             n_devices = conf.num_devices
-            n_ptcl = sp // n_devices + (1 if n_devices > 1 else 0)
+            if store_particle_halos:
+                sm = conf.local_mesh_shape[0] + conf.ptcl_halo_width
+                n_ptcl = sp // n_devices + (1 if n_devices > 1 else 0)
+                pmid_shift = -conf.ptcl_halo_width
+            else:
+                sm = conf.local_mesh_shape[0]
+                n_ptcl = sp // n_devices
+                pmid_shift = 0
             pmid_x = jnp.linspace(0, sm, num=n_ptcl, endpoint=False)
             offset = conf.offsets[gpu_id]
             pmid_x = jnp.rint(pmid_x)
@@ -515,7 +537,7 @@ class Particles:
             disp_x *= conf.cell_size / sp
             disp_x = disp_x.astype(conf.float_dtype)
 
-            pmid_x = pmid_x + offset - conf.ptcl_halo_width
+            pmid_x = pmid_x + offset + pmid_shift
             pmid_x = jnp.mod(pmid_x, conf.mesh_shape[0])
 
             pmid.append(pmid_x)
@@ -544,10 +566,12 @@ class Particles:
                                           device=NamedSharding(conf.compute_mesh, P(AXIS_NAME))).at[
                            n_ptcl * sp * sp:].set(True)
 
-            x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % conf.nMesh
-            halo_mask = Particles.compute_halo_mask(x_mod, conf.halo_start[gpu_id],
-                                                    conf.halo_end[gpu_id], unused_index)
-            # print(pmid[halo_mask])
+            if runtime is not None and not store_particle_halos:
+                halo_mask = jnp.zeros_like(unused_index)
+            else:
+                x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % conf.nMesh
+                halo_mask = Particles.compute_halo_mask(x_mod, conf.halo_start[gpu_id],
+                                                        conf.halo_end[gpu_id], unused_index)
 
             return pmid, disp, unused_index, halo_mask
 

@@ -9,10 +9,25 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .enmesh import _chunk_split, enmesh, _chunk_cat
 from .halo_moving import particles_in_slice_mask
+from .mesh_halo import extend_owned_mesh_with_halo
 from .utils import AXIS_NAME, raise_error, pmid_to_idx
 
 
 def initialize_mGPU_gather(conf):
+    if conf.multigpu_mode == "mesh_halo":
+        return shard_map(
+            _gather_mGPU_mesh_halo,
+            mesh=conf.compute_mesh,
+            in_specs=(
+                P(AXIS_NAME, None),  # pmid
+                P(AXIS_NAME, None),  # disp
+                P(AXIS_NAME),  # unused_index
+                None,  # conf
+                P(AXIS_NAME, None, None),  # mesh
+            ),
+            out_specs=P(AXIS_NAME),
+            check_rep=False,
+        )
     return shard_map(
         _gather_mGPU,
         mesh=conf.compute_mesh,
@@ -26,6 +41,14 @@ def initialize_mGPU_gather(conf):
         out_specs=P(AXIS_NAME),
         check_rep=False
     )
+
+
+def _gather_mGPU_mesh_halo(pmid, disp, unused_index, conf, mesh):
+    gpu_id = jax.lax.axis_index(AXIS_NAME)
+    mesh_halo = extend_owned_mesh_with_halo(mesh, conf.mesh_halo_width, conf.left_perm, conf.right_perm)
+    offset = conf.mesh_halo_offsets[gpu_id]
+    val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None)
+    return jnp.where(unused_index, jnp.asarray(0, val.dtype), val)
 
 
 def _match_exchange_routing(local_left_pmid, local_left_slot, local_left_valid,

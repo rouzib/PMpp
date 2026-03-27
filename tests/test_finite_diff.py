@@ -77,9 +77,13 @@ def _owned_mask_1d(ptcl):
 
 def _sync_halos(ptcl, conf):
     """Run halo exchange so that halo copies reflect owned-slot values."""
-    pmid, disp, vel, acc, hm, ui, _, _ = conf.mGPU_halo_moving(
+    runtime = conf.multigpu
+    if runtime is None:
+        raise RuntimeError("Halo synchronization requires an initialized multi-GPU runtime.")
+
+    pmid, disp, vel, acc, hm, ui, _, _ = runtime.halo_moving(
         ptcl.pmid, ptcl.disp, ptcl.disp, ptcl.vel, ptcl.acc,
-        conf.halo_start, conf.halo_end,
+        runtime.halo_start, runtime.halo_end,
         ptcl.unused_index,
     )
     return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc,

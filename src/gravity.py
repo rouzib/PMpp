@@ -107,6 +107,8 @@ def _gravity_mesh_fields_from_density(dens, omega_m, conf: Configuration):
 def _reduce_gather_disp_cot(pmid, disp, unused_index, disp_cot, conf: Configuration):
     if not conf.use_mGPU:
         return disp_cot
+    if not conf.multigpu.store_particle_halos:
+        return disp_cot
 
     @partial(
         shard_map,
@@ -142,6 +144,8 @@ def reduce_duplicate_slot_cot(ptcl, cot, conf: Configuration):
 
 def duplicate_slot_counts(ptcl, conf: Configuration):
     if not conf.use_mGPU:
+        return jnp.ones_like(ptcl.disp)
+    if not conf.multigpu.store_particle_halos:
         return jnp.ones_like(ptcl.disp)
 
     @partial(
