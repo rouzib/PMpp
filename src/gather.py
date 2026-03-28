@@ -9,7 +9,7 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .enmesh import _chunk_split, enmesh, _chunk_cat
 from .halo_moving import particles_in_slice_mask
-from .mesh_halo import extend_owned_mesh_with_halo
+from .mesh_halo import extend_owned_mesh_with_halo, reduce_mesh_halo_to_owned
 from .utils import AXIS_NAME, raise_error, pmid_to_idx
 
 
@@ -43,12 +43,45 @@ def initialize_mGPU_gather(conf):
     )
 
 
+@partial(custom_vjp, nondiff_argnums=(3,))
 def _gather_mGPU_mesh_halo(pmid, disp, unused_index, conf, mesh):
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     mesh_halo = extend_owned_mesh_with_halo(mesh, conf.mesh_halo_width, conf.left_perm, conf.right_perm)
     offset = conf.mesh_halo_offsets[gpu_id]
     val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None)
-    return jnp.where(unused_index, jnp.asarray(0, val.dtype), val)
+    mask = unused_index.reshape(unused_index.shape + (1,) * (val.ndim - 1))
+    return jnp.where(mask, jnp.zeros_like(val), val)
+
+
+def _gather_mGPU_mesh_halo_fwd(pmid, disp, unused_index, conf, mesh):
+    gpu_id = jax.lax.axis_index(AXIS_NAME)
+    mesh_halo = extend_owned_mesh_with_halo(mesh, conf.mesh_halo_width, conf.left_perm, conf.right_perm)
+    offset = conf.mesh_halo_offsets[gpu_id]
+    val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None)
+    mask = unused_index.reshape(unused_index.shape + (1,) * (val.ndim - 1))
+    val = jnp.where(mask, jnp.zeros_like(val), val)
+    return val, (pmid, disp, unused_index, mesh, offset)
+
+
+def _gather_mGPU_mesh_halo_bwd(conf, res, val_cot):
+    pmid, disp, unused_index, mesh, offset = res
+    mesh_halo = extend_owned_mesh_with_halo(mesh, conf.mesh_halo_width, conf.left_perm, conf.right_perm)
+    mask = unused_index.reshape(unused_index.shape + (1,) * (val_cot.ndim - 1))
+    val_cot = jnp.where(mask, jnp.zeros_like(val_cot), val_cot)
+    _, disp_cot, _, mesh_halo_cot, _, _, _ = _gather_bwd(
+        (pmid, disp, conf, mesh_halo, offset, None),
+        val_cot,
+    )
+    mesh_cot = reduce_mesh_halo_to_owned(
+        mesh_halo_cot,
+        conf.mesh_halo_width,
+        conf.left_perm,
+        conf.right_perm,
+    )
+    return None, disp_cot, None, mesh_cot
+
+
+_gather_mGPU_mesh_halo.defvjp(_gather_mGPU_mesh_halo_fwd, _gather_mGPU_mesh_halo_bwd)
 
 
 def _match_exchange_routing(local_left_pmid, local_left_slot, local_left_valid,

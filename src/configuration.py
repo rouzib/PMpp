@@ -113,7 +113,7 @@ class Configuration:
 
     # Legacy top-level multigpu inputs remain as compatibility fallbacks.
     compute_mesh: Mesh = None
-    multigpu_mode: str = "particle_halo"
+    multigpu_mode: str = "mesh_halo"
     multigpu: Optional[MultiGPUConfiguration] = None
 
     mesh_shape: Union[float, Tuple[int, ...]] = 1

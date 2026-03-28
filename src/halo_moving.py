@@ -231,6 +231,35 @@ def _pack_authoritative_only(
     return pmid, disp, vel, acc, halo_mask, unused_index
 
 
+def _authoritative_prefix_from_owned_only(
+    pmid,
+    disp,
+    vel,
+    acc,
+    unused_index,
+    conf,
+):
+    """Treat a mesh-halo packed state as its already-authoritative prefix block."""
+    valid = ~unused_index
+    keys = pmid_to_idx(pmid, conf)
+    keys = jnp.where(valid, keys, _key_fill_value(conf))
+    return keys, pmid, disp, vel, acc, valid
+
+
+def _authoritative_prefix_from_owned_only_with_slots(
+    pmid,
+    disp,
+    vel,
+    acc,
+    unused_index,
+    conf,
+):
+    valid = ~unused_index
+    slots = jnp.arange(pmid.shape[0], dtype=jnp.int32)
+    slots = jnp.where(valid, slots, jnp.asarray(-1, slots.dtype))
+    return (*_authoritative_prefix_from_owned_only(pmid, disp, vel, acc, unused_index, conf), slots)
+
+
 def _reverse_build_owned_only_cot(full_cot, auth_size, auth_valid):
     """Transpose of `_pack_authoritative_only` for one payload field stack."""
     auth_count = jnp.sum(auth_valid)
@@ -809,17 +838,12 @@ def halo_move_pullback_mesh_halo_from_prestate_shard_map(
         auth_acc,
         auth_valid,
         auth_slots,
-    ) = _canonical_authoritative_from_full_with_slots(
+    ) = _authoritative_prefix_from_owned_only_with_slots(
         pmid,
-        source_disp,
         carried_disp,
         vel,
         acc,
         unused_indexes,
-        global_nMesh,
-        disp_size,
-        num_gpus,
-        offsets,
         conf,
     )
     (
@@ -1156,17 +1180,12 @@ def reconstruct_pre_drift_mesh_halo_shard_map(
     conf,
 ):
     del halo_start, halo_end, max_halo_values_to_share
-    auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid = _canonical_authoritative_from_full(
+    auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid = _authoritative_prefix_from_owned_only(
         pmid,
-        disp,
         disp,
         vel,
         acc,
         unused_indexes,
-        global_nMesh,
-        disp_size,
-        num_gpus,
-        offsets,
         conf,
     )
     auth_disp = auth_disp - auth_vel * drift_factor.astype(auth_disp.dtype)
