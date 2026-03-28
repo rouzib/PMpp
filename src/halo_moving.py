@@ -104,6 +104,68 @@ def _sorted_merge_two(
     return out_keys, out_pmid, out_disp, out_vel, out_acc, out_valid
 
 
+def _sorted_merge_two_with_provenance(
+    keys_a,
+    pmid_a,
+    disp_a,
+    vel_a,
+    acc_a,
+    valid_a,
+    keys_b,
+    pmid_b,
+    disp_b,
+    vel_b,
+    acc_b,
+    valid_b,
+    capacity,
+    key_fill,
+    error_message,
+    src_tag_b=jnp.int32(2),
+):
+    count_a = jnp.sum(valid_a)
+    count_b = jnp.sum(valid_b)
+    total = count_a + count_b
+    _capacity_check(total, capacity, error_message)
+
+    keys_cat = jnp.concatenate((
+        jnp.where(valid_a, keys_a, key_fill),
+        jnp.where(valid_b, keys_b, key_fill),
+    ), axis=0)
+    pmid_cat = jnp.concatenate((pmid_a, pmid_b), axis=0)
+    disp_cat = jnp.concatenate((disp_a, disp_b), axis=0)
+    vel_cat = jnp.concatenate((vel_a, vel_b), axis=0)
+    acc_cat = jnp.concatenate((acc_a, acc_b), axis=0)
+
+    src_a = jnp.arange(keys_a.shape[0], dtype=jnp.int32)
+    src_b = jnp.arange(keys_b.shape[0], dtype=jnp.int32)
+    src_idx = jnp.concatenate((src_a, src_b), axis=0)
+    src_tag = jnp.concatenate((
+        jnp.where(valid_a, jnp.int32(0), jnp.int32(3)),
+        jnp.where(valid_b, src_tag_b, jnp.int32(3)),
+    ), axis=0)
+
+    order = jnp.argsort(keys_cat, stable=True)[:capacity]
+    out_valid = jnp.arange(capacity) < total
+    out_keys = keys_cat[order]
+    out_pmid = pmid_cat[order]
+    out_disp = disp_cat[order]
+    out_vel = vel_cat[order]
+    out_acc = acc_cat[order]
+    out_src_idx = jnp.where(out_valid, src_idx[order], -1)
+    out_src_tag = jnp.where(out_valid, src_tag[order], 3)
+    out_keys = jnp.where(out_valid, out_keys, key_fill)
+    return (
+        out_keys,
+        out_pmid,
+        out_disp,
+        out_vel,
+        out_acc,
+        out_valid,
+        out_src_tag,
+        out_src_idx,
+    )
+
+
 def _sorted_merge_three(
     keys_a,
     pmid_a,
@@ -262,15 +324,9 @@ def _authoritative_prefix_from_owned_only_with_slots(
 
 def _reverse_build_owned_only_cot(full_cot, auth_size, auth_valid):
     """Transpose of `_pack_authoritative_only` for one payload field stack."""
-    auth_count = jnp.sum(auth_valid)
-    auth_mask = jnp.arange(full_cot.shape[0], dtype=jnp.int32) < auth_count
-    return jnp.compress(
-        auth_mask,
-        full_cot,
-        axis=0,
-        size=auth_size,
-        fill_value=jnp.asarray(0, full_cot.dtype),
-    )
+    del auth_size
+    valid_mask = auth_valid.reshape((auth_valid.shape[0],) + (1,) * (full_cot.ndim - 1))
+    return full_cot * valid_mask.astype(full_cot.dtype)
 
 
 def _canonical_authoritative_from_full(
@@ -472,13 +528,24 @@ def _canonical_route_authoritative(
         keys, pmid, disp, vel, acc, send_left_mask, max_values_to_share, key_fill,
         "[ERROR] Exceeded left-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
     )
+    incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
+    if num_gpus == 2:
+        merged = _sorted_merge_two(
+            *stay,
+            *incoming_from_right,
+            pmid.shape[0],
+            key_fill,
+            "[ERROR] Exceeded canonical authoritative capacity after migration. "
+            "required_particles={x}, max_ptcl_per_slice={y}.",
+        )
+        max_particles_moved = jnp.sum(send_left[-1])
+        return merged, max_particles_moved
+
     send_right = _compact_sorted_particles(
         keys, pmid, disp, vel, acc, send_right_mask, max_values_to_share, key_fill,
         "[ERROR] Exceeded right-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
     )
-
     incoming_from_left = jax.lax.ppermute(send_right, axis_name=AXIS_NAME, perm=right_perm)
-    incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
 
     merged = _sorted_merge_three(
         *stay,
@@ -543,13 +610,36 @@ def _canonical_route_authoritative_with_aux(
     send_left_pos = jnp.compress(
         send_left_mask, auth_pos, axis=0, size=max_values_to_share, fill_value=jnp.asarray(-1, auth_pos.dtype)
     )
+    incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
+    if num_gpus == 2:
+        merged = _sorted_merge_two_with_provenance(
+            *stay,
+            *incoming_from_right,
+            pmid.shape[0],
+            key_fill,
+            "[ERROR] Exceeded canonical authoritative capacity after migration. "
+            "required_particles={x}, max_ptcl_per_slice={y}.",
+        )
+        route_aux = (
+            stay_pos,
+            stay[-1],
+            send_left_pos,
+            send_left[-1],
+            jnp.full((max_values_to_share,), -1, dtype=auth_pos.dtype),
+            jnp.zeros((max_values_to_share,), dtype=jnp.bool_),
+            merged[-2],
+            merged[-1],
+        )
+        return merged[:6], route_aux
+
+    send_right = _compact_sorted_particles(
+        keys, pmid, disp, vel, acc, send_right_mask, max_values_to_share, key_fill,
+        "[ERROR] Exceeded right-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
+    )
     send_right_pos = jnp.compress(
         send_right_mask, auth_pos, axis=0, size=max_values_to_share, fill_value=jnp.asarray(-1, auth_pos.dtype)
     )
-
     incoming_from_left = jax.lax.ppermute(send_right, axis_name=AXIS_NAME, perm=right_perm)
-    incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
-
     merged = _sorted_merge_three_with_provenance(
         *stay,
         *incoming_from_left,
@@ -683,6 +773,50 @@ def _reverse_route_cot(
     )
     auth_cot = auth_cot.at[jnp.where(send_right_valid, send_right_pos, 0)].add(
         send_right_cot * send_right_valid_scale
+    )
+    return auth_cot
+
+
+def _reverse_route_cot_two_gpu(
+    merged_cot,
+    stay_pos,
+    stay_valid,
+    send_left_pos,
+    send_left_valid,
+    merge_src_tag,
+    merge_src_idx,
+    auth_size,
+    max_values_to_share,
+    right_perm,
+):
+    dtype = merged_cot.dtype
+    cot_shape = merged_cot.shape[1:]
+    stay_cot = jnp.zeros((stay_pos.shape[0],) + cot_shape, dtype=dtype)
+    incoming_from_right_cot = jnp.zeros((max_values_to_share,) + cot_shape, dtype=dtype)
+
+    stay_mask = merge_src_tag == 0
+    incoming_right_mask = merge_src_tag == 2
+    broadcast_shape = (merged_cot.shape[0],) + (1,) * (merged_cot.ndim - 1)
+    stay_scale = stay_mask.reshape(broadcast_shape).astype(dtype)
+    incoming_right_scale = incoming_right_mask.reshape(broadcast_shape).astype(dtype)
+
+    stay_cot = stay_cot.at[jnp.where(stay_mask, merge_src_idx, 0)].add(
+        merged_cot * stay_scale
+    )
+    incoming_from_right_cot = incoming_from_right_cot.at[jnp.where(incoming_right_mask, merge_src_idx, 0)].add(
+        merged_cot * incoming_right_scale
+    )
+
+    send_left_cot = jax.lax.ppermute(incoming_from_right_cot, axis_name=AXIS_NAME, perm=right_perm)
+
+    auth_cot = jnp.zeros((auth_size,) + cot_shape, dtype=dtype)
+    stay_valid_scale = stay_valid.reshape((stay_valid.shape[0],) + (1,) * (merged_cot.ndim - 1)).astype(dtype)
+    send_left_valid_scale = send_left_valid.reshape((send_left_valid.shape[0],) + (1,) * (merged_cot.ndim - 1)).astype(dtype)
+    auth_cot = auth_cot.at[jnp.where(stay_valid, stay_pos, 0)].add(
+        stay_cot * stay_valid_scale
+    )
+    auth_cot = auth_cot.at[jnp.where(send_left_valid, send_left_pos, 0)].add(
+        send_left_cot * send_left_valid_scale
     )
     return auth_cot
 
@@ -1216,6 +1350,148 @@ def reconstruct_pre_drift_mesh_halo_shard_map(
     return pmid, disp, vel, acc, unused_index, halo_mask
 
 
+def reconstruct_pre_drift_and_pullback_mesh_halo_shard_map(
+    pmid,
+    disp,
+    vel,
+    acc,
+    unused_indexes,
+    drift_factor,
+    disp_cot,
+    vel_cot,
+    acc_cot,
+    global_nMesh,
+    max_values_to_share,
+    max_halo_values_to_share,
+    max_ptcl_per_slice,
+    left_perm,
+    right_perm,
+    num_gpus,
+    disp_size,
+    offsets,
+    conf,
+):
+    del max_halo_values_to_share
+
+    drift_factor = drift_factor.astype(disp.dtype)
+    post_keys, post_pmid, post_disp, post_vel, post_acc, post_valid = _authoritative_prefix_from_owned_only(
+        pmid,
+        disp,
+        vel,
+        acc,
+        unused_indexes,
+        conf,
+    )
+    pre_disp = post_disp - post_vel * drift_factor
+    (pre_keys, pre_pmid, pre_disp, pre_vel, pre_acc, pre_valid), _ = _canonical_route_authoritative(
+        post_keys,
+        post_pmid,
+        pre_disp,
+        post_vel,
+        post_acc,
+        post_valid,
+        global_nMesh,
+        max_values_to_share,
+        left_perm,
+        right_perm,
+        num_gpus,
+        disp_size,
+        offsets,
+        conf,
+    )
+
+    carried_disp = pre_disp + pre_vel * drift_factor
+    (
+        _merged_keys,
+        _merged_pmid,
+        _merged_disp,
+        _merged_vel,
+        _merged_acc,
+        merged_valid,
+    ), route_aux = _canonical_route_authoritative_with_aux(
+        pre_keys,
+        pre_pmid,
+        carried_disp,
+        pre_vel,
+        pre_acc,
+        pre_valid,
+        global_nMesh,
+        max_values_to_share,
+        left_perm,
+        right_perm,
+        num_gpus,
+        disp_size,
+        offsets,
+        conf,
+    )
+    (
+        stay_pos,
+        stay_valid,
+        send_left_pos,
+        send_left_valid,
+        send_right_pos,
+        send_right_valid,
+        merge_src_tag,
+        merge_src_idx,
+    ) = route_aux
+
+    payload_cot = jnp.stack((disp_cot, vel_cot, acc_cot), axis=-1)
+    merged_payload_cot = _reverse_build_owned_only_cot(
+        payload_cot,
+        pre_pmid.shape[0],
+        merged_valid,
+    )
+    if num_gpus == 2:
+        pre_payload_cot = _reverse_route_cot_two_gpu(
+            merged_payload_cot,
+            stay_pos,
+            stay_valid,
+            send_left_pos,
+            send_left_valid,
+            merge_src_tag,
+            merge_src_idx,
+            pre_pmid.shape[0],
+            max_values_to_share,
+            right_perm,
+        )
+    else:
+        pre_payload_cot = _reverse_route_cot(
+            merged_payload_cot,
+            stay_pos,
+            stay_valid,
+            send_left_pos,
+            send_left_valid,
+            send_right_pos,
+            send_right_valid,
+            merge_src_tag,
+            merge_src_idx,
+            pre_pmid.shape[0],
+            max_values_to_share,
+            left_perm,
+            right_perm,
+        )
+
+    valid_mask = pre_valid[:, None]
+    pmid_out = jnp.where(valid_mask, pre_pmid, jnp.zeros_like(pre_pmid))
+    disp_out = jnp.where(valid_mask, pre_disp, jnp.zeros_like(pre_disp))
+    vel_out = jnp.where(valid_mask, pre_vel, jnp.zeros_like(pre_vel))
+    acc_out = jnp.where(valid_mask, pre_acc, jnp.zeros_like(pre_acc))
+    payload_cot_out = jnp.where(valid_mask[..., None], pre_payload_cot, jnp.zeros_like(pre_payload_cot))
+    unused_index_out = ~pre_valid
+    halo_mask_out = jnp.zeros_like(unused_index_out)
+    return (
+        pmid_out,
+        disp_out,
+        vel_out,
+        acc_out,
+        unused_index_out,
+        halo_mask_out,
+        payload_cot_out[..., 0],
+        payload_cot_out[..., 1],
+        payload_cot_out[..., 2],
+    )
+
+
 @partial(jax.jit, static_argnames=["global_nMesh", "disp_size"])
 def compute_halo_mask_shard_map(pmid, disp, unused_indexes, halo_start, halo_end, global_nMesh, disp_size):
     x_mod = (pmid[:, 0] + disp[:, 0] * disp_size) % global_nMesh
@@ -1337,6 +1613,52 @@ def initialize_mGPU_reconstruct_pre_drift(conf):
             P(AXIS_NAME, None),
             P(AXIS_NAME),
             P(AXIS_NAME),
+        ),
+        check_rep=False,
+    )
+
+
+def initialize_mGPU_reconstruct_pre_drift_pullback(conf):
+    if conf.num_devices == 1 or conf.multigpu_mode != "mesh_halo":
+        return None
+
+    func = partial(
+        reconstruct_pre_drift_and_pullback_mesh_halo_shard_map,
+        global_nMesh=conf.nMesh,
+        max_values_to_share=conf.max_share_ptcl,
+        max_halo_values_to_share=_halo_capacity(conf),
+        max_ptcl_per_slice=conf.max_ptcl_per_slice,
+        left_perm=conf.left_perm,
+        right_perm=conf.right_perm,
+        num_gpus=conf.num_devices,
+        disp_size=conf.disp_size,
+        offsets=conf.offsets,
+        conf=conf,
+    )
+    return shard_map(
+        func,
+        mesh=conf.compute_mesh,
+        in_specs=(
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME),
+            P(),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+        ),
+        out_specs=(
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME),
+            P(AXIS_NAME),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
         ),
         check_rep=False,
     )

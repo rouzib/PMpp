@@ -15,6 +15,7 @@ from .halo_moving import (
     initialize_mGPU_halo_move_pullback,
     initialize_mGPU_halo_movement_canonical,
     initialize_mGPU_reconstruct_pre_drift,
+    initialize_mGPU_reconstruct_pre_drift_pullback,
 )
 from .scatter import initialize_mGPU_scatter
 from .utils import build_ring_permutations, pytree_dataclass
@@ -69,6 +70,7 @@ class MultiGPUConfiguration:
 
     halo_moving: Callable = _uninitialized_runtime_callable
     reconstruct_pre_drift: Callable = _uninitialized_runtime_callable
+    reconstruct_pre_drift_pullback: Callable | None = None
     halo_move_pullback: Callable = _uninitialized_runtime_callable
     compute_halo_mask: Callable = _uninitialized_runtime_callable
     rfftn: Callable = _uninitialized_runtime_callable
@@ -184,6 +186,7 @@ def initialize_multigpu_runtime(conf: "Configuration", runtime: MultiGPUConfigur
         irfftn=irfftn_jit,
         halo_moving=initialize_mGPU_halo_movement_canonical(conf),
         reconstruct_pre_drift=initialize_mGPU_reconstruct_pre_drift(conf),
+        reconstruct_pre_drift_pullback=initialize_mGPU_reconstruct_pre_drift_pullback(conf),
         halo_move_pullback=initialize_mGPU_halo_move_pullback(conf),
         compute_halo_mask=initialize_mGPU_compute_halo_mask(conf),
         scatter=initialize_mGPU_scatter(conf),

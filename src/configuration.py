@@ -302,6 +302,7 @@ class Configuration:
         "right_perm": "right_perm",
         "mGPU_halo_moving": "halo_moving",
         "mGPU_reconstruct_pre_drift": "reconstruct_pre_drift",
+        "mGPU_reconstruct_pre_drift_pullback": "reconstruct_pre_drift_pullback",
         "mGPU_halo_move_pullback": "halo_move_pullback",
         "mGPU_compute_halo_mask": "compute_halo_mask",
         "mGPU_rfftn": "rfftn",

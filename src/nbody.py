@@ -3,9 +3,8 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from jax import custom_vjp, lax
-from jax.tree_util import tree_map
 
-from .cosmo import Cosmology
+from .cosmo import Cosmology, add_cosmology_cotangents, zero_cosmology_param_cotangent
 from .particles import Particles
 from .steps import (
     force,
@@ -176,15 +175,11 @@ def _nbody_flat_impl(conf, reverse, pmid, unused_index, halo_mask, attr, disp, v
     return _nbody_state_impl(conf, reverse, pmid, disp, vel, acc, unused_index, halo_mask, attr, cosmo)
 
 
-def _zeros_like_or_none(x):
-    return jnp.zeros_like(x) if x is not None else None
-
-
 def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False):
     """Run the hand-written adjoint sweep from the final nbody state."""
     a_nbody = conf.a_nbody[::-1] if reverse else conf.a_nbody
 
-    cosmo_cot = tree_map(_zeros_like_or_none, cosmo)
+    cosmo_cot = zero_cosmology_param_cotangent(cosmo)
 
     def body(carry, ab):
         ptcl, ptcl_cot, cosmo_cot = carry
@@ -198,7 +193,7 @@ def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False):
         (a_nbody[-2::-1], a_nbody[:0:-1]),
     )
     ptcl, ptcl_cot, cosmo_cot_force = force_adj(a_nbody[0], ptcl, ptcl_cot, cosmo, conf)
-    cosmo_cot += cosmo_cot_force
+    cosmo_cot = add_cosmology_cotangents(cosmo_cot, cosmo_cot_force)
     return ptcl, ptcl_cot, cosmo_cot
 
 

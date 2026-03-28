@@ -80,23 +80,28 @@ def neg_grad(k, pot, spacing):
     return grad
 
 
+def _gravity_potential_from_density(dens, omega_m, conf: Configuration):
+    dens = dens - 1
+    dens = dens * (1.5 * omega_m.astype(conf.float_dtype))
+    dens = conf.mGPU_rfftn(dens)
+    return laplace(conf.kvec, dens, conf, None)
+
+
 def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration):
-    grad_meshes = _gravity_mesh_fields_from_density(dens, cosmo.Omega_m, conf)
-    acc = [gather(ptcl, conf, grad) for grad in grad_meshes]
+    pot = _gravity_potential_from_density(dens, cosmo.Omega_m, conf)
+    acc = []
+    for k in conf.kvec:
+        grad = neg_grad(k, pot, conf.cell_size)
+        grad = conf.mGPU_irfftn(grad).astype(conf.float_dtype)
+        acc.append(gather(ptcl, conf, grad))
     return jnp.stack(acc, axis=-1)
 
 
 def _gravity_mesh_fields_from_density(dens, omega_m, conf: Configuration):
-    kvec = conf.kvec
-
-    dens = dens - 1
-    dens = dens * (1.5 * omega_m.astype(conf.float_dtype))
-    dens = conf.mGPU_rfftn(dens)
-
-    pot = laplace(kvec, dens, conf, None)
+    pot = _gravity_potential_from_density(dens, omega_m, conf)
 
     grad_meshes = []
-    for k in kvec:
+    for k in conf.kvec:
         grad = neg_grad(k, pot, conf.cell_size)
         grad = conf.mGPU_irfftn(grad)
         grad_meshes.append(grad.astype(conf.float_dtype))
