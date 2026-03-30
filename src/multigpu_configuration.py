@@ -75,6 +75,8 @@ class MultiGPUConfiguration:
     compute_halo_mask: Callable = _uninitialized_runtime_callable
     rfftn: Callable = _uninitialized_runtime_callable
     irfftn: Callable = _uninitialized_runtime_callable
+    rfftn_transposed: Callable = _uninitialized_runtime_callable
+    irfftn_transposed: Callable = _uninitialized_runtime_callable
     scatter: Callable = _uninitialized_runtime_callable
     gather: Callable = _uninitialized_runtime_callable
 
@@ -90,7 +92,11 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
 
     num_devices = compute_mesh.size
     devices = tuple(compute_mesh.devices)
+    # Preserve physical device IDs for reporting/debugging, but index all slab
+    # topology arrays by logical mesh position so reordered/filtered device lists
+    # still produce a contiguous decomposition.
     devices_index = tuple(device.id for device in devices)
+    mesh_positions = tuple(range(num_devices))
 
     mode = (
         runtime_seed.mode
@@ -114,8 +120,8 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
         local_mesh_shape[2],
     )
 
-    slice_start = [(global_nMesh // num_devices * device_idx) % global_nMesh for device_idx in devices_index]
-    slice_end = [(global_nMesh // num_devices * (device_idx + 1)) % global_nMesh for device_idx in devices_index]
+    slice_start = [(global_nMesh // num_devices * mesh_pos) % global_nMesh for mesh_pos in mesh_positions]
+    slice_end = [(global_nMesh // num_devices * (mesh_pos + 1)) % global_nMesh for mesh_pos in mesh_positions]
     owned_slice_start = list(slice_start)
     owned_slice_end = list(slice_end)
     halo_start = [[(start - ptcl_halo_width) % global_nMesh, start] for start in slice_start]
@@ -180,10 +186,12 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
 
 
 def initialize_multigpu_runtime(conf: "Configuration", runtime: MultiGPUConfiguration) -> MultiGPUConfiguration:
-    rfftn_jit, irfftn_jit, _, _ = create_ffts(runtime.compute_mesh)
+    rfftn_jit, irfftn_jit, _, _, rfftn_transposed_jit, irfftn_transposed_jit = create_ffts(runtime.compute_mesh)
     return runtime.replace(
         rfftn=rfftn_jit,
         irfftn=irfftn_jit,
+        rfftn_transposed=rfftn_transposed_jit,
+        irfftn_transposed=irfftn_transposed_jit,
         halo_moving=initialize_mGPU_halo_movement_canonical(conf),
         reconstruct_pre_drift=initialize_mGPU_reconstruct_pre_drift(conf),
         reconstruct_pre_drift_pullback=initialize_mGPU_reconstruct_pre_drift_pullback(conf),

@@ -43,8 +43,8 @@ def test_scatter():
     ptcl_pmwd = Particles_pmwd.from_pos(conf_pmwd, pos)
 
     # 2. Define a Scalar Loss Function
-    def loss_fn(disp_array, fn, conf):
-        p_temp = ptcl.replace(disp=disp_array)
+    def loss_fn(disp_array, fn, conf, particle_template):
+        p_temp = particle_template.replace(disp=disp_array)
 
         # Run scatter
         mesh = fn(p_temp, conf)
@@ -57,12 +57,12 @@ def test_scatter():
     # 3. Compute Analytic Gradient (using your code's VJP)
     print("Computing JAX AD Gradient...")
     grad_fn = jax.grad(loss_fn, argnums=0)
-    grad_ad = grad_fn(ptcl.disp, scatter, conf)
+    grad_ad = grad_fn(ptcl.disp, scatter, conf, ptcl)
 
     # 4. Compute Finite Difference Gradient
     print("Computing PMWD AD Gradient...")
     grad_fn = jax.grad(loss_fn, argnums=0)
-    grad_ad_pmwd = grad_fn(ptcl_pmwd.disp, scatter_pmwd, conf_pmwd)
+    grad_ad_pmwd = grad_fn(ptcl_pmwd.disp, scatter_pmwd, conf_pmwd, ptcl_pmwd)
 
     # 5. Compare
     diff = grad_ad - grad_ad_pmwd

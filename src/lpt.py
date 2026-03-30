@@ -6,7 +6,7 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .cosmo import E2
 from .fft import fftinv, fftfwd, fftfreq
-from .gravity import laplace, neg_grad
+from .gravity import laplace_transposed, neg_grad
 from .growth import growth
 from .particles import Particles
 from .steps import _halo_move_vjp
@@ -33,7 +33,10 @@ def _strain(kvec, i, j, pot, conf):
 
     strain = -k_i * k_j * pot
 
-    strain = conf.mGPU_irfftn(strain)
+    if conf.compute_mesh is None:
+        strain = jnp.fft.irfftn(strain)
+    else:
+        strain = conf.mGPU_irfftn_transposed(strain)
     strain = strain.astype(conf.float_dtype)  # no jnp.complex32
 
     return strain
@@ -44,8 +47,14 @@ def _L(kvec, pot_m, pot_n, conf):
     if m_eq_n:
         pot_n = pot_m
 
-    L = jnp.zeros(conf.ptcl_grid_shape, dtype=conf.float_dtype,
-                  device=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None)))
+    if conf.compute_mesh is None:
+        L = jnp.zeros(conf.ptcl_grid_shape, dtype=conf.float_dtype)
+    else:
+        L = jnp.zeros(
+            conf.ptcl_grid_shape,
+            dtype=conf.float_dtype,
+            device=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None)),
+        )
 
     if conf.lpt_cache_strains:
         # Cache diagonal strains to avoid redundant irfftn calls (conf.lpt_cache_strains=True).
@@ -164,21 +173,29 @@ def lpt(modes, cosmo, conf):
     modes /= conf.ptcl_cell_vol  # remove volume factor first for convenience
 
     kvec = conf.kvec_spacing
+    if conf.compute_mesh is not None:
+        modes = jax.lax.with_sharding_constraint(
+            modes,
+            NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
+        )
 
     pot = []
 
     if conf.lpt_order > 0:
         src_1 = modes
 
-        pot_1 = laplace(kvec, src_1, conf, cosmo)
+        pot_1 = laplace_transposed(kvec, src_1, conf, cosmo)
         pot.append(pot_1)
 
     if conf.lpt_order > 1:
         src_2 = _L(kvec, pot_1, None, conf)
 
-        src_2 = conf.mGPU_rfftn(src_2)
+        if conf.compute_mesh is None:
+            src_2 = jnp.fft.rfftn(src_2)
+        else:
+            src_2 = conf.mGPU_rfftn_transposed(src_2)
 
-        pot_2 = laplace(kvec, src_2, conf, cosmo)
+        pot_2 = laplace_transposed(kvec, src_2, conf, cosmo)
         pot.append(pot_2)
 
     if conf.lpt_order > 2:
@@ -210,7 +227,10 @@ def lpt(modes, cosmo, conf):
         for i, k in enumerate(kvec):
             grad = neg_grad(k, pot[order - 1], conf.ptcl_spacing)
 
-            grad = conf.mGPU_irfftn(grad)
+            if conf.compute_mesh is None:
+                grad = jnp.fft.irfftn(grad)
+            else:
+                grad = conf.mGPU_irfftn_transposed(grad)
             grad = grad.astype(conf.float_dtype)  # no jnp.complex32
 
             grad = jnp.take(grad.reshape(-1), ptcl_idx, mode="wrap")

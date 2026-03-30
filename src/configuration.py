@@ -307,6 +307,8 @@ class Configuration:
         "mGPU_compute_halo_mask": "compute_halo_mask",
         "mGPU_rfftn": "rfftn",
         "mGPU_irfftn": "irfftn",
+        "mGPU_rfftn_transposed": "rfftn_transposed",
+        "mGPU_irfftn_transposed": "irfftn_transposed",
         "mGPU_scatter": "scatter",
         "mGPU_gather": "gather",
     }

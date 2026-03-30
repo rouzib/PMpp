@@ -179,7 +179,7 @@ def _irfftn_second_pass(x):
     return jnp.fft.irfftn(x, axes=[1, 2])
 
 
-def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Callable]:
+def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Callable, Callable, Callable]:
     """
     Create a set of Fourrier Transform functions that distribute computation across a provided compute mesh (a logical
     grouping of devices for parallel computation).  It returns a tuple of functions: `rfftn_jit`, `irfftn_jit`, `fftn_jit`,
@@ -249,7 +249,7 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
 
         irfftn.defvjp(irfftn_fwd, irfftn_bwd)
 
-        return rfftn, irfftn, _fftn_jit, _ifftn_jit
+        return rfftn, irfftn, _fftn_jit, _ifftn_jit, rfftn, irfftn
 
     # Creating sharded versions of FFT and IFFT functions for specific GPU sharding
     fftn_first_pass = create_sharded_fft(_fftn_first_pass, P(None, "gpus", None), compute_mesh)
@@ -292,6 +292,28 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
                         out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))))
     _ifftn_jit = jax.jit(_ifftn, in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
                          out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))))
+    # Natural spectral layout: keep the intermediate transpose produced by the
+    # x-axis FFT so downstream spectral operators can avoid bouncing layouts.
+    _rfftn_transposed_jit = jax.jit(
+        _rfftn,
+        in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+        out_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
+    )
+    _irfftn_transposed_jit = jax.jit(
+        _irfftn,
+        in_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
+        out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+    )
+    _fftn_transposed_jit = jax.jit(
+        _fftn,
+        in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+        out_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
+    )
+    _ifftn_transposed_jit = jax.jit(
+        _ifftn,
+        in_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
+        out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+    )
 
     @custom_vjp
     def rfftn(x):
@@ -316,6 +338,21 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
         return (g,)
 
     rfftn.defvjp(rfftn_fwd, rfftn_bwd)
+
+    @custom_vjp
+    def rfftn_transposed(x):
+        return _rfftn_transposed_jit(x)
+
+    def rfftn_transposed_fwd(x):
+        return _rfftn_transposed_jit(x), x.shape
+
+    def rfftn_transposed_bwd(x_shape, g):
+        g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
+        g = _ifftn_transposed_jit(g.conj()).real
+        g *= jnp.prod(jnp.array(x_shape))
+        return (g,)
+
+    rfftn_transposed.defvjp(rfftn_transposed_fwd, rfftn_transposed_bwd)
 
     @custom_vjp
     def irfftn(x):
@@ -354,7 +391,32 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
 
     irfftn.defvjp(irfftn_fwd, irfftn_bwd)
 
-    return rfftn, irfftn, _fftn_jit, _ifftn_jit
+    @custom_vjp
+    def irfftn_transposed(x):
+        return _irfftn_transposed_jit(x)
+
+    def irfftn_transposed_fwd(x):
+        return _irfftn_transposed_jit(x), x.shape
+
+    def irfftn_transposed_bwd(res, g):
+        real_shape = g.shape
+        g = _rfftn_transposed_jit(g).conj()
+        n = g.shape[-1]
+        is_even = (real_shape[-1] % 2 == 0)
+
+        mask = jnp.ones((n,), dtype=g.real.dtype)
+        if n > 1:
+            mask = mask.at[1:].set(2.0)
+            if is_even:
+                mask = mask.at[n - 1].set(1.0)
+
+        scale = jnp.asarray(1 / np.prod(real_shape), dtype=g.real.dtype)
+        out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
+        return (out,)
+
+    irfftn_transposed.defvjp(irfftn_transposed_fwd, irfftn_transposed_bwd)
+
+    return rfftn, irfftn, _fftn_jit, _ifftn_jit, rfftn_transposed, irfftn_transposed
 
 
 def test_functions(distributed_func_jit: Callable, reference_func: Callable, array: np.ndarray, mesh: Mesh) -> Tuple[

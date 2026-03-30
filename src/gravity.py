@@ -14,6 +14,8 @@ from .utils import AXIS_NAME
 
 def get_k_squared(kvec, conf):
     kx, ky, kz = [jnp.squeeze(a) for a in kvec]
+    if conf.compute_mesh is None:
+        return (kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(conf.float_dtype)
 
     @partial(jax.jit,
              in_shardings=(
@@ -38,6 +40,31 @@ def get_k_squared(kvec, conf):
         return local_shard.astype(conf.float_dtype)
 
     return create_k_magnitude_sharded(kx, ky, kz)
+
+
+def get_k_squared_transposed(kvec, conf):
+    kx, ky, kz = [jnp.squeeze(a) for a in kvec]
+    if conf.compute_mesh is None:
+        return (kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(conf.float_dtype)
+
+    @partial(
+        jax.jit,
+        in_shardings=(
+            NamedSharding(conf.compute_mesh, P(None)),
+            NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
+            NamedSharding(conf.compute_mesh, P(None)),
+        ),
+        out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
+    )
+    def create_k_magnitude_transposed(kx_replicated, ky_sharded, kz_replicated):
+        kx_b = kx_replicated[:, None, None]
+        ky_b = ky_sharded[None, :, None]
+        kz_b = kz_replicated[None, None, :]
+
+        local_shard = jnp.array(kx_b ** 2 + ky_b ** 2 + kz_b ** 2)
+        return local_shard.astype(conf.float_dtype)
+
+    return create_k_magnitude_transposed(kx, ky, kz)
 
 
 @custom_vjp
@@ -70,6 +97,30 @@ def laplace_bwd(res, pot_cot):
 laplace.defvjp(laplace_fwd, laplace_bwd)
 
 
+@custom_vjp
+def laplace_transposed(kvec, src, conf, cosmo=None):
+    """Laplace kernel in Fourier space for the transposed spectral layout."""
+    k2 = get_k_squared_transposed(kvec, conf)
+
+    pot = jnp.where(k2 != 0, - src / k2, 0)
+
+    return pot
+
+
+def laplace_transposed_fwd(kvec, src, conf, cosmo):
+    pot = laplace_transposed(kvec, src, conf, cosmo)
+    return pot, (kvec, conf, cosmo)
+
+
+def laplace_transposed_bwd(res, pot_cot):
+    kvec, conf, cosmo = res
+    src_cot = laplace_transposed(kvec, pot_cot, conf, cosmo)
+    return None, src_cot, None, None
+
+
+laplace_transposed.defvjp(laplace_transposed_fwd, laplace_transposed_bwd)
+
+
 def neg_grad(k, pot, spacing):
     nyquist = jnp.pi / spacing
     eps = nyquist * jnp.finfo(k.dtype).eps
@@ -83,8 +134,11 @@ def neg_grad(k, pot, spacing):
 def _gravity_potential_from_density(dens, omega_m, conf: Configuration):
     dens = dens - 1
     dens = dens * (1.5 * omega_m.astype(conf.float_dtype))
-    dens = conf.mGPU_rfftn(dens)
-    return laplace(conf.kvec, dens, conf, None)
+    if conf.compute_mesh is None:
+        dens = jnp.fft.rfftn(dens)
+    else:
+        dens = conf.mGPU_rfftn_transposed(dens)
+    return laplace_transposed(conf.kvec, dens, conf, None)
 
 
 def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration):
@@ -92,7 +146,10 @@ def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration):
     acc = []
     for k in conf.kvec:
         grad = neg_grad(k, pot, conf.cell_size)
-        grad = conf.mGPU_irfftn(grad).astype(conf.float_dtype)
+        if conf.compute_mesh is None:
+            grad = jnp.fft.irfftn(grad).astype(conf.float_dtype)
+        else:
+            grad = conf.mGPU_irfftn_transposed(grad).astype(conf.float_dtype)
         acc.append(gather(ptcl, conf, grad))
     return jnp.stack(acc, axis=-1)
 
@@ -103,7 +160,10 @@ def _gravity_mesh_fields_from_density(dens, omega_m, conf: Configuration):
     grad_meshes = []
     for k in conf.kvec:
         grad = neg_grad(k, pot, conf.cell_size)
-        grad = conf.mGPU_irfftn(grad)
+        if conf.compute_mesh is None:
+            grad = jnp.fft.irfftn(grad)
+        else:
+            grad = conf.mGPU_irfftn_transposed(grad)
         grad_meshes.append(grad.astype(conf.float_dtype))
 
     return tuple(grad_meshes)

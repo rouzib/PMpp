@@ -115,18 +115,134 @@ class Particles:
         return halo_compute_halo_mask(x_mod, halo_start, halo_end, unused_indexes)
 
     @staticmethod
-    def distribute_ptcl_pos(pmid, disp, vel, acc, conf, gpu_id):
+    def _host_particles_in_slice_mask(x_mod, slice_start, slice_end):
+        if slice_start > slice_end:
+            return (x_mod >= slice_start) | (x_mod < slice_end)
+        return (x_mod >= slice_start) & (x_mod < slice_end)
+
+    @staticmethod
+    def _host_compute_halo_mask(x_mod, halo_start, halo_end, unused_index):
+        mask_start = Particles._host_particles_in_slice_mask(x_mod, halo_start[0], halo_start[1])
+        mask_end = Particles._host_particles_in_slice_mask(x_mod, halo_end[0], halo_end[1])
+        return (mask_start | mask_end) & ~unused_index
+
+    @staticmethod
+    def _shard_host_slices(conf, slices: List[np.ndarray], dtype):
+        slices = [jnp.asarray(s, dtype=dtype) for s in slices]
+        total_shape = (conf.num_devices * slices[0].shape[0],) + slices[0].shape[1:]
+        partition = P(AXIS_NAME, *([None] * (slices[0].ndim - 1)))
+        sharding = NamedSharding(conf.compute_mesh, partition)
+        mesh_devices = list(conf.compute_mesh.devices.flat)
+        device_arrays = [
+            jax.device_put(slices[i], device=mesh_devices[i])
+            for i in range(conf.num_devices)
+        ]
+        return jax.make_array_from_single_device_arrays(total_shape, sharding, device_arrays)
+
+    @staticmethod
+    def _partition_and_shard_particle_fields(conf, pmid, disp, vel, acc):
+        runtime = conf.multigpu
+        if runtime is None:
+            raise ValueError("Host-side particle partitioning requires an initialized multi-GPU runtime.")
+
+        store_particle_halos = runtime.store_particle_halos
+        pmid_host = np.asarray(jax.device_get(pmid), dtype=np.dtype(conf.pmid_dtype))
+        disp_host = np.asarray(jax.device_get(disp), dtype=np.dtype(conf.float_dtype))
+        vel_host = None if vel is None else np.asarray(jax.device_get(vel), dtype=np.dtype(conf.float_dtype))
+        acc_host = None if acc is None else np.asarray(jax.device_get(acc), dtype=np.dtype(conf.float_dtype))
+
+        slice_start = runtime.slice_start if store_particle_halos else runtime.owned_slice_start
+        slice_end = runtime.slice_end if store_particle_halos else runtime.owned_slice_end
+        slice_start = np.asarray(jax.device_get(slice_start), dtype=np.int64)
+        slice_end = np.asarray(jax.device_get(slice_end), dtype=np.int64)
+        halo_start = np.asarray(jax.device_get(runtime.halo_start), dtype=np.int64)
+        halo_end = np.asarray(jax.device_get(runtime.halo_end), dtype=np.int64)
+
+        x_mod = (pmid_host[:, 0] + disp_host[:, 0] * conf.disp_size) % conf.nMesh
+        capacity = conf.max_ptcl_per_slice
+        spatial_ndim = pmid_host.shape[1]
+
+        pmid_slices, disp_slices = [], []
+        vel_slices = [] if vel_host is not None else None
+        acc_slices = [] if acc_host is not None else None
+        unused_slices, halo_slices = [], []
+
+        for slice_idx in range(conf.num_devices):
+            in_slice_mask = Particles._host_particles_in_slice_mask(
+                x_mod,
+                slice_start[slice_idx],
+                slice_end[slice_idx],
+            )
+            indices = np.flatnonzero(in_slice_mask)
+            count = indices.size
+            if count > capacity:
+                raise ValueError(
+                    "[ERROR] [GPU {gpu}] Exceeded max_ptcl_per_slice: max_ptcl_per_slice={cap}, "
+                    "actual particles in slice={count}. Consider increasing 'conf.max_ptcl_per_slice'."
+                    .format(gpu=slice_idx, cap=capacity, count=count)
+                )
+
+            count = min(count, capacity)
+            selected = indices[:count]
+
+            pmid_slice = np.zeros((capacity, spatial_ndim), dtype=pmid_host.dtype)
+            disp_slice = np.zeros((capacity, spatial_ndim), dtype=disp_host.dtype)
+            if count:
+                pmid_slice[:count] = pmid_host[selected]
+                disp_slice[:count] = disp_host[selected]
+
+            unused_index = np.ones((capacity,), dtype=np.bool_)
+            unused_index[:count] = False
+            if store_particle_halos:
+                x_mod_local = (pmid_slice[:, 0] + disp_slice[:, 0] * conf.disp_size) % conf.nMesh
+                halo_mask = Particles._host_compute_halo_mask(
+                    x_mod_local,
+                    halo_start[slice_idx],
+                    halo_end[slice_idx],
+                    unused_index,
+                )
+            else:
+                halo_mask = np.zeros((capacity,), dtype=np.bool_)
+
+            pmid_slices.append(pmid_slice)
+            disp_slices.append(disp_slice)
+            unused_slices.append(unused_index)
+            halo_slices.append(halo_mask)
+
+            if vel_slices is not None:
+                vel_slice = np.zeros((capacity, spatial_ndim), dtype=vel_host.dtype)
+                if count:
+                    vel_slice[:count] = vel_host[selected]
+                vel_slices.append(vel_slice)
+
+            if acc_slices is not None:
+                acc_slice = np.zeros((capacity, spatial_ndim), dtype=acc_host.dtype)
+                if count:
+                    acc_slice[:count] = acc_host[selected]
+                acc_slices.append(acc_slice)
+
+        pmid = Particles._shard_host_slices(conf, pmid_slices, conf.pmid_dtype)
+        disp = Particles._shard_host_slices(conf, disp_slices, conf.float_dtype)
+        unused_index = Particles._shard_host_slices(conf, unused_slices, jnp.bool_)
+        halo_mask = Particles._shard_host_slices(conf, halo_slices, jnp.bool_)
+
+        vel = None if vel_slices is None else Particles._shard_host_slices(conf, vel_slices, conf.float_dtype)
+        acc = None if acc_slices is None else Particles._shard_host_slices(conf, acc_slices, conf.float_dtype)
+        return pmid, disp, vel, acc, unused_index, halo_mask
+
+    @staticmethod
+    def distribute_ptcl_pos(pmid, disp, vel, acc, conf, slice_idx):
         runtime = conf.multigpu
         store_particle_halos = runtime is not None and runtime.store_particle_halos
         if runtime is None:
-            slice_start = conf.slice_start[gpu_id]
-            slice_end = conf.slice_end[gpu_id]
+            slice_start = conf.slice_start[slice_idx]
+            slice_end = conf.slice_end[slice_idx]
         elif store_particle_halos:
-            slice_start = runtime.slice_start[gpu_id]
-            slice_end = runtime.slice_end[gpu_id]
+            slice_start = runtime.slice_start[slice_idx]
+            slice_end = runtime.slice_end[slice_idx]
         else:
-            slice_start = runtime.owned_slice_start[gpu_id]
-            slice_end = runtime.owned_slice_end[gpu_id]
+            slice_start = runtime.owned_slice_start[slice_idx]
+            slice_end = runtime.owned_slice_end[slice_idx]
 
         x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % conf.nMesh
         in_slice_mask = Particles.particles_in_slice_mask(x_mod, slice_start, slice_end)
@@ -140,7 +256,7 @@ class Particles:
                 "[ERROR] [GPU {a}] Exceeded max_ptcl_per_slice: "
                 "max_ptcl_per_slice={x}, actual max_ptcl_per_slice={y}. Some particles may have "
                 f"disappeared. Consider making 'conf.max_ptcl_per_slice' bigger so that this does not happen again.",
-                a=gpu_id, x=conf.max_ptcl_per_slice, y=jnp.sum(in_slice_mask)),
+                a=slice_idx, x=conf.max_ptcl_per_slice, y=jnp.sum(in_slice_mask)),
             lambda _: None,
             operand=None
         )
@@ -254,8 +370,8 @@ class Particles:
             halo_mask = jnp.zeros_like(unused_index)
         else:
             x_mod = (pmid_sliced[:, 0] + disp_sliced[:, 0] * conf.disp_size) % conf.nMesh
-            halo_mask = Particles.compute_halo_mask(x_mod, conf.halo_start[gpu_id],
-                                                    conf.halo_end[gpu_id], unused_index)
+            halo_mask = Particles.compute_halo_mask(x_mod, conf.halo_start[slice_idx],
+                                                    conf.halo_end[slice_idx], unused_index)
 
         unused_index.astype(jnp.bool)
         halo_mask.astype(jnp.bool)
@@ -277,8 +393,18 @@ class Particles:
             Whether to wrap around the periodic boundaries.
 
         """
-        pos = jnp.asarray(pos)
+        if conf.use_mGPU:
+            pos_host = np.asarray(jax.device_get(pos), dtype=np.dtype(conf.float_dtype))
+            pmid = np.rint(pos_host / conf.cell_size).astype(np.dtype(conf.pmid_dtype))
+            disp = (pos_host - pmid * conf.cell_size).astype(np.dtype(conf.float_dtype))
+            if wrap:
+                pmid = np.mod(pmid, np.asarray(conf.mesh_shape, dtype=pmid.dtype))
+            pmid, disp, vel, acc, unused_index, halo_mask = cls._partition_and_shard_particle_fields(
+                conf, pmid, disp, vel, acc
+            )
+            return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
 
+        pos = jnp.asarray(pos)
         pmid = jnp.rint(pos / conf.cell_size)
         disp = pos - pmid * conf.cell_size
 
@@ -288,84 +414,12 @@ class Particles:
         if wrap:
             pmid %= jnp.array(conf.mesh_shape, dtype=conf.pmid_dtype)
 
-        unused_index, halo_mask = None, None
-        if conf.use_mGPU:
-            def shard_slices(slices: List, dtype):
-                """Place each per-device slice directly on its target device.
-
-                Avoids materialising the full concatenated array on a single
-                device (which would OOM for large simulations).
-                """
-                slices = [jnp.asarray(s, dtype=dtype) for s in slices]
-                total_shape = (conf.num_devices * slices[0].shape[0],) + slices[0].shape[1:]
-                sharding = jax.sharding.NamedSharding(conf.compute_mesh, P(AXIS_NAME))
-                mesh_devices = list(conf.compute_mesh.devices.flat)
-                device_arrays = [
-                    jax.device_put(slices[i], device=mesh_devices[i])
-                    for i in range(conf.num_devices)
-                ]
-                return jax.make_array_from_single_device_arrays(total_shape, sharding, device_arrays)
-
-            pmid_sliced_list, disp_sliced_list, vel_sliced_list, acc_sliced_list, unused_index_list, halo_mask_list = [], [], [], [], [], []
-            for i in range(conf.num_devices):
-                gpu_id = conf.devices_index[i]  # jax.lax.axis_index('gpus')
-                pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask = cls.distribute_ptcl_pos(
-                    pmid, disp, vel, acc, conf, gpu_id)
-
-                pmid_sliced_list.append(pmid_sliced)
-                disp_sliced_list.append(disp_sliced)
-                vel_sliced_list.append(vel_sliced)
-                acc_sliced_list.append(acc_sliced)
-                unused_index_list.append(unused_index)
-                halo_mask_list.append(halo_mask)
-
-            pmid = shard_slices(pmid_sliced_list, conf.pmid_dtype)
-            disp = shard_slices(disp_sliced_list, conf.float_dtype)
-            unused_index = shard_slices(unused_index_list, jnp.bool)
-            halo_mask = shard_slices(halo_mask_list, jnp.bool)
-
-            if vel is not None:
-                vel = shard_slices(vel_sliced_list, conf.float_dtype)
-            if acc is not None:
-                acc = shard_slices(acc_sliced_list, conf.float_dtype)
-
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=None, halo_mask=None)
 
     @classmethod
     def from_pos_sharded(cls, conf, pos, vel=None, acc=None, wrap=True):
         """Construct particle state of ``pmid`` and ``disp`` from positions."""
-        pos = jnp.asarray(pos)
-
-        pmid = jnp.rint(pos / conf.cell_size)
-        disp = pos - pmid * conf.cell_size
-
-        pmid = pmid.astype(conf.pmid_dtype)
-        disp = disp.astype(conf.float_dtype)
-
-        if wrap:
-            pmid %= jnp.array(conf.mesh_shape, dtype=conf.pmid_dtype)
-
-        unused_index, halo_mask = None, None
-        if conf.use_mGPU:
-            @partial(shard_map, mesh=conf.compute_mesh, in_specs=(
-                    P(None, None),
-                    P(None, None),
-                    P(None, None),
-                    P(None, None),
-                    None
-            ), out_specs=(P(AXIS_NAME),
-                          P(AXIS_NAME),
-                          P(AXIS_NAME),
-                          P(AXIS_NAME),
-                          P(AXIS_NAME),
-                          P(AXIS_NAME)
-            ))
-            def sharded_slicing(pmid, disp, vel, acc, conf):
-                gpu_id = jax.lax.axis_index(AXIS_NAME)
-                return cls.distribute_ptcl_pos(pmid, disp, vel, acc, conf, gpu_id)
-
-            pmid, disp, vel, acc, unused_index, halo_mask = sharded_slicing(pmid, disp, vel, acc, conf)
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
+        return cls.from_pos(conf, pos, vel=vel, acc=acc, wrap=wrap)
 
     @classmethod
     def from_pmid(cls, conf, pmid, disp, vel=None, acc=None):
@@ -382,51 +436,15 @@ class Particles:
             Whether to wrap around the periodic boundaries.
 
         """
+        if conf.use_mGPU:
+            pmid, disp, vel, acc, unused_index, halo_mask = cls._partition_and_shard_particle_fields(
+                conf, pmid, disp, vel, acc
+            )
+            return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
+
         pmid = jnp.asarray(pmid)
         disp = jnp.asarray(disp)
-
-        unused_index, halo_mask = None, None
-        if conf.use_mGPU:
-            def shard_slices(slices: List, dtype):
-                """Place each per-device slice directly on its target device.
-
-                Avoids materialising the full concatenated array on a single
-                device (which would OOM for large simulations).
-                """
-                slices = [jnp.asarray(s, dtype=dtype) for s in slices]
-                total_shape = (conf.num_devices * slices[0].shape[0],) + slices[0].shape[1:]
-                sharding = jax.sharding.NamedSharding(conf.compute_mesh, P(AXIS_NAME))
-                mesh_devices = list(conf.compute_mesh.devices.flat)
-                device_arrays = [
-                    jax.device_put(slices[i], device=mesh_devices[i])
-                    for i in range(conf.num_devices)
-                ]
-                return jax.make_array_from_single_device_arrays(total_shape, sharding, device_arrays)
-
-            pmid_sliced_list, disp_sliced_list, vel_sliced_list, acc_sliced_list, unused_index_list, halo_mask_list = [], [], [], [], [], []
-            for i in range(conf.num_devices):
-                gpu_id = conf.devices_index[i]  # jax.lax.axis_index('gpus')
-                pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask = cls.distribute_ptcl_pos(
-                    pmid, disp, vel, acc, conf, gpu_id)
-
-                pmid_sliced_list.append(pmid_sliced)
-                disp_sliced_list.append(disp_sliced)
-                vel_sliced_list.append(vel_sliced)
-                acc_sliced_list.append(acc_sliced)
-                unused_index_list.append(unused_index)
-                halo_mask_list.append(halo_mask)
-
-            pmid = shard_slices(pmid_sliced_list, conf.pmid_dtype)
-            disp = shard_slices(disp_sliced_list, conf.float_dtype)
-            unused_index = shard_slices(unused_index_list, jnp.bool)
-            halo_mask = shard_slices(halo_mask_list, jnp.bool)
-
-            if vel is not None:
-                vel = shard_slices(vel_sliced_list, conf.float_dtype)
-            if acc is not None:
-                acc = shard_slices(acc_sliced_list, conf.float_dtype)
-
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=None, halo_mask=None)
 
     @classmethod
     def from_ptcl(cls, ptcl, conf=None, wrap=True):
@@ -450,54 +468,23 @@ class Particles:
         vel = ptcl.vel
         acc = ptcl.acc
 
+        if conf.use_mGPU:
+            pmid = np.asarray(jax.device_get(pmid), dtype=np.dtype(conf.pmid_dtype))
+            disp = np.asarray(jax.device_get(disp), dtype=np.dtype(conf.float_dtype))
+            if wrap:
+                pmid = np.mod(pmid, np.asarray(conf.mesh_shape, dtype=pmid.dtype))
+            pmid, disp, vel, acc, unused_index, halo_mask = cls._partition_and_shard_particle_fields(
+                conf, pmid, disp, vel, acc
+            )
+            return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
+
         pmid = pmid.astype(conf.pmid_dtype)
         disp = disp.astype(conf.float_dtype)
 
         if wrap:
             pmid %= jnp.array(conf.mesh_shape, dtype=conf.pmid_dtype)
 
-        unused_index, halo_mask = None, None
-        if conf.use_mGPU:
-            def shard_slices(slices: List, dtype):
-                """Place each per-device slice directly on its target device.
-
-                Avoids materialising the full concatenated array on a single
-                device (which would OOM for large simulations).
-                """
-                slices = [jnp.asarray(s, dtype=dtype) for s in slices]
-                total_shape = (conf.num_devices * slices[0].shape[0],) + slices[0].shape[1:]
-                sharding = jax.sharding.NamedSharding(conf.compute_mesh, P(AXIS_NAME))
-                mesh_devices = list(conf.compute_mesh.devices.flat)
-                device_arrays = [
-                    jax.device_put(slices[i], device=mesh_devices[i])
-                    for i in range(conf.num_devices)
-                ]
-                return jax.make_array_from_single_device_arrays(total_shape, sharding, device_arrays)
-
-            pmid_sliced_list, disp_sliced_list, vel_sliced_list, acc_sliced_list, unused_index_list, halo_mask_list = [], [], [], [], [], []
-            for i in range(conf.num_devices):
-                gpu_id = conf.devices_index[i]  # jax.lax.axis_index('gpus')
-                pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask = cls.distribute_ptcl_pos(
-                    pmid, disp, vel, acc, conf, gpu_id)
-
-                pmid_sliced_list.append(pmid_sliced)
-                disp_sliced_list.append(disp_sliced)
-                vel_sliced_list.append(vel_sliced)
-                acc_sliced_list.append(acc_sliced)
-                unused_index_list.append(unused_index)
-                halo_mask_list.append(halo_mask)
-
-            pmid = shard_slices(pmid_sliced_list, conf.pmid_dtype)
-            disp = shard_slices(disp_sliced_list, conf.float_dtype)
-            unused_index = shard_slices(unused_index_list, jnp.bool)
-            halo_mask = shard_slices(halo_mask_list, jnp.bool)
-
-            if vel is not None:
-                vel = shard_slices(vel_sliced_list, conf.float_dtype)
-            if acc is not None:
-                acc = shard_slices(acc_sliced_list, conf.float_dtype)
-
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=None, halo_mask=None)
 
     @classmethod
     def gen_grid(cls, conf, vel=False, acc=False):

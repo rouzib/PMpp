@@ -36,19 +36,26 @@ def white_noise(seed, conf, real=False, unit_abs=False):
 
     # sample linear modes on Lagrangian particle grid
     modes = random.normal(key, shape=conf.ptcl_grid_shape, dtype=conf.float_dtype)
-    modes = jax.lax.with_sharding_constraint(modes, NamedSharding(conf.compute_mesh, P(AXIS_NAME)))
+    if conf.compute_mesh is not None:
+        modes = jax.lax.with_sharding_constraint(modes, NamedSharding(conf.compute_mesh, P(AXIS_NAME)))
 
     if real and not unit_abs:
         return modes
 
-    modes = conf.mGPU_rfftn(modes)
+    if conf.compute_mesh is None:
+        modes = jnp.fft.rfftn(modes)
+    else:
+        modes = conf.mGPU_rfftn_transposed(modes)
     modes *= _fft_norm(s=jnp.array(conf.ptcl_grid_shape, dtype=modes.dtype), func_name="rfftn", norm="ortho")
 
     if unit_abs:
         modes /= jnp.abs(modes)
 
     if real:
-        modes = conf.mGPU_irfftn(modes)
+        if conf.compute_mesh is None:
+            modes = jnp.fft.irfftn(modes, s=conf.ptcl_grid_shape)
+        else:
+            modes = conf.mGPU_irfftn_transposed(modes)
 
     return modes
 
@@ -170,14 +177,11 @@ def white_noise_nested(seed, conf, real=False, unit_abs=False):
     modes = _nested_fourier_modes_from_numbers(seed, conf, kx_modes, ky_modes, kz_modes, unit_abs)
 
     if conf.compute_mesh is not None:
-        modes = jax.lax.with_sharding_constraint(
-            modes,
-            NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None)),
-        )
+        modes = _to_transposed_spectral_layout(modes, conf)
 
     if real:
         if conf.compute_mesh is not None:
-            modes = conf.mGPU_irfftn(modes)
+            modes = conf.mGPU_irfftn_transposed(modes)
             modes *= _fft_norm(s=jnp.array(conf.ptcl_grid_shape, dtype=modes.dtype), func_name="irfftn", norm="ortho")
         else:
             modes = jnp.fft.irfftn(modes, s=conf.ptcl_grid_shape, norm="ortho")
@@ -203,8 +207,21 @@ def _safe_sqrt_bwd(y, y_cot):
 _safe_sqrt.defvjp(_safe_sqrt_fwd, _safe_sqrt_bwd)
 
 
+def _to_transposed_spectral_layout(modes, conf):
+    if conf.compute_mesh is None:
+        return modes
+    return jax.lax.with_sharding_constraint(
+        modes,
+        NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
+    )
+
+
 def get_k_magnitude(kvec, conf):
     kx, ky, kz = [jnp.squeeze(a) for a in kvec]
+    if conf.compute_mesh is None:
+        return jnp.sqrt(kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(
+            conf.float_dtype
+        )
 
     @partial(jax.jit,
              in_shardings=(
@@ -229,6 +246,33 @@ def get_k_magnitude(kvec, conf):
         return local_shard.astype(conf.float_dtype)
 
     return create_k_magnitude_sharded(kx, ky, kz)
+
+
+def get_k_magnitude_transposed(kvec, conf):
+    kx, ky, kz = [jnp.squeeze(a) for a in kvec]
+    if conf.compute_mesh is None:
+        return jnp.sqrt(kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(
+            conf.float_dtype
+        )
+
+    @partial(
+        jax.jit,
+        in_shardings=(
+            NamedSharding(conf.compute_mesh, P(None)),
+            NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
+            NamedSharding(conf.compute_mesh, P(None)),
+        ),
+        out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
+    )
+    def create_k_magnitude_transposed(kx_replicated, ky_sharded, kz_replicated):
+        kx_b = kx_replicated[:, None, None]
+        ky_b = ky_sharded[None, :, None]
+        kz_b = kz_replicated[None, None, :]
+
+        local_shard = jnp.sqrt(kx_b ** 2 + ky_b ** 2 + kz_b ** 2)
+        return local_shard.astype(conf.float_dtype)
+
+    return create_k_magnitude_transposed(kx, ky, kz)
 
 
 @partial(jit, static_argnums=4)
@@ -262,7 +306,7 @@ def linear_modes(modes, cosmo, conf, a=None, real=False):
 
     """
     kvec = conf.kvec_spacing
-    k = get_k_magnitude(kvec, conf)
+    k = get_k_magnitude_transposed(kvec, conf)
 
     if a is not None:
         a = jnp.asarray(a, dtype=conf.float_dtype)
@@ -270,12 +314,20 @@ def linear_modes(modes, cosmo, conf, a=None, real=False):
     Plin = linear_power(k, a, cosmo, conf)
 
     if jnp.isrealobj(modes):
-        modes = conf.mGPU_rfftn(modes)
+        if conf.compute_mesh is None:
+            modes = jnp.fft.rfftn(modes)
+        else:
+            modes = conf.mGPU_rfftn_transposed(modes)
         modes *= _fft_norm(s=jnp.array(conf.ptcl_grid_shape, dtype=modes.dtype), func_name="rfftn", norm="ortho")
+    else:
+        modes = _to_transposed_spectral_layout(modes, conf)
 
     modes *= _safe_sqrt(Plin * conf.box_vol)
 
     if real:
-        modes = conf.mGPU_irfftn(modes)
+        if conf.compute_mesh is None:
+            modes = jnp.fft.irfftn(modes, s=conf.ptcl_grid_shape)
+        else:
+            modes = conf.mGPU_irfftn_transposed(modes)
 
     return modes

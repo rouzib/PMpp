@@ -14,16 +14,48 @@ def zero_pad_owned_mesh_halo(mesh_owned, halo_width: int):
     return jnp.pad(mesh_owned, pad_width)
 
 
-def extend_owned_mesh_with_halo(mesh_owned, halo_width: int, left_perm, right_perm):
-    """Attach static x-halo cells by copying neighbor owned edge cells."""
+def exchange_owned_mesh_halo_edges(mesh_owned, halo_width: int, left_perm, right_perm):
+    """Exchange the x-edge slabs needed to build a halo shell."""
     if halo_width <= 0:
-        return mesh_owned
+        empty = mesh_owned[:0]
+        return empty, empty
 
     left_owned = mesh_owned[:halo_width]
     right_owned = mesh_owned[-halo_width:]
     incoming_left = jax.lax.ppermute(right_owned, axis_name=AXIS_NAME, perm=right_perm)
     incoming_right = jax.lax.ppermute(left_owned, axis_name=AXIS_NAME, perm=left_perm)
-    return jnp.concatenate((incoming_left, mesh_owned, incoming_right), axis=0)
+    return incoming_left, incoming_right
+
+
+def extend_owned_mesh_from_halo_edges(mesh_owned, incoming_left, incoming_right, halo_width: int):
+    """Build a halo-extended mesh from pre-exchanged edge slabs."""
+    if halo_width <= 0:
+        return mesh_owned
+
+    pad_width = ((halo_width, halo_width),) + ((0, 0),) * (mesh_owned.ndim - 1)
+    mesh_halo = jnp.pad(mesh_owned, pad_width)
+    mesh_halo = jax.lax.dynamic_update_slice(
+        mesh_halo,
+        incoming_left,
+        (0,) + (0,) * (mesh_owned.ndim - 1),
+    )
+    mesh_halo = jax.lax.dynamic_update_slice(
+        mesh_halo,
+        incoming_right,
+        (halo_width + mesh_owned.shape[0],) + (0,) * (mesh_owned.ndim - 1),
+    )
+    return mesh_halo
+
+
+def extend_owned_mesh_with_halo(mesh_owned, halo_width: int, left_perm, right_perm):
+    """Attach static x-halo cells by copying neighbor owned edge cells."""
+    incoming_left, incoming_right = exchange_owned_mesh_halo_edges(
+        mesh_owned,
+        halo_width,
+        left_perm,
+        right_perm,
+    )
+    return extend_owned_mesh_from_halo_edges(mesh_owned, incoming_left, incoming_right, halo_width)
 
 
 def reduce_mesh_halo_to_owned(mesh_with_halo, halo_width: int, left_perm, right_perm):

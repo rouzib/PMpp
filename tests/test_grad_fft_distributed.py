@@ -33,7 +33,7 @@ def test_distributed_fft_matches_reference_for_forward_and_gradients():
     gpu_devices = [device for device in jax.devices() if device.platform == "gpu"][:2]
     compute_mesh = create_compute_mesh(gpu_devices)
     sharding = NamedSharding(compute_mesh, P("gpus", None, None))
-    rfftn, irfftn, _, _ = create_ffts(compute_mesh)
+    rfftn, irfftn, _, _, _, _ = create_ffts(compute_mesh)
 
     for real_shape in ((32, 32, 32), (32, 32, 33)):
         spectrum_shape = (real_shape[0], real_shape[1], real_shape[2] // 2 + 1)

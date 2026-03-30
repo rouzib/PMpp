@@ -31,6 +31,7 @@ from src.cosmo import SimpleLCDM as SimpleLCDM_PP
 from src.lpt import lpt as lpt_pmpp
 from src.modes import linear_modes as linear_modes_pmpp
 from src.modes import white_noise as white_noise_pmpp
+from src.multigpu_configuration import MultiGPUConfiguration
 from src.nbody import nbody as nbody_pmpp
 from src.particles import Particles
 from src.scatter import scatter as scatter_pmpp
@@ -89,7 +90,10 @@ def _init_confs(
         ptcl_spacing,
         ptcl_grid_shape,
         mesh_shape=mesh_shape,
-        compute_mesh=compute_mesh,
+        multigpu=MultiGPUConfiguration(
+            compute_mesh=compute_mesh,
+            mode="particle_halo",
+        ),
         max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * max_ptcl_factor),
         max_share_ptcl=max_share_ptcl,
         max_share_gather_ptcl=max_share_gather_ptcl,

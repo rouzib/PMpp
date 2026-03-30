@@ -9,7 +9,12 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .enmesh import _chunk_split, enmesh, _chunk_cat
 from .halo_moving import particles_in_slice_mask
-from .mesh_halo import extend_owned_mesh_with_halo, reduce_mesh_halo_to_owned
+from .mesh_halo import (
+    exchange_owned_mesh_halo_edges,
+    extend_owned_mesh_from_halo_edges,
+    extend_owned_mesh_with_halo,
+    reduce_mesh_halo_to_owned,
+)
 from .utils import AXIS_NAME, raise_error, pmid_to_idx
 
 
@@ -46,7 +51,13 @@ def initialize_mGPU_gather(conf):
 @partial(custom_vjp, nondiff_argnums=(3,))
 def _gather_mGPU_mesh_halo(pmid, disp, unused_index, conf, mesh):
     gpu_id = jax.lax.axis_index(AXIS_NAME)
-    mesh_halo = extend_owned_mesh_with_halo(mesh, conf.mesh_halo_width, conf.left_perm, conf.right_perm)
+    incoming_left, incoming_right = exchange_owned_mesh_halo_edges(
+        mesh,
+        conf.mesh_halo_width,
+        conf.left_perm,
+        conf.right_perm,
+    )
+    mesh_halo = extend_owned_mesh_from_halo_edges(mesh, incoming_left, incoming_right, conf.mesh_halo_width)
     offset = conf.mesh_halo_offsets[gpu_id]
     val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None)
     mask = unused_index.reshape(unused_index.shape + (1,) * (val.ndim - 1))
@@ -55,17 +66,23 @@ def _gather_mGPU_mesh_halo(pmid, disp, unused_index, conf, mesh):
 
 def _gather_mGPU_mesh_halo_fwd(pmid, disp, unused_index, conf, mesh):
     gpu_id = jax.lax.axis_index(AXIS_NAME)
-    mesh_halo = extend_owned_mesh_with_halo(mesh, conf.mesh_halo_width, conf.left_perm, conf.right_perm)
+    incoming_left, incoming_right = exchange_owned_mesh_halo_edges(
+        mesh,
+        conf.mesh_halo_width,
+        conf.left_perm,
+        conf.right_perm,
+    )
+    mesh_halo = extend_owned_mesh_from_halo_edges(mesh, incoming_left, incoming_right, conf.mesh_halo_width)
     offset = conf.mesh_halo_offsets[gpu_id]
     val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None)
     mask = unused_index.reshape(unused_index.shape + (1,) * (val.ndim - 1))
     val = jnp.where(mask, jnp.zeros_like(val), val)
-    return val, (pmid, disp, unused_index, mesh, offset)
+    return val, (pmid, disp, unused_index, mesh, incoming_left, incoming_right, offset)
 
 
 def _gather_mGPU_mesh_halo_bwd(conf, res, val_cot):
-    pmid, disp, unused_index, mesh, offset = res
-    mesh_halo = extend_owned_mesh_with_halo(mesh, conf.mesh_halo_width, conf.left_perm, conf.right_perm)
+    pmid, disp, unused_index, mesh, incoming_left, incoming_right, offset = res
+    mesh_halo = extend_owned_mesh_from_halo_edges(mesh, incoming_left, incoming_right, conf.mesh_halo_width)
     mask = unused_index.reshape(unused_index.shape + (1,) * (val_cot.ndim - 1))
     val_cot = jnp.where(mask, jnp.zeros_like(val_cot), val_cot)
     _, disp_cot, _, mesh_halo_cot, _, _, _ = _gather_bwd(
