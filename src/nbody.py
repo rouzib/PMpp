@@ -3,9 +3,11 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from jax import custom_vjp, lax
+from jax.tree_util import tree_map
 
 from .cosmo import Cosmology, add_cosmology_cotangents, zero_cosmology_param_cotangent
 from .particles import Particles
+from .potential_correction import add_potential_correction_cotangents, zero_potential_correction_cotangent
 from .steps import (
     force,
     integrate,
@@ -14,14 +16,14 @@ from .steps import (
 )
 
 
-def nbody_init(a, ptcl, cosmo, conf):
-    ptcl = force(a, ptcl, cosmo, conf)
+def nbody_init(a, ptcl, cosmo, conf, correction=None):
+    ptcl = force(a, ptcl, cosmo, conf, correction=correction)
     return ptcl
 
 
 @jax.jit
-def nbody_step(a_prev, a_next, ptcl, cosmo, conf):
-    ptcl = integrate(a_prev, a_next, ptcl, cosmo, conf)
+def nbody_step(a_prev, a_next, ptcl, cosmo, conf, correction=None):
+    ptcl = integrate(a_prev, a_next, ptcl, cosmo, conf, correction=correction)
     return ptcl
 
 
@@ -30,7 +32,7 @@ def _nbody_scale_factors(conf, reverse):
 
 
 @partial(jax.jit, static_argnums=(3, 5, 6))
-def nbody_collect(ptcl, cosmo, conf, collector, collector_state, reverse=False, return_final=False):
+def nbody_collect(ptcl, cosmo, conf, collector, collector_state, reverse=False, return_final=False, correction=None):
     """Run forward N-body integration while updating a caller-defined collector state.
 
     The default `nbody(...)` path stays unchanged. This helper is for forward-only uses
@@ -38,12 +40,12 @@ def nbody_collect(ptcl, cosmo, conf, collector, collector_state, reverse=False, 
     concerns into the adjoint solver itself.
     """
     a = _nbody_scale_factors(conf, reverse)
-    ptcl = nbody_init(a[0], ptcl, cosmo, conf)
+    ptcl = nbody_init(a[0], ptcl, cosmo, conf, correction=correction)
 
     def body(carry, ab):
         ptcl_state, state = carry
         a_prev, a_next = ab
-        ptcl_state = nbody_step(a_prev, a_next, ptcl_state, cosmo, conf)
+        ptcl_state = nbody_step(a_prev, a_next, ptcl_state, cosmo, conf, correction=correction)
         state = collector(state, a_prev, a_next, ptcl_state, cosmo, conf)
         return (ptcl_state, state), None
 
@@ -54,19 +56,19 @@ def nbody_collect(ptcl, cosmo, conf, collector, collector_state, reverse=False, 
 
 
 @partial(jax.jit, static_argnums=(3, 4, 5, 6))
-def nbody_observe(ptcl, cosmo, conf, observer, reverse=False, include_start=False, return_final=False):
+def nbody_observe(ptcl, cosmo, conf, observer, reverse=False, include_start=False, return_final=False, correction=None):
     """Run forward N-body integration and stack one observation per saved step.
 
     `observer` must be a pure JAX function with signature
     `(a, ptcl, cosmo, conf) -> observation_pytree`.
     """
     a = _nbody_scale_factors(conf, reverse)
-    ptcl = nbody_init(a[0], ptcl, cosmo, conf)
+    ptcl = nbody_init(a[0], ptcl, cosmo, conf, correction=correction)
     first_obs = observer(a[0], ptcl, cosmo, conf) if include_start else None
 
     def body(ptcl_state, ab):
         a_prev, a_next = ab
-        ptcl_state = nbody_step(a_prev, a_next, ptcl_state, cosmo, conf)
+        ptcl_state = nbody_step(a_prev, a_next, ptcl_state, cosmo, conf, correction=correction)
         obs = observer(a_next, ptcl_state, cosmo, conf)
         return ptcl_state, obs
 
@@ -89,14 +91,14 @@ def nbody_kappa(ptcl, cosmo, conf, reverse=False):
     return _nbody_kappa(ptcl, cosmo, conf, reverse=reverse)
 
 
-def _nbody_impl(ptcl, cosmo, conf, reverse=False):
+def _nbody_impl(ptcl, cosmo, conf, reverse=False, correction=None):
     """Plain N-body time integration body used by the custom VJP wrapper."""
     a = _nbody_scale_factors(conf, reverse)
-    ptcl = nbody_init(a[0], ptcl, cosmo, conf)
+    ptcl = nbody_init(a[0], ptcl, cosmo, conf, correction=correction)
 
     def body(ptcl, ab):
         a_prev, a_next = ab
-        ptcl = nbody_step(a_prev, a_next, ptcl, cosmo, conf)
+        ptcl = nbody_step(a_prev, a_next, ptcl, cosmo, conf, correction=correction)
         return ptcl, None
 
     ptcl, _ = lax.scan(body, ptcl, (a[:-1], a[1:]))
@@ -163,51 +165,94 @@ def _state_to_cosmo(conf, state):
     )
 
 
-def _nbody_state_impl(conf, reverse, pmid, disp, vel, acc, unused_index, halo_mask, attr, cosmo):
+def _nbody_state_impl(conf, reverse, pmid, disp, vel, acc, unused_index, halo_mask, attr, cosmo, correction=None):
     ptcl_in = _state_to_ptcl(conf, (pmid, disp, vel, acc, unused_index, halo_mask, attr))
-    ptcl_out = _nbody_impl(ptcl_in, cosmo, conf, reverse=reverse)
+    ptcl_out = _nbody_impl(ptcl_in, cosmo, conf, reverse=reverse, correction=correction)
     return _ptcl_state(ptcl_out)
 
 
 @partial(jax.jit, static_argnums=(0, 1))
-def _nbody_flat_impl(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state):
+def _nbody_flat_impl(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state, correction=None):
     cosmo = _state_to_cosmo(conf, cosmo_state)
-    return _nbody_state_impl(conf, reverse, pmid, disp, vel, acc, unused_index, halo_mask, attr, cosmo)
+    return _nbody_state_impl(
+        conf,
+        reverse,
+        pmid,
+        disp,
+        vel,
+        acc,
+        unused_index,
+        halo_mask,
+        attr,
+        cosmo,
+        correction=correction,
+    )
 
 
-def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False):
+def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False, correction=None):
     """Run the hand-written adjoint sweep from the final nbody state."""
     a_nbody = conf.a_nbody[::-1] if reverse else conf.a_nbody
 
     cosmo_cot = zero_cosmology_param_cotangent(cosmo)
+    correction_cot = zero_potential_correction_cotangent(correction)
 
     def body(carry, ab):
-        ptcl, ptcl_cot, cosmo_cot = carry
+        ptcl, ptcl_cot, cosmo_cot, correction_cot = carry
         a_prev, a_next = ab
-        carry = integrate_adj(a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf)
+        carry = integrate_adj(
+            a_prev,
+            a_next,
+            ptcl,
+            ptcl_cot,
+            cosmo,
+            cosmo_cot,
+            conf,
+            correction=correction,
+            correction_cot=correction_cot,
+        )
         return carry, None
 
-    (ptcl, ptcl_cot, cosmo_cot), _ = lax.scan(
+    (ptcl, ptcl_cot, cosmo_cot, correction_cot), _ = lax.scan(
         body,
-        (ptcl, ptcl_cot, cosmo_cot),
+        (ptcl, ptcl_cot, cosmo_cot, correction_cot),
         (a_nbody[-2::-1], a_nbody[:0:-1]),
     )
-    ptcl, ptcl_cot, cosmo_cot_force = force_adj(a_nbody[0], ptcl, ptcl_cot, cosmo, conf)
+    ptcl, ptcl_cot, cosmo_cot_force, correction_cot_force = force_adj(
+        a_nbody[0],
+        ptcl,
+        ptcl_cot,
+        cosmo,
+        conf,
+        correction=correction,
+    )
     cosmo_cot = add_cosmology_cotangents(cosmo_cot, cosmo_cot_force)
-    return ptcl, ptcl_cot, cosmo_cot
+    correction_cot = add_potential_correction_cotangents(correction_cot, correction_cot_force)
+    return ptcl, ptcl_cot, cosmo_cot, correction_cot
 
 
 @partial(custom_vjp, nondiff_argnums=(0, 1))
-def _nbody_state(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state):
+def _nbody_state(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state, correction=None):
     # Keep the public nbody entry point flat so the backward can start from the
     # final particle state without carrying a full-step replay tape.
-    return _nbody_flat_impl(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state)
+    return _nbody_flat_impl(
+        conf,
+        reverse,
+        pmid,
+        unused_index,
+        halo_mask,
+        attr,
+        disp,
+        vel,
+        acc,
+        cosmo_state,
+        correction=correction,
+    )
 
 
-def nbody_adjoint_fwd(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state):
+def nbody_adjoint_fwd(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state, correction=None):
     cosmo = _state_to_cosmo(conf, cosmo_state)
     ptcl_in = _state_to_ptcl(conf, (pmid, disp, vel, acc, unused_index, halo_mask, attr))
-    ptcl_out = _nbody_impl(ptcl_in, cosmo, conf, reverse=reverse)
+    ptcl_out = _nbody_impl(ptcl_in, cosmo, conf, reverse=reverse, correction=correction)
     state_out = _ptcl_state(ptcl_out)
     input_optionals = (
         vel is None,
@@ -216,11 +261,11 @@ def nbody_adjoint_fwd(conf, reverse, pmid, unused_index, halo_mask, attr, disp, 
         halo_mask is None,
         attr is None,
     )
-    return state_out, (state_out, cosmo_state, input_optionals)
+    return state_out, (state_out, cosmo_state, input_optionals, correction)
 
 
 def nbody_adjoint_bwd(conf, reverse, res, cotangents):
-    state_out, cosmo_state, input_optionals = res
+    state_out, cosmo_state, input_optionals, correction = res
     vel_is_none, acc_is_none, _, _, _ = input_optionals
 
     ptcl_out = _state_to_ptcl(conf, state_out)
@@ -228,12 +273,13 @@ def nbody_adjoint_bwd(conf, reverse, res, cotangents):
     _, disp_cot, vel_cot, acc_cot, _, _, _ = cotangents
     ptcl_out_cot = ptcl_out.replace(disp=disp_cot, vel=vel_cot, acc=acc_cot)
 
-    ptcl_in, ptcl_in_cot, cosmo_cot = nbody_adj(
+    ptcl_in, ptcl_in_cot, cosmo_cot, correction_cot = nbody_adj(
         ptcl_out,
         ptcl_out_cot,
         cosmo,
         conf,
         reverse=reverse,
+        correction=correction,
     )
 
     return (
@@ -245,13 +291,14 @@ def nbody_adjoint_bwd(conf, reverse, res, cotangents):
         None if vel_is_none else ptcl_in_cot.vel,
         None if acc_is_none else ptcl_in_cot.acc,
         _cosmo_state(cosmo_cot),
+        correction_cot,
     )
 
 
 _nbody_state.defvjp(nbody_adjoint_fwd, nbody_adjoint_bwd)
 
 
-def nbody(ptcl, cosmo, conf, reverse=False):
+def nbody(ptcl, cosmo, conf, reverse=False, correction=None):
     """N-body time integration with the hand-written adjoint backward."""
     cosmo_state = _cosmo_state(cosmo)
     state_out = _nbody_state(
@@ -265,5 +312,6 @@ def nbody(ptcl, cosmo, conf, reverse=False):
         ptcl.vel,
         ptcl.acc,
         cosmo_state,
+        correction,
     )
     return _state_to_ptcl(conf, state_out)

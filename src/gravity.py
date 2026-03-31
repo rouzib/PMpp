@@ -7,6 +7,7 @@ from jax.experimental.shard_map import shard_map
 from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .configuration import Configuration
+from .potential_correction import apply_potential_correction
 from .scatter import scatter, reduce_grad_across_gpus
 from .gather import gather
 from .utils import AXIS_NAME
@@ -131,31 +132,39 @@ def neg_grad(k, pot, spacing):
     return grad
 
 
-def _gravity_potential_from_density(dens, omega_m, conf: Configuration):
+def _gravity_potential_from_density(dens, omega_m, conf: Configuration, a=None, cosmo=None, correction=None):
     dens = dens - 1
     dens = dens * (1.5 * omega_m.astype(conf.float_dtype))
+    source_real = dens
     if conf.compute_mesh is None:
         dens = jnp.fft.rfftn(dens)
     else:
         dens = conf.mGPU_rfftn_transposed(dens)
-    return laplace_transposed(conf.kvec, dens, conf, None)
+    pot = laplace_transposed(conf.kvec, dens, conf, None)
+    return apply_potential_correction(pot, a, cosmo, conf, correction, source_real=source_real)
 
 
-def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration):
-    pot = _gravity_potential_from_density(dens, cosmo.Omega_m, conf)
-    acc = []
+def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration, a=None, correction=None):
+    pot = _gravity_potential_from_density(dens, cosmo.Omega_m, conf, a=a, cosmo=cosmo, correction=correction)
+    grad_meshes = []
     for k in conf.kvec:
         grad = neg_grad(k, pot, conf.cell_size)
         if conf.compute_mesh is None:
             grad = jnp.fft.irfftn(grad).astype(conf.float_dtype)
         else:
             grad = conf.mGPU_irfftn_transposed(grad).astype(conf.float_dtype)
-        acc.append(gather(ptcl, conf, grad))
+        grad_meshes.append(grad)
+
+    if correction is not None:
+        stacked_grad_meshes = jnp.stack(grad_meshes, axis=0)
+        return jax.vmap(lambda mesh: gather(ptcl, conf, mesh), in_axes=0, out_axes=-1)(stacked_grad_meshes)
+
+    acc = [gather(ptcl, conf, grad) for grad in grad_meshes]
     return jnp.stack(acc, axis=-1)
 
 
-def _gravity_mesh_fields_from_density(dens, omega_m, conf: Configuration):
-    pot = _gravity_potential_from_density(dens, omega_m, conf)
+def _gravity_mesh_fields_from_density(dens, omega_m, conf: Configuration, a=None, cosmo=None, correction=None):
+    pot = _gravity_potential_from_density(dens, omega_m, conf, a=a, cosmo=cosmo, correction=correction)
 
     grad_meshes = []
     for k in conf.kvec:
@@ -240,7 +249,7 @@ def duplicate_slot_counts(ptcl, conf: Configuration):
     return jnp.where(counts != 0, counts, 1)
 
 
-def gravity(a, ptcl, cosmo, conf: Configuration):
+def gravity(a, ptcl, cosmo, conf: Configuration, correction=None):
     """Gravitational accelerations of particles in [H_0^2], solved on a mesh with FFT."""
     dens = scatter(ptcl, conf)
-    return _gravity_from_density(dens, ptcl, cosmo, conf)
+    return _gravity_from_density(dens, ptcl, cosmo, conf, a=a, correction=correction)
