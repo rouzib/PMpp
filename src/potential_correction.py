@@ -1,16 +1,41 @@
 from dataclasses import field
 from functools import lru_cache, partial
 
-import haiku as hk
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 from jax.tree_util import tree_map
 from jax.typing import ArrayLike
 
+try:
+    import haiku as hk
+except ImportError:
+    hk = None
+
+try:
+    import optax
+except ImportError:
+    optax = None
+
 from .mesh_halo import exchange_owned_mesh_halo_edges, extend_owned_mesh_from_halo_edges
 from .utils import is_float0_array, pytree_dataclass
+
+
+def _require_haiku(feature_name):
+    if hk is None:
+        raise ImportError(
+            f"haiku is required for {feature_name}. Install dm-haiku to enable this correction."
+        )
+
+
+def _require_optax(feature_name):
+    if optax is None:
+        raise ImportError(
+            f"optax is required for {feature_name}. Install optax to enable this optimizer utility."
+        )
+
+
+_HaikuModuleBase = hk.Module if hk is not None else object
 
 
 def _deBoorVectorized(x, t, c, p):
@@ -25,13 +50,14 @@ def _deBoorVectorized(x, t, c, p):
     return d[p]
 
 
-class NeuralSplineFourierFilter(hk.Module):
+class NeuralSplineFourierFilter(_HaikuModuleBase):
     """Rotationally invariant filter parameterized by a small Haiku network.
 
         See Denise's paper
     """
 
     def __init__(self, n_knots=8, latent_size=16, name=None):
+        _require_haiku("radial potential corrections")
         super().__init__(name=name)
         self.n_knots = n_knots
         self.latent_size = latent_size
@@ -57,10 +83,11 @@ class NeuralSplineFourierFilter(hk.Module):
         return _deBoorVectorized(jnp.clip(x / jnp.sqrt(3.0), 0.0, 1.0 - 1e-4), ak, w, 3)
 
 
-class MeshResidualSourceCorrection(hk.Module):
+class MeshResidualSourceCorrection(_HaikuModuleBase):
     """Small periodic 3D CNN that predicts a residual source field."""
 
     def __init__(self, channels=8, depth=4, max_residual=0.1, name=None):
+        _require_haiku("mesh CNN potential corrections")
         super().__init__(name=name)
         self.channels = channels
         self.depth = depth
@@ -96,6 +123,7 @@ class MeshResidualSourceCorrection(hk.Module):
 
 @lru_cache(maxsize=None)
 def _radial_transform(n_knots, latent_size):
+    _require_haiku("radial potential corrections")
     return hk.without_apply_rng(
         hk.transform(
             lambda x, a, c: NeuralSplineFourierFilter(
@@ -107,6 +135,7 @@ def _radial_transform(n_knots, latent_size):
 
 
 def _mesh_cnn_transform(conf, channels, depth, max_residual):
+    _require_haiku("mesh CNN potential corrections")
     return hk.without_apply_rng(
         hk.transform(
             lambda source, a, c: MeshResidualSourceCorrection(
@@ -209,6 +238,7 @@ def _periodic_pad_mesh_channels(x, halo_width, conf):
 
 
 def _periodic_conv3d(x, output_channels, conf, kernel_shape=3, name=None, w_init=None, b_init=None):
+    _require_haiku("mesh CNN potential corrections")
     halo_width = kernel_shape // 2
     x = _periodic_pad_mesh_channels(x, halo_width, conf)
     conv = hk.Conv3D(
@@ -465,6 +495,7 @@ def build_correction_optimizer(
     optimizer_name="adamax",
     apply_if_finite_steps=100,
 ):
+    _require_optax("potential correction optimizer construction")
     transforms = []
     if gradient_clip_norm is not None and gradient_clip_norm > 0:
         transforms.append(optax.clip_by_global_norm(gradient_clip_norm))
