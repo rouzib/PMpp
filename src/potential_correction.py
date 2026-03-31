@@ -4,6 +4,7 @@ from functools import lru_cache, partial
 import haiku as hk
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 from jax.tree_util import tree_map
 from jax.typing import ArrayLike
@@ -105,11 +106,10 @@ def _radial_transform(n_knots, latent_size):
     )
 
 
-@lru_cache(maxsize=None)
-def _mesh_cnn_transform(channels, depth, max_residual):
+def _mesh_cnn_transform(conf, channels, depth, max_residual):
     return hk.without_apply_rng(
         hk.transform(
-            lambda source, a, c, conf: MeshResidualSourceCorrection(
+            lambda source, a, c: MeshResidualSourceCorrection(
                 channels=channels,
                 depth=depth,
                 max_residual=max_residual,
@@ -133,12 +133,52 @@ def _k_squared_transposed(conf, dtype):
     return kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2
 
 
-def _cosmo_features(cosmo, dtype):
+def _default_cosmo_features(dtype):
+    return jnp.asarray([0.3, 0.8], dtype=dtype)
+
+
+def resolve_sigma8(cosmo, dtype, allow_missing_sigma8=False):
+    default_sigma8 = float(_default_cosmo_features(dtype)[1])
     if cosmo is None:
-        return jnp.ones((2,), dtype=dtype) * jnp.asarray(0.3, dtype=dtype)
+        return jnp.asarray(default_sigma8, dtype=dtype)
+    try:
+        sigma8 = float(jax.device_get(jnp.asarray(cosmo.sigma8, dtype=dtype)))
+    except Exception:
+        if not allow_missing_sigma8:
+            raise ValueError(
+                "sigma8 is not initialized on the cosmology. "
+                "Run boltzmann()/from_sigma8() first, or set allow_missing_sigma8=True "
+                "for lightweight test-only correction initialization."
+            ) from None
+        sigma8 = default_sigma8
+    if not np.isfinite(sigma8):
+        if not allow_missing_sigma8:
+            raise ValueError(
+                "sigma8 is non-finite on the cosmology. "
+                "The upstream transfer/varlin initialization failed."
+            )
+        sigma8 = default_sigma8
+    return jnp.asarray(sigma8, dtype=dtype)
+
+
+def _cosmo_features(cosmo, dtype, allow_missing_sigma8=False):
+    if cosmo is None:
+        return _default_cosmo_features(dtype)
     if hasattr(cosmo, "shape"):
         return jnp.asarray(cosmo, dtype=dtype)
-    return jnp.asarray([cosmo.Omega_m, cosmo.sigma8], dtype=dtype)
+    sigma8 = resolve_sigma8(cosmo, dtype, allow_missing_sigma8=allow_missing_sigma8)
+    return jnp.asarray([cosmo.Omega_m, sigma8], dtype=dtype)
+
+
+def _correction_cosmo_features(correction, cosmo, dtype):
+    if correction is not None and getattr(correction, "sigma8_value", None) is not None:
+        if cosmo is None:
+            return jnp.asarray([_default_cosmo_features(dtype)[0], correction.sigma8_value], dtype=dtype)
+        if hasattr(cosmo, "shape"):
+            return jnp.asarray(cosmo, dtype=dtype)
+        return jnp.asarray([cosmo.Omega_m, correction.sigma8_value], dtype=dtype)
+    allow_missing_sigma8 = False if correction is None else getattr(correction, "allow_missing_sigma8", False)
+    return _cosmo_features(cosmo, dtype, allow_missing_sigma8=allow_missing_sigma8)
 
 
 def _mesh_conditioning_channels(source, a, cosmo, dtype):
@@ -185,7 +225,7 @@ def _periodic_conv3d(x, output_channels, conf, kernel_shape=3, name=None, w_init
 
 @partial(
     pytree_dataclass,
-    aux_fields=("n_knots", "latent_size", "dtype"),
+    aux_fields=("n_knots", "latent_size", "allow_missing_sigma8", "sigma8_value", "dtype"),
     frozen=True,
     eq=False,
 )
@@ -193,6 +233,8 @@ class RadialPotentialCorrection:
     params: dict
     n_knots: int = 8
     latent_size: int = 16
+    allow_missing_sigma8: bool = False
+    sigma8_value: float = 0.8
     dtype: jnp.dtype = field(default=jnp.float32, repr=False)
 
     def __post_init__(self):
@@ -209,7 +251,7 @@ class RadialPotentialCorrection:
 
 @partial(
     pytree_dataclass,
-    aux_fields=("channels", "depth", "max_residual", "dtype"),
+    aux_fields=("channels", "depth", "max_residual", "allow_missing_sigma8", "sigma8_value", "dtype"),
     frozen=True,
     eq=False,
 )
@@ -218,6 +260,8 @@ class MeshCNNPotentialCorrection:
     channels: int = 8
     depth: int = 4
     max_residual: float = 0.1
+    allow_missing_sigma8: bool = False
+    sigma8_value: float = 0.8
     dtype: jnp.dtype = field(default=jnp.float32, repr=False)
 
     def __post_init__(self):
@@ -236,6 +280,8 @@ def init_radial_potential_correction(
     key,
     latent_size=16,
     n_knots=16,
+    allow_missing_sigma8=False,
+    sigma8_value=0.8,
     dtype=jnp.float32,
     conf=None,
     **unused_kwargs,
@@ -251,12 +297,14 @@ def init_radial_potential_correction(
         key,
         x,
         jnp.ones((1,), dtype=dtype),
-        jnp.ones((2,), dtype=dtype) * jnp.asarray(0.3, dtype=dtype),
+        _default_cosmo_features(dtype),
     )
     return RadialPotentialCorrection(
         params=params,
         n_knots=n_knots,
         latent_size=latent_size,
+        allow_missing_sigma8=allow_missing_sigma8,
+        sigma8_value=float(sigma8_value),
         dtype=dtype,
     )
 
@@ -266,13 +314,15 @@ def init_mesh_cnn_potential_correction(
     channels=8,
     depth=4,
     max_residual=0.1,
+    allow_missing_sigma8=False,
+    sigma8_value=0.8,
     dtype=jnp.float32,
     conf=None,
     **unused_kwargs,
 ):
     del unused_kwargs
     dtype = jnp.dtype(dtype)
-    transform = _mesh_cnn_transform(channels, depth, max_residual)
+    transform = _mesh_cnn_transform(conf, channels, depth, max_residual)
     if conf is None:
         source = jnp.zeros((16, 16, 16), dtype=dtype)
     else:
@@ -281,14 +331,15 @@ def init_mesh_cnn_potential_correction(
         key,
         source,
         jnp.asarray(1.0, dtype=dtype),
-        jnp.ones((2,), dtype=dtype) * jnp.asarray(0.3, dtype=dtype),
-        conf,
+        _default_cosmo_features(dtype),
     )
     return MeshCNNPotentialCorrection(
         params=params,
         channels=channels,
         depth=depth,
         max_residual=max_residual,
+        allow_missing_sigma8=allow_missing_sigma8,
+        sigma8_value=float(sigma8_value),
         dtype=dtype,
     )
 
@@ -313,7 +364,7 @@ def sample_potential_transfer(correction, radius_fraction, a, cosmo, conf):
         correction.params,
         x,
         jnp.asarray(a, dtype=correction.dtype),
-        _cosmo_features(cosmo, correction.dtype),
+        _correction_cosmo_features(correction, cosmo, correction.dtype),
     )
     transfer = 1.0 + residual
     return jnp.where(radius_fraction == 0, jnp.asarray(1.0, dtype=transfer.dtype), transfer)
@@ -330,7 +381,7 @@ def evaluate_radial_potential_transfer(correction, a, cosmo, conf):
         correction.params,
         k_norm.astype(correction.dtype),
         jnp.asarray(a, dtype=correction.dtype),
-        _cosmo_features(cosmo, correction.dtype),
+        _correction_cosmo_features(correction, cosmo, correction.dtype),
     )
     transfer = 1.0 + residual
     return transfer
@@ -345,13 +396,12 @@ def evaluate_mesh_source_residual(correction, source_real, a, cosmo, conf):
         return jnp.zeros_like(source_real, dtype=conf.float_dtype)
     if not isinstance(correction, MeshCNNPotentialCorrection):
         raise TypeError("Mesh source residuals are only defined for mesh CNN corrections.")
-    transform = _mesh_cnn_transform(correction.channels, correction.depth, correction.max_residual)
+    transform = _mesh_cnn_transform(conf, correction.channels, correction.depth, correction.max_residual)
     residual = transform.apply(
         correction.params,
         source_real.astype(correction.dtype),
         jnp.asarray(a, dtype=correction.dtype),
-        _cosmo_features(cosmo, correction.dtype),
-        conf,
+        _correction_cosmo_features(correction, cosmo, correction.dtype),
     )
     return residual.astype(conf.float_dtype)
 

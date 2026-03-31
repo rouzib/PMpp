@@ -5,6 +5,8 @@ from typing import Dict, Iterable, Tuple
 import h5py
 import numpy as np
 
+PLANCK18_OMEGA_B = 0.04897
+
 
 @dataclass(frozen=True)
 class CamelsMetadata:
@@ -162,11 +164,15 @@ def load_camels_pair(base_dir):
     final_match = final_order[match_pos]
 
     grid_size = _infer_grid_size(ic_ids.shape[0])
+    omega_b = float(params.get("OmegaBaryon", PLANCK18_OMEGA_B))
+    if omega_b <= 0:
+        omega_b = PLANCK18_OMEGA_B
+
     metadata = CamelsMetadata(
         box_size=float(snapshot["BoxSize"]),
         omega_m=float(params.get("Omega", snapshot["Omega_m"])),
         omega_l=float(params.get("OmegaLambda", snapshot["Omega_l"])),
-        omega_b=float(params.get("OmegaBaryon", 0.0)),
+        omega_b=omega_b,
         h=float(params.get("HubbleParam", 0.7)),
         sigma8=float(params.get("Sigma8", 0.8)),
         n_s=float(params.get("PrimordialIndex", 0.96)),
