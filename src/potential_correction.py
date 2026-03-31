@@ -136,7 +136,9 @@ def _k_squared_transposed(conf, dtype):
 def _cosmo_features(cosmo, dtype):
     if cosmo is None:
         return jnp.ones((2,), dtype=dtype) * jnp.asarray(0.3, dtype=dtype)
-    return jnp.asarray([cosmo.Omega_m, cosmo.Omega_b], dtype=dtype)
+    if hasattr(cosmo, "shape"):
+        return jnp.asarray(cosmo, dtype=dtype)
+    return jnp.asarray([cosmo.Omega_m, cosmo.sigma8], dtype=dtype)
 
 
 def _mesh_conditioning_channels(source, a, cosmo, dtype):
@@ -292,7 +294,7 @@ def init_mesh_cnn_potential_correction(
 
 
 def init_potential_correction(key, model="neural_spline", **kwargs):
-    if model in {"neural_spline", "radial_spline", "radial"}:
+    if model in {"neural_spline", "radial_spline", "radial", "radial_mlp"}:
         return init_radial_potential_correction(key, **kwargs)
     if model in {"mesh_cnn", "cnn"}:
         return init_mesh_cnn_potential_correction(key, **kwargs)
