@@ -317,8 +317,11 @@ def gather(ptcl, conf, mesh):
     """
     pmid = jax.lax.stop_gradient(ptcl.pmid)
     disp = ptcl.disp
-    unused_index = jax.lax.stop_gradient(ptcl.unused_index)
 
+    if not conf.use_mGPU or conf.mGPU_gather is None:
+        return _gather(pmid, disp, conf, mesh, 0, 0, None)
+
+    unused_index = jax.lax.stop_gradient(ptcl.unused_index)
     return conf.mGPU_gather(pmid, disp, unused_index, conf, mesh)
 
 def _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size):

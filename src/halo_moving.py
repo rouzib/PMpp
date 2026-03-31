@@ -150,37 +150,48 @@ def _sorted_merge_two_with_provenance(
     error_message,
     src_tag_b=jnp.int32(2),
 ):
+    # Searchsorted-based merge with provenance tracking.
+    # Same position formula as _sorted_merge_two; additionally scatter src_tag/src_idx.
     count_a = jnp.sum(valid_a)
     count_b = jnp.sum(valid_b)
     total = count_a + count_b
     _capacity_check(total, capacity, error_message)
 
-    keys_cat = jnp.concatenate((
-        jnp.where(valid_a, keys_a, key_fill),
-        jnp.where(valid_b, keys_b, key_fill),
-    ), axis=0)
-    pmid_cat = jnp.concatenate((pmid_a, pmid_b), axis=0)
-    disp_cat = jnp.concatenate((disp_a, disp_b), axis=0)
-    vel_cat = jnp.concatenate((vel_a, vel_b), axis=0)
-    acc_cat = jnp.concatenate((acc_a, acc_b), axis=0)
+    Na = keys_a.shape[0]
+    Nb = keys_b.shape[0]
 
-    src_a = jnp.arange(keys_a.shape[0], dtype=jnp.int32)
-    src_b = jnp.arange(keys_b.shape[0], dtype=jnp.int32)
-    src_idx = jnp.concatenate((src_a, src_b), axis=0)
-    src_tag = jnp.concatenate((
-        jnp.where(valid_a, jnp.int32(0), jnp.int32(3)),
-        jnp.where(valid_b, src_tag_b, jnp.int32(3)),
-    ), axis=0)
+    keys_a_filled = jnp.where(valid_a, keys_a, key_fill)
+    keys_b_filled = jnp.where(valid_b, keys_b, key_fill)
 
-    order = jnp.argsort(keys_cat, stable=True)[:capacity]
+    pos_a = (jnp.arange(Na, dtype=jnp.int32)
+             + jnp.searchsorted(keys_b_filled, keys_a_filled, side='left').astype(jnp.int32))
+    pos_b = (jnp.arange(Nb, dtype=jnp.int32)
+             + jnp.searchsorted(keys_a_filled, keys_b_filled, side='right').astype(jnp.int32))
+
+    out_keys = jnp.full(capacity, key_fill, dtype=keys_a.dtype)
+    out_pmid = jnp.zeros((capacity,) + pmid_a.shape[1:], dtype=pmid_a.dtype)
+    out_disp = jnp.zeros((capacity,) + disp_a.shape[1:], dtype=disp_a.dtype)
+    out_vel = jnp.zeros((capacity,) + vel_a.shape[1:], dtype=vel_a.dtype)
+    out_acc = jnp.zeros((capacity,) + acc_a.shape[1:], dtype=acc_a.dtype)
+    out_src_tag = jnp.full(capacity, jnp.int32(3), dtype=jnp.int32)
+    out_src_idx = jnp.full(capacity, jnp.int32(-1), dtype=jnp.int32)
+
+    out_keys = out_keys.at[pos_a].set(keys_a_filled, mode='drop').at[pos_b].set(keys_b_filled, mode='drop')
+    out_pmid = out_pmid.at[pos_a].set(pmid_a, mode='drop').at[pos_b].set(pmid_b, mode='drop')
+    out_disp = out_disp.at[pos_a].set(disp_a, mode='drop').at[pos_b].set(disp_b, mode='drop')
+    out_vel = out_vel.at[pos_a].set(vel_a, mode='drop').at[pos_b].set(vel_b, mode='drop')
+    out_acc = out_acc.at[pos_a].set(acc_a, mode='drop').at[pos_b].set(acc_b, mode='drop')
+
+    src_tag_a_arr = jnp.where(valid_a, jnp.int32(0), jnp.int32(3))
+    src_tag_b_arr = jnp.where(valid_b, src_tag_b, jnp.int32(3))
+    out_src_tag = out_src_tag.at[pos_a].set(src_tag_a_arr, mode='drop').at[pos_b].set(src_tag_b_arr, mode='drop')
+    out_src_idx = (out_src_idx
+                   .at[pos_a].set(jnp.arange(Na, dtype=jnp.int32), mode='drop')
+                   .at[pos_b].set(jnp.arange(Nb, dtype=jnp.int32), mode='drop'))
+
     out_valid = jnp.arange(capacity) < total
-    out_keys = keys_cat[order]
-    out_pmid = pmid_cat[order]
-    out_disp = disp_cat[order]
-    out_vel = vel_cat[order]
-    out_acc = acc_cat[order]
-    out_src_idx = jnp.where(out_valid, src_idx[order], -1)
-    out_src_tag = jnp.where(out_valid, src_tag[order], 3)
+    out_src_tag = jnp.where(out_valid, out_src_tag, jnp.int32(3))
+    out_src_idx = jnp.where(out_valid, out_src_idx, jnp.int32(-1))
     out_keys = jnp.where(out_valid, out_keys, key_fill)
     return (
         out_keys,
@@ -1192,23 +1203,37 @@ def _canonical_route_authoritative(
         keys, pmid, disp, vel, acc, send_left_mask, max_values_to_share, key_fill,
         "[ERROR] Exceeded left-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
     )
-    send_right = _compact_sorted_particles(
-        keys, pmid, disp, vel, acc, send_right_mask, max_values_to_share, key_fill,
-        "[ERROR] Exceeded right-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
-    )
-    incoming_from_left = jax.lax.ppermute(send_right, axis_name=AXIS_NAME, perm=right_perm)
-    incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
 
-    merged = _sorted_merge_three(
-        *stay,
-        *incoming_from_left,
-        *incoming_from_right,
-        pmid.shape[0],
-        key_fill,
-        "[ERROR] Exceeded canonical authoritative capacity after migration. "
-        "required_particles={x}, max_ptcl_per_slice={y}.",
-    )
-    max_particles_moved = jnp.maximum(jnp.sum(send_left[-1]), jnp.sum(send_right[-1]))
+    if num_gpus == 2:
+        # 2-GPU fast path: send_right_mask is always zero, skip its compact and ppermute.
+        incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
+        merged = _sorted_merge_two(
+            *stay,
+            *incoming_from_right,
+            pmid.shape[0],
+            key_fill,
+            "[ERROR] Exceeded canonical authoritative capacity after migration. "
+            "required_particles={x}, max_ptcl_per_slice={y}.",
+        )
+        max_particles_moved = jnp.sum(send_left[-1])
+    else:
+        send_right = _compact_sorted_particles(
+            keys, pmid, disp, vel, acc, send_right_mask, max_values_to_share, key_fill,
+            "[ERROR] Exceeded right-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
+        )
+        incoming_from_left = jax.lax.ppermute(send_right, axis_name=AXIS_NAME, perm=right_perm)
+        incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
+        merged = _sorted_merge_three(
+            *stay,
+            *incoming_from_left,
+            *incoming_from_right,
+            pmid.shape[0],
+            key_fill,
+            "[ERROR] Exceeded canonical authoritative capacity after migration. "
+            "required_particles={x}, max_ptcl_per_slice={y}.",
+        )
+        max_particles_moved = jnp.maximum(jnp.sum(send_left[-1]), jnp.sum(send_right[-1]))
+
     return merged, max_particles_moved
 
 
@@ -1397,51 +1422,65 @@ def _canonical_route_authoritative_with_aux(
     if num_gpus == 2:
         send_right_mask = jnp.zeros_like(send_right_mask)
 
-    auth_pos = jnp.arange(pmid.shape[0], dtype=jnp.int32)
     key_fill = _key_fill_value(conf)
 
-    stay = _compact_sorted_particles(
+    # Use _compact_sorted_particles_with_slots to get both the compacted particles
+    # and their original positions (slots) in a single pass, eliminating the
+    # duplicate jnp.compress calls that were previously needed for stay_pos / send_left_pos.
+    *stay_items, stay_pos = _compact_sorted_particles_with_slots(
         keys, pmid, disp, vel, acc, stay_mask, pmid.shape[0], key_fill,
         "[ERROR] Exceeded stay-particle compact capacity. stay_particles={x}, capacity={y}.",
     )
-    send_left = _compact_sorted_particles(
+    stay = tuple(stay_items)
+
+    *send_left_items, send_left_pos = _compact_sorted_particles_with_slots(
         keys, pmid, disp, vel, acc, send_left_mask, max_values_to_share, key_fill,
         "[ERROR] Exceeded left-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
     )
-    send_right = _compact_sorted_particles(
-        keys, pmid, disp, vel, acc, send_right_mask, max_values_to_share, key_fill,
-        "[ERROR] Exceeded right-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
-    )
+    send_left = tuple(send_left_items)
 
-    stay_pos = jnp.compress(
-        stay_mask, auth_pos, axis=0, size=pmid.shape[0], fill_value=jnp.asarray(-1, auth_pos.dtype)
-    )
-    send_left_pos = jnp.compress(
-        send_left_mask, auth_pos, axis=0, size=max_values_to_share, fill_value=jnp.asarray(-1, auth_pos.dtype)
-    )
-    send_right_pos = jnp.compress(
-        send_right_mask, auth_pos, axis=0, size=max_values_to_share, fill_value=jnp.asarray(-1, auth_pos.dtype)
-    )
+    if num_gpus == 2:
+        # 2-GPU fast path: in a 2-GPU ring send_right_mask is always zero, so we
+        # skip the right-side compact, the ppermute of zeros, and use a cheaper
+        # 2-way merge (stay + incoming_from_right only).
+        incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
+        merged = _sorted_merge_two_with_provenance(
+            *stay,
+            *incoming_from_right,
+            pmid.shape[0],
+            key_fill,
+            "[ERROR] Exceeded canonical authoritative capacity after migration. "
+            "required_particles={x}, max_ptcl_per_slice={y}.",
+            src_tag_b=jnp.int32(2),
+        )
+        send_right_pos = jnp.full((max_values_to_share,), -1, dtype=jnp.int32)
+        send_right_valid = jnp.zeros((max_values_to_share,), dtype=jnp.bool_)
+    else:
+        *send_right_items, send_right_pos = _compact_sorted_particles_with_slots(
+            keys, pmid, disp, vel, acc, send_right_mask, max_values_to_share, key_fill,
+            "[ERROR] Exceeded right-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
+        )
+        send_right = tuple(send_right_items)
+        incoming_from_left = jax.lax.ppermute(send_right, axis_name=AXIS_NAME, perm=right_perm)
+        incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
+        merged = _sorted_merge_three_with_provenance(
+            *stay,
+            *incoming_from_left,
+            *incoming_from_right,
+            pmid.shape[0],
+            key_fill,
+            "[ERROR] Exceeded canonical authoritative capacity after migration. "
+            "required_particles={x}, max_ptcl_per_slice={y}.",
+        )
+        send_right_valid = send_right[-1]
 
-    incoming_from_left = jax.lax.ppermute(send_right, axis_name=AXIS_NAME, perm=right_perm)
-    incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
-
-    merged = _sorted_merge_three_with_provenance(
-        *stay,
-        *incoming_from_left,
-        *incoming_from_right,
-        pmid.shape[0],
-        key_fill,
-        "[ERROR] Exceeded canonical authoritative capacity after migration. "
-        "required_particles={x}, max_ptcl_per_slice={y}.",
-    )
     route_aux = (
         stay_pos,
         stay[-1],
         send_left_pos,
         send_left[-1],
         send_right_pos,
-        send_right[-1],
+        send_right_valid,
         merged[-2],
         merged[-1],
     )
@@ -1559,6 +1598,66 @@ def _reverse_route_cot(
     )
     auth_cot = auth_cot.at[jnp.where(send_right_valid, send_right_pos, 0)].add(
         send_right_cot * send_right_valid_scale
+    )
+    return auth_cot
+
+
+def _reverse_route_cot_two_gpu(
+    merged_cot,
+    stay_pos,
+    stay_valid,
+    send_left_pos,
+    send_left_valid,
+    _send_right_pos,
+    _send_right_valid,
+    merge_src_tag,
+    merge_src_idx,
+    auth_size,
+    max_values_to_share,
+    left_perm,
+    right_perm,
+):
+    """2-GPU fast path for _reverse_route_cot.
+
+    In the 2-GPU topology send_right is always zero, so merge_src_tag never
+    equals 1 (incoming_from_left).  We skip the zero-ppermute on that side
+    and the associated scatter.
+    """
+    dtype = merged_cot.dtype
+    cot_shape = merged_cot.shape[1:]
+    stay_cot = jnp.zeros((stay_pos.shape[0],) + cot_shape, dtype=dtype)
+    incoming_from_right_cot = jnp.zeros((max_values_to_share,) + cot_shape, dtype=dtype)
+
+    stay_mask = merge_src_tag == 0
+    incoming_right_mask = merge_src_tag == 2
+    broadcast_shape = (merged_cot.shape[0],) + (1,) * (merged_cot.ndim - 1)
+    stay_scale = stay_mask.reshape(broadcast_shape).astype(dtype)
+    incoming_right_scale = incoming_right_mask.reshape(broadcast_shape).astype(dtype)
+
+    stay_cot = stay_cot.at[jnp.where(stay_mask, merge_src_idx, 0)].add(
+        merged_cot * stay_scale
+    )
+    incoming_from_right_cot = incoming_from_right_cot.at[
+        jnp.where(incoming_right_mask, merge_src_idx, 0)
+    ].add(merged_cot * incoming_right_scale)
+
+    # In the 2-GPU case only incoming_from_right exists; its cotangents must
+    # travel back to the source via right_perm (reverse of the left_perm that
+    # was used to send send_left -> incoming_from_right in the forward).
+    send_left_cot = jax.lax.ppermute(incoming_from_right_cot, axis_name=AXIS_NAME, perm=right_perm)
+
+    auth_cot = jnp.zeros((auth_size,) + cot_shape, dtype=dtype)
+    stay_valid_scale = stay_valid.reshape(
+        (stay_valid.shape[0],) + (1,) * (merged_cot.ndim - 1)
+    ).astype(dtype)
+    send_left_valid_scale = send_left_valid.reshape(
+        (send_left_valid.shape[0],) + (1,) * (merged_cot.ndim - 1)
+    ).astype(dtype)
+    auth_cot = auth_cot.at[jnp.where(stay_valid, stay_pos, 0)].add(
+        stay_cot * stay_valid_scale
+    )
+    auth_cot = auth_cot.at[jnp.where(send_left_valid, send_left_pos, 0)].add(
+        send_left_cot * send_left_valid_scale
     )
     return auth_cot
 
@@ -1761,7 +1860,8 @@ def halo_move_pullback_mesh_halo_from_prestate_shard_map(
         auth_pmid.shape[0],
         merged_valid,
     )
-    auth_payload_cot = _reverse_route_cot(
+    _reverse_route_fn = _reverse_route_cot_two_gpu if num_gpus == 2 else _reverse_route_cot
+    auth_payload_cot = _reverse_route_fn(
         merged_payload_cot,
         stay_pos,
         stay_valid,

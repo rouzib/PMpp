@@ -204,6 +204,8 @@ def _initialize_mesh_on_devices(mesh_shape, mesh_dtype, compute_mesh, val_shape)
     :return:
     """
     mesh = jnp.zeros(mesh_shape + val_shape[1:], dtype=mesh_dtype)
+    if compute_mesh is None:
+        return mesh
     return jax.lax.with_sharding_constraint(mesh, NamedSharding(compute_mesh, P(AXIS_NAME, None, None)))
 
 
@@ -232,10 +234,16 @@ def scatter(ptcl, conf, mesh=None, val=None, offset=0, cell_size=None):
 
     if val is None:
         val = conf.mesh_size / conf.ptcl_num
-        val = (~ptcl.unused_index).astype(conf.float_dtype) * val
+        if ptcl.unused_index is None:
+            valid = jnp.ones(ptcl.disp.shape[0], dtype=conf.float_dtype)
+        else:
+            valid = (~ptcl.unused_index).astype(conf.float_dtype)
+        val = valid * val
 
     if mesh is None:
         mesh = _initialize_mesh_on_devices(conf.mesh_shape, conf.float_dtype, conf.compute_mesh, val.shape)
+    if not conf.use_mGPU or conf.mGPU_scatter is None:
+        return _scatter(ptcl.pmid, ptcl.disp, conf, mesh, val, offset, cell_size)
     return conf.mGPU_scatter(ptcl.pmid, ptcl.disp, conf, mesh, val, cell_size)
 
 
