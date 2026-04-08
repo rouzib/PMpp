@@ -28,7 +28,7 @@ from jax import lax
 from jax import custom_vjp
 from jax.experimental import mesh_utils
 from jax.experimental.custom_partitioning import custom_partitioning
-from jax.sharding import Mesh, PartitionSpec as P, NamedSharding, PositionalSharding
+from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 import jax.tree_util as tree
 import jax.numpy as jnp
 
