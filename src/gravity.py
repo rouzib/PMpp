@@ -7,9 +7,9 @@ from jax.experimental.shard_map import shard_map
 from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .configuration import Configuration
+from .gather import gather, gather_stacked_mesh_halo
 from .potential_correction import apply_potential_correction
 from .scatter import scatter, reduce_grad_across_gpus
-from .gather import gather
 from .utils import AXIS_NAME
 
 
@@ -144,8 +144,17 @@ def _gravity_potential_from_density(dens, omega_m, conf: Configuration, a=None, 
     return apply_potential_correction(pot, a, cosmo, conf, correction, source_real=source_real)
 
 
+def _spectral_gradient_components(pot, conf: Configuration):
+    return jnp.stack([neg_grad(k, pot, conf.cell_size) for k in conf.kvec], axis=0)
+
+
 def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration, a=None, correction=None):
     pot = _gravity_potential_from_density(dens, cosmo.Omega_m, conf, a=a, cosmo=cosmo, correction=correction)
+    if conf.compute_mesh is not None and correction is None and conf.mGPU_irfftn_transposed_batched is not None:
+        spectral_grads = _spectral_gradient_components(pot, conf)
+        grad_meshes = conf.mGPU_irfftn_transposed_batched(spectral_grads).astype(conf.float_dtype)
+        return gather_stacked_mesh_halo(ptcl, conf, jnp.moveaxis(grad_meshes, 0, -1))
+
     grad_meshes = []
     for k in conf.kvec:
         grad = neg_grad(k, pot, conf.cell_size)
@@ -165,6 +174,11 @@ def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration, a=None, correc
 
 def _gravity_mesh_fields_from_density(dens, omega_m, conf: Configuration, a=None, cosmo=None, correction=None):
     pot = _gravity_potential_from_density(dens, omega_m, conf, a=a, cosmo=cosmo, correction=correction)
+
+    if conf.compute_mesh is not None and conf.mGPU_irfftn_transposed_batched is not None:
+        spectral_grads = _spectral_gradient_components(pot, conf)
+        grad_meshes = conf.mGPU_irfftn_transposed_batched(spectral_grads).astype(conf.float_dtype)
+        return tuple(grad_meshes[i] for i in range(grad_meshes.shape[0]))
 
     grad_meshes = []
     for k in conf.kvec:

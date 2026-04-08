@@ -157,8 +157,17 @@ class Particles:
         slice_end = np.asarray(jax.device_get(slice_end), dtype=np.int64)
         halo_start = np.asarray(jax.device_get(runtime.halo_start), dtype=np.int64)
         halo_end = np.asarray(jax.device_get(runtime.halo_end), dtype=np.int64)
+        mesh_shape_host = np.asarray(jax.device_get(conf.mesh_shape), dtype=np.int64)
 
-        x_mod = (pmid_host[:, 0] + disp_host[:, 0] * conf.disp_size) % conf.nMesh
+        # Use float32 arithmetic to match the GPU-side x_mod computation in
+        # _x_mod_from_disp (JAX 32-bit mode). Using float64 here can place
+        # boundary particles on the wrong slab, causing them to be dropped
+        # during the first authoritative extraction in _canonical_authoritative_from_full.
+        # `pmid` is already stored in mesh-grid coordinates because it is
+        # derived from `pos / conf.cell_size`.
+        x_mod = (
+            pmid_host[:, 0].astype(np.float32) + disp_host[:, 0].astype(np.float32) * np.float32(conf.disp_size)
+        ) % np.float32(conf.nMesh)
         capacity = conf.max_ptcl_per_slice
         spatial_ndim = pmid_host.shape[1]
 
@@ -184,6 +193,13 @@ class Particles:
 
             count = min(count, capacity)
             selected = indices[:count]
+            if count:
+                pmid_selected = pmid_host[selected].astype(np.int64, copy=False)
+                keys_selected = (
+                    (pmid_selected[:, 0] % mesh_shape_host[0]) * mesh_shape_host[1]
+                    + (pmid_selected[:, 1] % mesh_shape_host[1])
+                ) * mesh_shape_host[2] + (pmid_selected[:, 2] % mesh_shape_host[2])
+                selected = selected[np.argsort(keys_selected, kind="stable")]
 
             pmid_slice = np.zeros((capacity, spatial_ndim), dtype=pmid_host.dtype)
             disp_slice = np.zeros((capacity, spatial_ndim), dtype=disp_host.dtype)

@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh
 
-from .FFT_distributed import create_ffts
+from .FFT_distributed import create_batched_transposed_real_ffts, create_ffts
 from .gather import initialize_mGPU_gather
 from .halo_moving import (
     initialize_mGPU_compute_halo_mask,
@@ -77,6 +77,7 @@ class MultiGPUConfiguration:
     irfftn: Callable = _uninitialized_runtime_callable
     rfftn_transposed: Callable = _uninitialized_runtime_callable
     irfftn_transposed: Callable = _uninitialized_runtime_callable
+    irfftn_transposed_batched: Callable | None = None
     scatter: Callable = _uninitialized_runtime_callable
     gather: Callable = _uninitialized_runtime_callable
 
@@ -187,11 +188,13 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
 
 def initialize_multigpu_runtime(conf: "Configuration", runtime: MultiGPUConfiguration) -> MultiGPUConfiguration:
     rfftn_jit, irfftn_jit, _, _, rfftn_transposed_jit, irfftn_transposed_jit = create_ffts(runtime.compute_mesh)
+    _, irfftn_transposed_batched_jit = create_batched_transposed_real_ffts(runtime.compute_mesh)
     return runtime.replace(
         rfftn=rfftn_jit,
         irfftn=irfftn_jit,
         rfftn_transposed=rfftn_transposed_jit,
         irfftn_transposed=irfftn_transposed_jit,
+        irfftn_transposed_batched=irfftn_transposed_batched_jit,
         halo_moving=initialize_mGPU_halo_movement_canonical(conf),
         reconstruct_pre_drift=initialize_mGPU_reconstruct_pre_drift(conf),
         reconstruct_pre_drift_pullback=initialize_mGPU_reconstruct_pre_drift_pullback(conf),

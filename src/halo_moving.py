@@ -116,19 +116,39 @@ def _sorted_merge_two(
     count_b = jnp.sum(valid_b)
     total = count_a + count_b
     _capacity_check(total, capacity, error_message)
-    keys_cat = jnp.concatenate((jnp.where(valid_a, keys_a, key_fill), jnp.where(valid_b, keys_b, key_fill)), axis=0)
-    pmid_cat = jnp.concatenate((pmid_a, pmid_b), axis=0)
-    disp_cat = jnp.concatenate((disp_a, disp_b), axis=0)
-    vel_cat = jnp.concatenate((vel_a, vel_b), axis=0)
-    acc_cat = jnp.concatenate((acc_a, acc_b), axis=0)
-    order = jnp.argsort(keys_cat, stable=True)[:capacity]
-    out_keys = keys_cat[order]
-    out_pmid = pmid_cat[order]
-    out_disp = disp_cat[order]
-    out_vel = vel_cat[order]
-    out_acc = acc_cat[order]
+    Na = keys_a.shape[0]
+    Nb = keys_b.shape[0]
+    keys_a_filled = jnp.where(valid_a, keys_a, key_fill)
+    keys_b_filled = jnp.where(valid_b, keys_b, key_fill)
+
+    pos_a = (
+        jnp.arange(Na, dtype=jnp.int32)
+        + jnp.searchsorted(keys_b_filled, keys_a_filled, side='left').astype(jnp.int32)
+    )
+    pos_b = (
+        jnp.arange(Nb, dtype=jnp.int32)
+        + jnp.searchsorted(keys_a_filled, keys_b_filled, side='right').astype(jnp.int32)
+    )
+
+    out_keys = jnp.full(capacity, key_fill, dtype=keys_a.dtype)
+    out_pmid = jnp.zeros((capacity,) + pmid_a.shape[1:], dtype=pmid_a.dtype)
+    out_disp = jnp.zeros((capacity,) + disp_a.shape[1:], dtype=disp_a.dtype)
+    out_vel = jnp.zeros((capacity,) + vel_a.shape[1:], dtype=vel_a.dtype)
+    out_acc = jnp.zeros((capacity,) + acc_a.shape[1:], dtype=acc_a.dtype)
+
+    out_keys = out_keys.at[pos_a].set(keys_a_filled, mode='drop').at[pos_b].set(keys_b_filled, mode='drop')
+    out_pmid = out_pmid.at[pos_a].set(pmid_a, mode='drop').at[pos_b].set(pmid_b, mode='drop')
+    out_disp = out_disp.at[pos_a].set(disp_a, mode='drop').at[pos_b].set(disp_b, mode='drop')
+    out_vel = out_vel.at[pos_a].set(vel_a, mode='drop').at[pos_b].set(vel_b, mode='drop')
+    out_acc = out_acc.at[pos_a].set(acc_a, mode='drop').at[pos_b].set(acc_b, mode='drop')
+
     out_valid = jnp.arange(capacity) < total
     out_keys = jnp.where(out_valid, out_keys, key_fill)
+    valid_shape = (out_valid.shape[0],) + (1,) * (out_pmid.ndim - 1)
+    out_pmid = jnp.where(out_valid.reshape(valid_shape), out_pmid, jnp.zeros_like(out_pmid))
+    out_disp = jnp.where(out_valid.reshape(valid_shape), out_disp, jnp.zeros_like(out_disp))
+    out_vel = jnp.where(out_valid.reshape(valid_shape), out_vel, jnp.zeros_like(out_vel))
+    out_acc = jnp.where(out_valid.reshape(valid_shape), out_acc, jnp.zeros_like(out_acc))
     return out_keys, out_pmid, out_disp, out_vel, out_acc, out_valid
 
 
@@ -233,25 +253,53 @@ def _sorted_merge_three(
     count_c = jnp.sum(valid_c)
     total = count_a + count_b + count_c
     _capacity_check(total, capacity, error_message)
+    Na = keys_a.shape[0]
+    Nb = keys_b.shape[0]
+    Nc = keys_c.shape[0]
+    keys_a_filled = jnp.where(valid_a, keys_a, key_fill)
+    keys_b_filled = jnp.where(valid_b, keys_b, key_fill)
+    keys_c_filled = jnp.where(valid_c, keys_c, key_fill)
 
-    keys_cat = jnp.concatenate((
-        jnp.where(valid_a, keys_a, key_fill),
-        jnp.where(valid_b, keys_b, key_fill),
-        jnp.where(valid_c, keys_c, key_fill),
-    ), axis=0)
-    pmid_cat = jnp.concatenate((pmid_a, pmid_b, pmid_c), axis=0)
-    disp_cat = jnp.concatenate((disp_a, disp_b, disp_c), axis=0)
-    vel_cat = jnp.concatenate((vel_a, vel_b, vel_c), axis=0)
-    acc_cat = jnp.concatenate((acc_a, acc_b, acc_c), axis=0)
+    pos_a = (
+        jnp.arange(Na, dtype=jnp.int32)
+        + jnp.searchsorted(keys_b_filled, keys_a_filled, side='left').astype(jnp.int32)
+        + jnp.searchsorted(keys_c_filled, keys_a_filled, side='left').astype(jnp.int32)
+    )
+    pos_b = (
+        jnp.arange(Nb, dtype=jnp.int32)
+        + jnp.searchsorted(keys_a_filled, keys_b_filled, side='right').astype(jnp.int32)
+        + jnp.searchsorted(keys_c_filled, keys_b_filled, side='left').astype(jnp.int32)
+    )
+    pos_c = (
+        jnp.arange(Nc, dtype=jnp.int32)
+        + jnp.searchsorted(keys_a_filled, keys_c_filled, side='right').astype(jnp.int32)
+        + jnp.searchsorted(keys_b_filled, keys_c_filled, side='right').astype(jnp.int32)
+    )
 
-    order = jnp.argsort(keys_cat, stable=True)[:capacity]
+    out_keys = jnp.full(capacity, key_fill, dtype=keys_a.dtype)
+    out_pmid = jnp.zeros((capacity,) + pmid_a.shape[1:], dtype=pmid_a.dtype)
+    out_disp = jnp.zeros((capacity,) + disp_a.shape[1:], dtype=disp_a.dtype)
+    out_vel = jnp.zeros((capacity,) + vel_a.shape[1:], dtype=vel_a.dtype)
+    out_acc = jnp.zeros((capacity,) + acc_a.shape[1:], dtype=acc_a.dtype)
+
+    out_keys = (
+        out_keys
+        .at[pos_a].set(keys_a_filled, mode='drop')
+        .at[pos_b].set(keys_b_filled, mode='drop')
+        .at[pos_c].set(keys_c_filled, mode='drop')
+    )
+    out_pmid = out_pmid.at[pos_a].set(pmid_a, mode='drop').at[pos_b].set(pmid_b, mode='drop').at[pos_c].set(pmid_c, mode='drop')
+    out_disp = out_disp.at[pos_a].set(disp_a, mode='drop').at[pos_b].set(disp_b, mode='drop').at[pos_c].set(disp_c, mode='drop')
+    out_vel = out_vel.at[pos_a].set(vel_a, mode='drop').at[pos_b].set(vel_b, mode='drop').at[pos_c].set(vel_c, mode='drop')
+    out_acc = out_acc.at[pos_a].set(acc_a, mode='drop').at[pos_b].set(acc_b, mode='drop').at[pos_c].set(acc_c, mode='drop')
+
     out_valid = jnp.arange(capacity) < total
-    out_keys = keys_cat[order]
-    out_pmid = pmid_cat[order]
-    out_disp = disp_cat[order]
-    out_vel = vel_cat[order]
-    out_acc = acc_cat[order]
     out_keys = jnp.where(out_valid, out_keys, key_fill)
+    valid_shape = (out_valid.shape[0],) + (1,) * (out_pmid.ndim - 1)
+    out_pmid = jnp.where(out_valid.reshape(valid_shape), out_pmid, jnp.zeros_like(out_pmid))
+    out_disp = jnp.where(out_valid.reshape(valid_shape), out_disp, jnp.zeros_like(out_disp))
+    out_vel = jnp.where(out_valid.reshape(valid_shape), out_vel, jnp.zeros_like(out_vel))
+    out_acc = jnp.where(out_valid.reshape(valid_shape), out_acc, jnp.zeros_like(out_acc))
     return out_keys, out_pmid, out_disp, out_vel, out_acc, out_valid
 
 
@@ -534,11 +582,22 @@ def _sorted_merge_three_with_provenance(
 
 
 def _ordered_block_take(values, start, count, slots):
-    idx = jnp.clip(slots - start, 0, values.shape[0] - 1)
-    taken = values[idx]
+    idx, mask = _ordered_block_take_plan(start, count, slots, values.shape[0])
+    return mask, _ordered_block_take_from_plan(values, idx, mask)
+
+
+def _ordered_block_take_plan(start, count, slots, value_count):
+    start = start.astype(slots.dtype)
+    count = count.astype(slots.dtype)
+    idx = jnp.clip(slots - start, 0, value_count - 1)
     mask = (slots >= start) & (slots < (start + count))
+    return idx, mask
+
+
+def _ordered_block_take_from_plan(values, idx, mask):
+    taken = values[idx]
     mask_shape = (mask.shape[0],) + (1,) * (values.ndim - 1)
-    return mask, jnp.where(mask.reshape(mask_shape), taken, jnp.zeros_like(taken))
+    return jnp.where(mask.reshape(mask_shape), taken, jnp.zeros_like(taken))
 
 
 def _extract_compact_block(values, start, count, out_size):
@@ -586,17 +645,25 @@ def _route_merge_two_topology(
     incoming_start = jnp.where(incoming_first, zero, count_stay)
     slots = jnp.arange(capacity, dtype=jnp.int32)
 
-    _, stay_keys = _ordered_block_take(keys_stay, stay_start, count_stay, slots)
-    _, stay_pmid = _ordered_block_take(pmid_stay, stay_start, count_stay, slots)
-    _, stay_disp = _ordered_block_take(disp_stay, stay_start, count_stay, slots)
-    _, stay_vel = _ordered_block_take(vel_stay, stay_start, count_stay, slots)
-    _, stay_acc = _ordered_block_take(acc_stay, stay_start, count_stay, slots)
+    stay_idx, stay_mask = _ordered_block_take_plan(stay_start, count_stay, slots, keys_stay.shape[0])
+    incoming_idx, incoming_mask = _ordered_block_take_plan(
+        incoming_start,
+        count_incoming,
+        slots,
+        keys_incoming.shape[0],
+    )
 
-    _, incoming_keys = _ordered_block_take(keys_incoming, incoming_start, count_incoming, slots)
-    _, incoming_pmid = _ordered_block_take(pmid_incoming, incoming_start, count_incoming, slots)
-    _, incoming_disp = _ordered_block_take(disp_incoming, incoming_start, count_incoming, slots)
-    _, incoming_vel = _ordered_block_take(vel_incoming, incoming_start, count_incoming, slots)
-    _, incoming_acc = _ordered_block_take(acc_incoming, incoming_start, count_incoming, slots)
+    stay_keys = _ordered_block_take_from_plan(keys_stay, stay_idx, stay_mask)
+    stay_pmid = _ordered_block_take_from_plan(pmid_stay, stay_idx, stay_mask)
+    stay_disp = _ordered_block_take_from_plan(disp_stay, stay_idx, stay_mask)
+    stay_vel = _ordered_block_take_from_plan(vel_stay, stay_idx, stay_mask)
+    stay_acc = _ordered_block_take_from_plan(acc_stay, stay_idx, stay_mask)
+
+    incoming_keys = _ordered_block_take_from_plan(keys_incoming, incoming_idx, incoming_mask)
+    incoming_pmid = _ordered_block_take_from_plan(pmid_incoming, incoming_idx, incoming_mask)
+    incoming_disp = _ordered_block_take_from_plan(disp_incoming, incoming_idx, incoming_mask)
+    incoming_vel = _ordered_block_take_from_plan(vel_incoming, incoming_idx, incoming_mask)
+    incoming_acc = _ordered_block_take_from_plan(acc_incoming, incoming_idx, incoming_mask)
 
     out_valid = slots < total
     out_keys = stay_keys + incoming_keys
@@ -638,17 +705,25 @@ def _route_merge_two_topology_with_blocks(
     incoming_start = jnp.where(incoming_first, zero, count_stay)
     slots = jnp.arange(capacity, dtype=jnp.int32)
 
-    _, stay_keys = _ordered_block_take(keys_stay, stay_start, count_stay, slots)
-    _, stay_pmid = _ordered_block_take(pmid_stay, stay_start, count_stay, slots)
-    _, stay_disp = _ordered_block_take(disp_stay, stay_start, count_stay, slots)
-    _, stay_vel = _ordered_block_take(vel_stay, stay_start, count_stay, slots)
-    _, stay_acc = _ordered_block_take(acc_stay, stay_start, count_stay, slots)
+    stay_idx, stay_mask = _ordered_block_take_plan(stay_start, count_stay, slots, keys_stay.shape[0])
+    incoming_idx, incoming_mask = _ordered_block_take_plan(
+        incoming_start,
+        count_incoming,
+        slots,
+        keys_incoming.shape[0],
+    )
 
-    _, incoming_keys = _ordered_block_take(keys_incoming, incoming_start, count_incoming, slots)
-    _, incoming_pmid = _ordered_block_take(pmid_incoming, incoming_start, count_incoming, slots)
-    _, incoming_disp = _ordered_block_take(disp_incoming, incoming_start, count_incoming, slots)
-    _, incoming_vel = _ordered_block_take(vel_incoming, incoming_start, count_incoming, slots)
-    _, incoming_acc = _ordered_block_take(acc_incoming, incoming_start, count_incoming, slots)
+    stay_keys = _ordered_block_take_from_plan(keys_stay, stay_idx, stay_mask)
+    stay_pmid = _ordered_block_take_from_plan(pmid_stay, stay_idx, stay_mask)
+    stay_disp = _ordered_block_take_from_plan(disp_stay, stay_idx, stay_mask)
+    stay_vel = _ordered_block_take_from_plan(vel_stay, stay_idx, stay_mask)
+    stay_acc = _ordered_block_take_from_plan(acc_stay, stay_idx, stay_mask)
+
+    incoming_keys = _ordered_block_take_from_plan(keys_incoming, incoming_idx, incoming_mask)
+    incoming_pmid = _ordered_block_take_from_plan(pmid_incoming, incoming_idx, incoming_mask)
+    incoming_disp = _ordered_block_take_from_plan(disp_incoming, incoming_idx, incoming_mask)
+    incoming_vel = _ordered_block_take_from_plan(vel_incoming, incoming_idx, incoming_mask)
+    incoming_acc = _ordered_block_take_from_plan(acc_incoming, incoming_idx, incoming_mask)
 
     out_valid = slots < total
     out_keys = stay_keys + incoming_keys
@@ -704,19 +779,25 @@ def _route_merge_two_topology_with_source_tags(
     incoming_start = jnp.where(incoming_first, zero, count_stay)
     slots = jnp.arange(capacity, dtype=jnp.int32)
 
-    _, stay_keys = _ordered_block_take(keys_stay, stay_start, count_stay, slots)
-    _, stay_pmid = _ordered_block_take(pmid_stay, stay_start, count_stay, slots)
-    _, stay_disp = _ordered_block_take(disp_stay, stay_start, count_stay, slots)
-    _, stay_vel = _ordered_block_take(vel_stay, stay_start, count_stay, slots)
-    _, stay_acc = _ordered_block_take(acc_stay, stay_start, count_stay, slots)
-
-    incoming_mask, incoming_keys = _ordered_block_take(
-        keys_incoming, incoming_start, count_incoming, slots
+    stay_idx, stay_mask = _ordered_block_take_plan(stay_start, count_stay, slots, keys_stay.shape[0])
+    incoming_idx, incoming_mask = _ordered_block_take_plan(
+        incoming_start,
+        count_incoming,
+        slots,
+        keys_incoming.shape[0],
     )
-    _, incoming_pmid = _ordered_block_take(pmid_incoming, incoming_start, count_incoming, slots)
-    _, incoming_disp = _ordered_block_take(disp_incoming, incoming_start, count_incoming, slots)
-    _, incoming_vel = _ordered_block_take(vel_incoming, incoming_start, count_incoming, slots)
-    _, incoming_acc = _ordered_block_take(acc_incoming, incoming_start, count_incoming, slots)
+
+    stay_keys = _ordered_block_take_from_plan(keys_stay, stay_idx, stay_mask)
+    stay_pmid = _ordered_block_take_from_plan(pmid_stay, stay_idx, stay_mask)
+    stay_disp = _ordered_block_take_from_plan(disp_stay, stay_idx, stay_mask)
+    stay_vel = _ordered_block_take_from_plan(vel_stay, stay_idx, stay_mask)
+    stay_acc = _ordered_block_take_from_plan(acc_stay, stay_idx, stay_mask)
+
+    incoming_keys = _ordered_block_take_from_plan(keys_incoming, incoming_idx, incoming_mask)
+    incoming_pmid = _ordered_block_take_from_plan(pmid_incoming, incoming_idx, incoming_mask)
+    incoming_disp = _ordered_block_take_from_plan(disp_incoming, incoming_idx, incoming_mask)
+    incoming_vel = _ordered_block_take_from_plan(vel_incoming, incoming_idx, incoming_mask)
+    incoming_acc = _ordered_block_take_from_plan(acc_incoming, incoming_idx, incoming_mask)
 
     out_valid = slots < total
     out_keys = stay_keys + incoming_keys
@@ -761,23 +842,34 @@ def _route_merge_two_topology_with_provenance(
     incoming_start = jnp.where(incoming_first, zero, count_stay)
     slots = jnp.arange(capacity, dtype=jnp.int32)
 
-    stay_mask, stay_keys = _ordered_block_take(keys_stay, stay_start, count_stay, slots)
-    _, stay_pmid = _ordered_block_take(pmid_stay, stay_start, count_stay, slots)
-    _, stay_disp = _ordered_block_take(disp_stay, stay_start, count_stay, slots)
-    _, stay_vel = _ordered_block_take(vel_stay, stay_start, count_stay, slots)
-    _, stay_acc = _ordered_block_take(acc_stay, stay_start, count_stay, slots)
-    _, stay_src_idx = _ordered_block_take(jnp.arange(keys_stay.shape[0], dtype=jnp.int32), stay_start, count_stay, slots)
-
-    incoming_mask, incoming_keys = _ordered_block_take(keys_incoming, incoming_start, count_incoming, slots)
-    _, incoming_pmid = _ordered_block_take(pmid_incoming, incoming_start, count_incoming, slots)
-    _, incoming_disp = _ordered_block_take(disp_incoming, incoming_start, count_incoming, slots)
-    _, incoming_vel = _ordered_block_take(vel_incoming, incoming_start, count_incoming, slots)
-    _, incoming_acc = _ordered_block_take(acc_incoming, incoming_start, count_incoming, slots)
-    _, incoming_src_idx = _ordered_block_take(
-        jnp.arange(keys_incoming.shape[0], dtype=jnp.int32),
+    stay_idx, stay_mask = _ordered_block_take_plan(stay_start, count_stay, slots, keys_stay.shape[0])
+    incoming_idx, incoming_mask = _ordered_block_take_plan(
         incoming_start,
         count_incoming,
         slots,
+        keys_incoming.shape[0],
+    )
+
+    stay_keys = _ordered_block_take_from_plan(keys_stay, stay_idx, stay_mask)
+    stay_pmid = _ordered_block_take_from_plan(pmid_stay, stay_idx, stay_mask)
+    stay_disp = _ordered_block_take_from_plan(disp_stay, stay_idx, stay_mask)
+    stay_vel = _ordered_block_take_from_plan(vel_stay, stay_idx, stay_mask)
+    stay_acc = _ordered_block_take_from_plan(acc_stay, stay_idx, stay_mask)
+    stay_src_idx = _ordered_block_take_from_plan(
+        jnp.arange(keys_stay.shape[0], dtype=jnp.int32),
+        stay_idx,
+        stay_mask,
+    )
+
+    incoming_keys = _ordered_block_take_from_plan(keys_incoming, incoming_idx, incoming_mask)
+    incoming_pmid = _ordered_block_take_from_plan(pmid_incoming, incoming_idx, incoming_mask)
+    incoming_disp = _ordered_block_take_from_plan(disp_incoming, incoming_idx, incoming_mask)
+    incoming_vel = _ordered_block_take_from_plan(vel_incoming, incoming_idx, incoming_mask)
+    incoming_acc = _ordered_block_take_from_plan(acc_incoming, incoming_idx, incoming_mask)
+    incoming_src_idx = _ordered_block_take_from_plan(
+        jnp.arange(keys_incoming.shape[0], dtype=jnp.int32),
+        incoming_idx,
+        incoming_mask,
     )
 
     out_valid = slots < total
@@ -855,23 +947,27 @@ def _route_merge_three_topology(
     )
     slots = jnp.arange(capacity, dtype=jnp.int32)
 
-    _, stay_keys = _ordered_block_take(keys_stay, stay_start, count_stay, slots)
-    _, stay_pmid = _ordered_block_take(pmid_stay, stay_start, count_stay, slots)
-    _, stay_disp = _ordered_block_take(disp_stay, stay_start, count_stay, slots)
-    _, stay_vel = _ordered_block_take(vel_stay, stay_start, count_stay, slots)
-    _, stay_acc = _ordered_block_take(acc_stay, stay_start, count_stay, slots)
+    stay_idx, stay_mask = _ordered_block_take_plan(stay_start, count_stay, slots, keys_stay.shape[0])
+    left_idx, left_mask = _ordered_block_take_plan(left_start, count_left, slots, keys_left.shape[0])
+    right_idx, right_mask = _ordered_block_take_plan(right_start, count_right, slots, keys_right.shape[0])
 
-    _, left_keys = _ordered_block_take(keys_left, left_start, count_left, slots)
-    _, left_pmid = _ordered_block_take(pmid_left, left_start, count_left, slots)
-    _, left_disp = _ordered_block_take(disp_left, left_start, count_left, slots)
-    _, left_vel = _ordered_block_take(vel_left, left_start, count_left, slots)
-    _, left_acc = _ordered_block_take(acc_left, left_start, count_left, slots)
+    stay_keys = _ordered_block_take_from_plan(keys_stay, stay_idx, stay_mask)
+    stay_pmid = _ordered_block_take_from_plan(pmid_stay, stay_idx, stay_mask)
+    stay_disp = _ordered_block_take_from_plan(disp_stay, stay_idx, stay_mask)
+    stay_vel = _ordered_block_take_from_plan(vel_stay, stay_idx, stay_mask)
+    stay_acc = _ordered_block_take_from_plan(acc_stay, stay_idx, stay_mask)
 
-    _, right_keys = _ordered_block_take(keys_right, right_start, count_right, slots)
-    _, right_pmid = _ordered_block_take(pmid_right, right_start, count_right, slots)
-    _, right_disp = _ordered_block_take(disp_right, right_start, count_right, slots)
-    _, right_vel = _ordered_block_take(vel_right, right_start, count_right, slots)
-    _, right_acc = _ordered_block_take(acc_right, right_start, count_right, slots)
+    left_keys = _ordered_block_take_from_plan(keys_left, left_idx, left_mask)
+    left_pmid = _ordered_block_take_from_plan(pmid_left, left_idx, left_mask)
+    left_disp = _ordered_block_take_from_plan(disp_left, left_idx, left_mask)
+    left_vel = _ordered_block_take_from_plan(vel_left, left_idx, left_mask)
+    left_acc = _ordered_block_take_from_plan(acc_left, left_idx, left_mask)
+
+    right_keys = _ordered_block_take_from_plan(keys_right, right_idx, right_mask)
+    right_pmid = _ordered_block_take_from_plan(pmid_right, right_idx, right_mask)
+    right_disp = _ordered_block_take_from_plan(disp_right, right_idx, right_mask)
+    right_vel = _ordered_block_take_from_plan(vel_right, right_idx, right_mask)
+    right_acc = _ordered_block_take_from_plan(acc_right, right_idx, right_mask)
 
     out_valid = slots < total
     out_keys = stay_keys + left_keys + right_keys
@@ -935,23 +1031,27 @@ def _route_merge_three_topology_with_blocks(
     )
     slots = jnp.arange(capacity, dtype=jnp.int32)
 
-    _, stay_keys = _ordered_block_take(keys_stay, stay_start, count_stay, slots)
-    _, stay_pmid = _ordered_block_take(pmid_stay, stay_start, count_stay, slots)
-    _, stay_disp = _ordered_block_take(disp_stay, stay_start, count_stay, slots)
-    _, stay_vel = _ordered_block_take(vel_stay, stay_start, count_stay, slots)
-    _, stay_acc = _ordered_block_take(acc_stay, stay_start, count_stay, slots)
+    stay_idx, stay_mask = _ordered_block_take_plan(stay_start, count_stay, slots, keys_stay.shape[0])
+    left_idx, left_mask = _ordered_block_take_plan(left_start, count_left, slots, keys_left.shape[0])
+    right_idx, right_mask = _ordered_block_take_plan(right_start, count_right, slots, keys_right.shape[0])
 
-    _, left_keys = _ordered_block_take(keys_left, left_start, count_left, slots)
-    _, left_pmid = _ordered_block_take(pmid_left, left_start, count_left, slots)
-    _, left_disp = _ordered_block_take(disp_left, left_start, count_left, slots)
-    _, left_vel = _ordered_block_take(vel_left, left_start, count_left, slots)
-    _, left_acc = _ordered_block_take(acc_left, left_start, count_left, slots)
+    stay_keys = _ordered_block_take_from_plan(keys_stay, stay_idx, stay_mask)
+    stay_pmid = _ordered_block_take_from_plan(pmid_stay, stay_idx, stay_mask)
+    stay_disp = _ordered_block_take_from_plan(disp_stay, stay_idx, stay_mask)
+    stay_vel = _ordered_block_take_from_plan(vel_stay, stay_idx, stay_mask)
+    stay_acc = _ordered_block_take_from_plan(acc_stay, stay_idx, stay_mask)
 
-    _, right_keys = _ordered_block_take(keys_right, right_start, count_right, slots)
-    _, right_pmid = _ordered_block_take(pmid_right, right_start, count_right, slots)
-    _, right_disp = _ordered_block_take(disp_right, right_start, count_right, slots)
-    _, right_vel = _ordered_block_take(vel_right, right_start, count_right, slots)
-    _, right_acc = _ordered_block_take(acc_right, right_start, count_right, slots)
+    left_keys = _ordered_block_take_from_plan(keys_left, left_idx, left_mask)
+    left_pmid = _ordered_block_take_from_plan(pmid_left, left_idx, left_mask)
+    left_disp = _ordered_block_take_from_plan(disp_left, left_idx, left_mask)
+    left_vel = _ordered_block_take_from_plan(vel_left, left_idx, left_mask)
+    left_acc = _ordered_block_take_from_plan(acc_left, left_idx, left_mask)
+
+    right_keys = _ordered_block_take_from_plan(keys_right, right_idx, right_mask)
+    right_pmid = _ordered_block_take_from_plan(pmid_right, right_idx, right_mask)
+    right_disp = _ordered_block_take_from_plan(disp_right, right_idx, right_mask)
+    right_vel = _ordered_block_take_from_plan(vel_right, right_idx, right_mask)
+    right_acc = _ordered_block_take_from_plan(acc_right, right_idx, right_mask)
 
     out_valid = slots < total
     out_keys = stay_keys + left_keys + right_keys
@@ -1028,23 +1128,27 @@ def _route_merge_three_topology_with_source_tags(
     )
     slots = jnp.arange(capacity, dtype=jnp.int32)
 
-    _, stay_keys = _ordered_block_take(keys_stay, stay_start, count_stay, slots)
-    _, stay_pmid = _ordered_block_take(pmid_stay, stay_start, count_stay, slots)
-    _, stay_disp = _ordered_block_take(disp_stay, stay_start, count_stay, slots)
-    _, stay_vel = _ordered_block_take(vel_stay, stay_start, count_stay, slots)
-    _, stay_acc = _ordered_block_take(acc_stay, stay_start, count_stay, slots)
+    stay_idx, stay_mask = _ordered_block_take_plan(stay_start, count_stay, slots, keys_stay.shape[0])
+    left_idx, left_mask = _ordered_block_take_plan(left_start, count_left, slots, keys_left.shape[0])
+    right_idx, right_mask = _ordered_block_take_plan(right_start, count_right, slots, keys_right.shape[0])
 
-    left_mask, left_keys = _ordered_block_take(keys_left, left_start, count_left, slots)
-    _, left_pmid = _ordered_block_take(pmid_left, left_start, count_left, slots)
-    _, left_disp = _ordered_block_take(disp_left, left_start, count_left, slots)
-    _, left_vel = _ordered_block_take(vel_left, left_start, count_left, slots)
-    _, left_acc = _ordered_block_take(acc_left, left_start, count_left, slots)
+    stay_keys = _ordered_block_take_from_plan(keys_stay, stay_idx, stay_mask)
+    stay_pmid = _ordered_block_take_from_plan(pmid_stay, stay_idx, stay_mask)
+    stay_disp = _ordered_block_take_from_plan(disp_stay, stay_idx, stay_mask)
+    stay_vel = _ordered_block_take_from_plan(vel_stay, stay_idx, stay_mask)
+    stay_acc = _ordered_block_take_from_plan(acc_stay, stay_idx, stay_mask)
 
-    right_mask, right_keys = _ordered_block_take(keys_right, right_start, count_right, slots)
-    _, right_pmid = _ordered_block_take(pmid_right, right_start, count_right, slots)
-    _, right_disp = _ordered_block_take(disp_right, right_start, count_right, slots)
-    _, right_vel = _ordered_block_take(vel_right, right_start, count_right, slots)
-    _, right_acc = _ordered_block_take(acc_right, right_start, count_right, slots)
+    left_keys = _ordered_block_take_from_plan(keys_left, left_idx, left_mask)
+    left_pmid = _ordered_block_take_from_plan(pmid_left, left_idx, left_mask)
+    left_disp = _ordered_block_take_from_plan(disp_left, left_idx, left_mask)
+    left_vel = _ordered_block_take_from_plan(vel_left, left_idx, left_mask)
+    left_acc = _ordered_block_take_from_plan(acc_left, left_idx, left_mask)
+
+    right_keys = _ordered_block_take_from_plan(keys_right, right_idx, right_mask)
+    right_pmid = _ordered_block_take_from_plan(pmid_right, right_idx, right_mask)
+    right_disp = _ordered_block_take_from_plan(disp_right, right_idx, right_mask)
+    right_vel = _ordered_block_take_from_plan(vel_right, right_idx, right_mask)
+    right_acc = _ordered_block_take_from_plan(acc_right, right_idx, right_mask)
 
     out_valid = slots < total
     out_keys = stay_keys + left_keys + right_keys
@@ -1110,26 +1214,42 @@ def _route_merge_three_topology_with_provenance(
     )
     slots = jnp.arange(capacity, dtype=jnp.int32)
 
-    stay_mask, stay_keys = _ordered_block_take(keys_stay, stay_start, count_stay, slots)
-    _, stay_pmid = _ordered_block_take(pmid_stay, stay_start, count_stay, slots)
-    _, stay_disp = _ordered_block_take(disp_stay, stay_start, count_stay, slots)
-    _, stay_vel = _ordered_block_take(vel_stay, stay_start, count_stay, slots)
-    _, stay_acc = _ordered_block_take(acc_stay, stay_start, count_stay, slots)
-    _, stay_src_idx = _ordered_block_take(jnp.arange(keys_stay.shape[0], dtype=jnp.int32), stay_start, count_stay, slots)
+    stay_idx, stay_mask = _ordered_block_take_plan(stay_start, count_stay, slots, keys_stay.shape[0])
+    left_idx, left_mask = _ordered_block_take_plan(left_start, count_left, slots, keys_left.shape[0])
+    right_idx, right_mask = _ordered_block_take_plan(right_start, count_right, slots, keys_right.shape[0])
 
-    left_mask, left_keys = _ordered_block_take(keys_left, left_start, count_left, slots)
-    _, left_pmid = _ordered_block_take(pmid_left, left_start, count_left, slots)
-    _, left_disp = _ordered_block_take(disp_left, left_start, count_left, slots)
-    _, left_vel = _ordered_block_take(vel_left, left_start, count_left, slots)
-    _, left_acc = _ordered_block_take(acc_left, left_start, count_left, slots)
-    _, left_src_idx = _ordered_block_take(jnp.arange(keys_left.shape[0], dtype=jnp.int32), left_start, count_left, slots)
+    stay_keys = _ordered_block_take_from_plan(keys_stay, stay_idx, stay_mask)
+    stay_pmid = _ordered_block_take_from_plan(pmid_stay, stay_idx, stay_mask)
+    stay_disp = _ordered_block_take_from_plan(disp_stay, stay_idx, stay_mask)
+    stay_vel = _ordered_block_take_from_plan(vel_stay, stay_idx, stay_mask)
+    stay_acc = _ordered_block_take_from_plan(acc_stay, stay_idx, stay_mask)
+    stay_src_idx = _ordered_block_take_from_plan(
+        jnp.arange(keys_stay.shape[0], dtype=jnp.int32),
+        stay_idx,
+        stay_mask,
+    )
 
-    right_mask, right_keys = _ordered_block_take(keys_right, right_start, count_right, slots)
-    _, right_pmid = _ordered_block_take(pmid_right, right_start, count_right, slots)
-    _, right_disp = _ordered_block_take(disp_right, right_start, count_right, slots)
-    _, right_vel = _ordered_block_take(vel_right, right_start, count_right, slots)
-    _, right_acc = _ordered_block_take(acc_right, right_start, count_right, slots)
-    _, right_src_idx = _ordered_block_take(jnp.arange(keys_right.shape[0], dtype=jnp.int32), right_start, count_right, slots)
+    left_keys = _ordered_block_take_from_plan(keys_left, left_idx, left_mask)
+    left_pmid = _ordered_block_take_from_plan(pmid_left, left_idx, left_mask)
+    left_disp = _ordered_block_take_from_plan(disp_left, left_idx, left_mask)
+    left_vel = _ordered_block_take_from_plan(vel_left, left_idx, left_mask)
+    left_acc = _ordered_block_take_from_plan(acc_left, left_idx, left_mask)
+    left_src_idx = _ordered_block_take_from_plan(
+        jnp.arange(keys_left.shape[0], dtype=jnp.int32),
+        left_idx,
+        left_mask,
+    )
+
+    right_keys = _ordered_block_take_from_plan(keys_right, right_idx, right_mask)
+    right_pmid = _ordered_block_take_from_plan(pmid_right, right_idx, right_mask)
+    right_disp = _ordered_block_take_from_plan(disp_right, right_idx, right_mask)
+    right_vel = _ordered_block_take_from_plan(vel_right, right_idx, right_mask)
+    right_acc = _ordered_block_take_from_plan(acc_right, right_idx, right_mask)
+    right_src_idx = _ordered_block_take_from_plan(
+        jnp.arange(keys_right.shape[0], dtype=jnp.int32),
+        right_idx,
+        right_mask,
+    )
 
     out_valid = slots < total
     out_keys = stay_keys + left_keys + right_keys
@@ -1423,7 +1543,6 @@ def _canonical_route_authoritative_with_aux(
         send_right_mask = jnp.zeros_like(send_right_mask)
 
     key_fill = _key_fill_value(conf)
-
     # Use _compact_sorted_particles_with_slots to get both the compacted particles
     # and their original positions (slots) in a single pass, eliminating the
     # duplicate jnp.compress calls that were previously needed for stay_pos / send_left_pos.

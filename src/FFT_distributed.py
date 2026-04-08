@@ -179,6 +179,137 @@ def _irfftn_second_pass(x):
     return jnp.fft.irfftn(x, axes=[1, 2])
 
 
+def _batched_fftn_first_pass(x):
+    """Perform the batched FFT along the distributed x-axis."""
+    return jnp.fft.fft(x, axis=1)
+
+
+def _batched_rfftn_second_pass(x):
+    """Perform the batched real FFT on the local y/z planes."""
+    return jnp.fft.rfftn(x, axes=[2, 3])
+
+
+def _batched_ifftn_first_pass(x):
+    """Perform the batched inverse FFT along the distributed x-axis."""
+    return jnp.fft.ifft(x, axis=1)
+
+
+def _batched_irfftn_second_pass(x):
+    """Perform the batched real inverse FFT on the local y/z planes."""
+    return jnp.fft.irfftn(x, axes=[2, 3])
+
+
+def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable]:
+    """Create batched real FFT helpers for the transposed spectral layout.
+
+    The leading axis is treated as a pure batch dimension and remains replicated.
+    """
+    if compute_mesh.size == 1:
+        _batched_rfftn_transposed_jit = jax.jit(lambda x: _batched_fftn_first_pass(_batched_rfftn_second_pass(x)))
+        _batched_irfftn_transposed_jit = jax.jit(lambda x: _batched_irfftn_second_pass(_batched_ifftn_first_pass(x)))
+
+        @custom_vjp
+        def batched_irfftn_transposed(x):
+            return _batched_irfftn_transposed_jit(x)
+
+        def batched_irfftn_transposed_fwd(x):
+            return _batched_irfftn_transposed_jit(x), x.shape
+
+        def batched_irfftn_transposed_bwd(res, g):
+            real_shape = g.shape
+            g = _batched_rfftn_transposed_jit(g).conj()
+            n = g.shape[-1]
+            is_even = (real_shape[-1] % 2 == 0)
+
+            mask = jnp.ones((n,), dtype=g.real.dtype)
+            if n > 1:
+                mask = mask.at[1:].set(2.0)
+                if is_even:
+                    mask = mask.at[n - 1].set(1.0)
+
+            scale = jnp.asarray(1 / np.prod(real_shape[1:]), dtype=g.real.dtype)
+            out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
+            return (out,)
+
+        batched_irfftn_transposed.defvjp(
+            batched_irfftn_transposed_fwd,
+            batched_irfftn_transposed_bwd,
+        )
+        return _batched_rfftn_transposed_jit, batched_irfftn_transposed
+
+    batched_fftn_first_pass = create_sharded_fft(
+        _batched_fftn_first_pass,
+        P(None, None, "gpus", None),
+        compute_mesh,
+    )
+    batched_rfftn_second_pass = create_sharded_fft(
+        _batched_rfftn_second_pass,
+        P(None, "gpus", None, None),
+        compute_mesh,
+    )
+    batched_ifftn_first_pass = create_sharded_fft(
+        _batched_ifftn_first_pass,
+        P(None, None, "gpus", None),
+        compute_mesh,
+    )
+    batched_irfftn_second_pass = create_sharded_fft(
+        _batched_irfftn_second_pass,
+        P(None, "gpus", None, None),
+        compute_mesh,
+    )
+
+    def _batched_rfftn_transposed(x):
+        x = batched_rfftn_second_pass(x)
+        x = batched_fftn_first_pass(x)
+        return x
+
+    def _batched_irfftn_transposed(x):
+        x = batched_ifftn_first_pass(x)
+        x = batched_irfftn_second_pass(x)
+        return x
+
+    _batched_rfftn_transposed_jit = jax.jit(
+        _batched_rfftn_transposed,
+        in_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None, None))),
+        out_shardings=(NamedSharding(compute_mesh, P(None, None, "gpus", None))),
+    )
+    _batched_irfftn_transposed_jit = jax.jit(
+        _batched_irfftn_transposed,
+        in_shardings=(NamedSharding(compute_mesh, P(None, None, "gpus", None))),
+        out_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None, None))),
+    )
+
+    @custom_vjp
+    def batched_irfftn_transposed(x):
+        return _batched_irfftn_transposed_jit(x)
+
+    def batched_irfftn_transposed_fwd(x):
+        return _batched_irfftn_transposed_jit(x), x.shape
+
+    def batched_irfftn_transposed_bwd(res, g):
+        real_shape = g.shape
+        g = _batched_rfftn_transposed_jit(g).conj()
+        n = g.shape[-1]
+        is_even = (real_shape[-1] % 2 == 0)
+
+        mask = jnp.ones((n,), dtype=g.real.dtype)
+        if n > 1:
+            mask = mask.at[1:].set(2.0)
+            if is_even:
+                mask = mask.at[n - 1].set(1.0)
+
+        scale = jnp.asarray(1 / np.prod(real_shape[1:]), dtype=g.real.dtype)
+        out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
+        return (out,)
+
+    batched_irfftn_transposed.defvjp(
+        batched_irfftn_transposed_fwd,
+        batched_irfftn_transposed_bwd,
+    )
+
+    return _batched_rfftn_transposed_jit, batched_irfftn_transposed
+
+
 def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Callable, Callable, Callable]:
     """
     Create a set of Fourrier Transform functions that distribute computation across a provided compute mesh (a logical

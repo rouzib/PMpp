@@ -17,7 +17,12 @@ try:
 except ImportError:
     optax = None
 
-from .mesh_halo import exchange_owned_mesh_halo_edges, extend_owned_mesh_from_halo_edges
+from .mesh_halo import (
+    exchange_owned_mesh_halo_edges,
+    extend_owned_mesh_from_halo_edges,
+    maybe_shard_map_mesh_local_op,
+    owned_mesh_partition_spec,
+)
 from .utils import is_float0_array, pytree_dataclass
 
 
@@ -83,21 +88,25 @@ class NeuralSplineFourierFilter(_HaikuModuleBase):
         return _deBoorVectorized(jnp.clip(x / jnp.sqrt(3.0), 0.0, 1.0 - 1e-4), ak, w, 3)
 
 
-class MeshResidualSourceCorrection(_HaikuModuleBase):
-    """Small periodic 3D CNN that predicts a residual source field."""
+class MeshResidualPotentialCorrection(_HaikuModuleBase):
+    """Small periodic 3D CNN that predicts a residual real-space potential field."""
 
-    def __init__(self, channels=8, depth=4, max_residual=0.1, name=None):
+    def __init__(self, channels=8, depth=4, max_residual=0.1, output_init_scale=1e-2, name=None):
         _require_haiku("mesh CNN potential corrections")
         super().__init__(name=name)
         self.channels = channels
         self.depth = depth
         self.max_residual = max_residual
+        self.output_init_scale = output_init_scale
 
-    def __call__(self, source, a, cosmo, conf):
+    def __call__(self, source, potential_real, a, cosmo, conf):
         dtype = source.dtype
         source_scale = jnp.sqrt(jnp.mean(source ** 2) + jnp.asarray(1e-6, dtype=dtype))
         source_norm = source / source_scale
-        features = _mesh_conditioning_channels(source_norm, a, cosmo, dtype)
+        potential_scale = jnp.sqrt(jnp.mean(potential_real ** 2) + jnp.asarray(1e-6, dtype=dtype))
+        potential_norm = potential_real / potential_scale
+        features = _mesh_conditioning_channels(source_norm, potential_norm, a, cosmo, dtype)
+        conditioning = _mesh_conditioning_vector(a, cosmo, dtype)
         x = jnp.concatenate(features, axis=-1)
 
         x = jax.nn.gelu(_periodic_conv3d(x, self.channels, conf, kernel_shape=3, name="stem"))
@@ -118,7 +127,19 @@ class MeshResidualSourceCorrection(_HaikuModuleBase):
             w_init=hk.initializers.Constant(0.0),
             b_init=hk.initializers.Constant(0.0),
         )
-        return self.max_residual * jnp.tanh(out[..., 0]) * source_scale
+        conv_residual = self.max_residual * jnp.tanh(out[..., 0]) * potential_scale
+        direct_gain = self.max_residual * jnp.tanh(
+            hk.Linear(
+                1,
+                name="direct_gain",
+                w_init=hk.initializers.RandomNormal(stddev=self.output_init_scale),
+                b_init=hk.initializers.Constant(0.0),
+            )(conditioning)[0]
+        )
+        # A potential-proportional residual is equivalent to a global transfer in
+        # Fourier space, so this gives the CNN the same smooth initialization bias
+        # as the spline correction before it learns spatial structure.
+        return direct_gain * potential_real + conv_residual
 
 
 @lru_cache(maxsize=None)
@@ -134,15 +155,16 @@ def _radial_transform(n_knots, latent_size):
     )
 
 
-def _mesh_cnn_transform(conf, channels, depth, max_residual):
+def _mesh_cnn_transform(conf, channels, depth, max_residual, output_init_scale):
     _require_haiku("mesh CNN potential corrections")
     return hk.without_apply_rng(
         hk.transform(
-            lambda source, a, c: MeshResidualSourceCorrection(
+            lambda source, potential_real, a, c: MeshResidualPotentialCorrection(
                 channels=channels,
                 depth=depth,
                 max_residual=max_residual,
-            )(source, a, c, conf)
+                output_init_scale=output_init_scale,
+            )(source, potential_real, a, c, conf)
         )
     )
 
@@ -210,7 +232,7 @@ def _correction_cosmo_features(correction, cosmo, dtype):
     return _cosmo_features(cosmo, dtype, allow_missing_sigma8=allow_missing_sigma8)
 
 
-def _mesh_conditioning_channels(source, a, cosmo, dtype):
+def _mesh_conditioning_channels(source, potential_real, a, cosmo, dtype):
     spatial_shape = source.shape + (1,)
     a_channel = jnp.broadcast_to(jnp.asarray(a, dtype=dtype), spatial_shape)
     cosmo_features = _cosmo_features(cosmo, dtype)
@@ -218,7 +240,16 @@ def _mesh_conditioning_channels(source, a, cosmo, dtype):
         jnp.broadcast_to(jnp.asarray(value, dtype=dtype), spatial_shape)
         for value in cosmo_features
     ]
-    return [source[..., None], a_channel, *cosmo_channels]
+    return [source[..., None], potential_real[..., None], a_channel, *cosmo_channels]
+
+
+def _mesh_conditioning_vector(a, cosmo, dtype):
+    return jnp.concatenate(
+        [
+            jnp.asarray([a], dtype=dtype),
+            _cosmo_features(cosmo, dtype),
+        ]
+    )
 
 
 def _periodic_pad_mesh_channels(x, halo_width, conf):
@@ -281,7 +312,7 @@ class RadialPotentialCorrection:
 
 @partial(
     pytree_dataclass,
-    aux_fields=("channels", "depth", "max_residual", "allow_missing_sigma8", "sigma8_value", "dtype"),
+    aux_fields=("channels", "depth", "max_residual", "output_init_scale", "allow_missing_sigma8", "sigma8_value", "dtype"),
     frozen=True,
     eq=False,
 )
@@ -290,6 +321,7 @@ class MeshCNNPotentialCorrection:
     channels: int = 8
     depth: int = 4
     max_residual: float = 0.1
+    output_init_scale: float = 1e-2
     allow_missing_sigma8: bool = False
     sigma8_value: float = 0.8
     dtype: jnp.dtype = field(default=jnp.float32, repr=False)
@@ -304,6 +336,23 @@ class MeshCNNPotentialCorrection:
             "params",
             tree_map(lambda x: x if x is None or is_float0_array(x) else jnp.asarray(x, dtype=dtype), self.params),
         )
+
+
+@partial(
+    pytree_dataclass,
+    aux_fields=("dtype",),
+    frozen=True,
+    eq=False,
+)
+class CombinedPotentialCorrection:
+    radial: RadialPotentialCorrection
+    mesh_cnn: MeshCNNPotentialCorrection
+    dtype: jnp.dtype = field(default=jnp.float32, repr=False)
+
+    def __post_init__(self):
+        if self._is_transforming():
+            return
+        object.__setattr__(self, "dtype", jnp.dtype(self.dtype))
 
 
 def init_radial_potential_correction(
@@ -344,6 +393,7 @@ def init_mesh_cnn_potential_correction(
     channels=8,
     depth=4,
     max_residual=0.1,
+    output_init_scale=1e-2,
     allow_missing_sigma8=False,
     sigma8_value=0.8,
     dtype=jnp.float32,
@@ -352,14 +402,17 @@ def init_mesh_cnn_potential_correction(
 ):
     del unused_kwargs
     dtype = jnp.dtype(dtype)
-    transform = _mesh_cnn_transform(conf, channels, depth, max_residual)
-    if conf is None:
-        source = jnp.zeros((16, 16, 16), dtype=dtype)
-    else:
-        source = jnp.zeros(tuple(conf.local_mesh_shape), dtype=dtype)
+    init_conf = conf
+    if init_conf is not None and init_conf.use_mGPU:
+        init_conf = init_conf.replace(multigpu=None, compute_mesh=None)
+    transform = _mesh_cnn_transform(init_conf, channels, depth, max_residual, output_init_scale)
+    init_shape = (16, 16, 16) if conf is None else tuple(min(int(s), 16) for s in conf.mesh_shape)
+    source = jnp.zeros(init_shape, dtype=dtype)
+    potential_real = jnp.zeros_like(source)
     params = transform.init(
         key,
         source,
+        potential_real,
         jnp.asarray(1.0, dtype=dtype),
         _default_cosmo_features(dtype),
     )
@@ -368,6 +421,7 @@ def init_mesh_cnn_potential_correction(
         channels=channels,
         depth=depth,
         max_residual=max_residual,
+        output_init_scale=output_init_scale,
         allow_missing_sigma8=allow_missing_sigma8,
         sigma8_value=float(sigma8_value),
         dtype=dtype,
@@ -379,10 +433,22 @@ def init_potential_correction(key, model="neural_spline", **kwargs):
         return init_radial_potential_correction(key, **kwargs)
     if model in {"mesh_cnn", "cnn"}:
         return init_mesh_cnn_potential_correction(key, **kwargs)
+    if model in {"combined", "hybrid", "spline_cnn", "neural_spline+mesh_cnn"}:
+        radial_key, cnn_key = jax.random.split(key)
+        radial = init_radial_potential_correction(radial_key, **kwargs)
+        mesh_cnn = init_mesh_cnn_potential_correction(cnn_key, **kwargs)
+        dtype = kwargs.get("dtype", getattr(radial, "dtype", jnp.float32))
+        return CombinedPotentialCorrection(
+            radial=radial,
+            mesh_cnn=mesh_cnn,
+            dtype=dtype,
+        )
     raise ValueError(f"Unsupported correction model {model!r}.")
 
 
 def sample_potential_transfer(correction, radius_fraction, a, cosmo, conf):
+    if isinstance(correction, CombinedPotentialCorrection):
+        correction = correction.radial
     if isinstance(correction, MeshCNNPotentialCorrection):
         raise TypeError("Mesh CNN corrections do not define a radial transfer curve.")
     if correction is None:
@@ -401,6 +467,8 @@ def sample_potential_transfer(correction, radius_fraction, a, cosmo, conf):
 
 
 def evaluate_radial_potential_transfer(correction, a, cosmo, conf):
+    if isinstance(correction, CombinedPotentialCorrection):
+        correction = correction.radial
     if isinstance(correction, MeshCNNPotentialCorrection):
         raise TypeError("Mesh CNN corrections do not define a radial transfer field.")
     if correction is None:
@@ -421,41 +489,80 @@ def evaluate_potential_transfer(correction, a, cosmo, conf):
     return evaluate_radial_potential_transfer(correction, a, cosmo, conf)
 
 
-def evaluate_mesh_source_residual(correction, source_real, a, cosmo, conf):
-    if correction is None:
-        return jnp.zeros_like(source_real, dtype=conf.float_dtype)
-    if not isinstance(correction, MeshCNNPotentialCorrection):
-        raise TypeError("Mesh source residuals are only defined for mesh CNN corrections.")
-    transform = _mesh_cnn_transform(conf, correction.channels, correction.depth, correction.max_residual)
+def _apply_mesh_cnn_residual(params, source_real, potential_real, a, cosmo_features, conf, correction):
+    transform = _mesh_cnn_transform(
+        conf,
+        correction.channels,
+        correction.depth,
+        correction.max_residual,
+        correction.output_init_scale,
+    )
     residual = transform.apply(
+        params,
+        source_real,
+        potential_real,
+        a,
+        cosmo_features,
+    )
+    return residual.astype(conf.float_dtype)
+
+
+def evaluate_mesh_potential_residual(correction, source_real, potential_real, a, cosmo, conf):
+    if isinstance(correction, CombinedPotentialCorrection):
+        correction = correction.mesh_cnn
+    if correction is None:
+        return jnp.zeros_like(potential_real, dtype=conf.float_dtype)
+    if not isinstance(correction, MeshCNNPotentialCorrection):
+        raise TypeError("Mesh potential residuals are only defined for mesh CNN corrections.")
+    apply_fn = partial(_apply_mesh_cnn_residual, conf=conf, correction=correction)
+    mesh_spec = owned_mesh_partition_spec(source_real.ndim)
+    apply_fn = maybe_shard_map_mesh_local_op(
+        apply_fn,
+        conf,
+        in_specs=(None, mesh_spec, mesh_spec, None, None),
+        out_specs=mesh_spec,
+        check_rep=False,
+    )
+    return apply_fn(
         correction.params,
         source_real.astype(correction.dtype),
+        potential_real.astype(correction.dtype),
         jnp.asarray(a, dtype=correction.dtype),
         _correction_cosmo_features(correction, cosmo, correction.dtype),
     )
-    return residual.astype(conf.float_dtype)
+
+
+def evaluate_mesh_source_residual(correction, source_real, a, cosmo, conf):
+    potential_real = jnp.zeros_like(source_real, dtype=conf.float_dtype)
+    return evaluate_mesh_potential_residual(correction, source_real, potential_real, a, cosmo, conf)
 
 
 def apply_potential_correction(pot, a, cosmo, conf, correction, source_real=None):
     if correction is None:
         return pot
+    if isinstance(correction, CombinedPotentialCorrection):
+        pot = apply_potential_correction(pot, a, cosmo, conf, correction.radial, source_real=source_real)
+        return apply_potential_correction(pot, a, cosmo, conf, correction.mesh_cnn, source_real=source_real)
     if isinstance(correction, MeshCNNPotentialCorrection):
         if source_real is None:
             raise ValueError("source_real is required for mesh CNN potential corrections.")
-        residual_source = evaluate_mesh_source_residual(
+        if conf.compute_mesh is None:
+            potential_real = jnp.fft.irfftn(pot).astype(conf.float_dtype)
+        else:
+            potential_real = conf.mGPU_irfftn_transposed(pot).astype(conf.float_dtype)
+        residual_potential = evaluate_mesh_potential_residual(
             correction,
             source_real,
+            potential_real,
             1.0 if a is None else a,
             cosmo,
             conf,
         )
         if conf.compute_mesh is None:
-            residual_hat = jnp.fft.rfftn(residual_source)
+            residual_hat = jnp.fft.rfftn(residual_potential)
         else:
-            residual_hat = conf.mGPU_rfftn_transposed(residual_source)
-        k2 = _k_squared_transposed(conf, pot.real.dtype)
-        residual_pot = jnp.where(k2 != 0, -residual_hat / k2, 0)
-        return pot + residual_pot.astype(pot.dtype)
+            residual_hat = conf.mGPU_rfftn_transposed(residual_potential)
+        return pot + residual_hat.astype(pot.dtype)
     transfer = evaluate_potential_transfer(correction, 1.0 if a is None else a, cosmo, conf)
     return pot * transfer.astype(pot.real.dtype)
 

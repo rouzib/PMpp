@@ -100,7 +100,6 @@ class Configuration:
         i.e., kick and then drift. Default is the Newton-Störmer-Verlet-leapfrog method.
     chunk_size : int, optional
         Chunk size to split particles in batches in scatter and gather to save memory.
-
     Raises
     ------
     ValueError
@@ -309,6 +308,7 @@ class Configuration:
         "mGPU_irfftn": "irfftn",
         "mGPU_rfftn_transposed": "rfftn_transposed",
         "mGPU_irfftn_transposed": "irfftn_transposed",
+        "mGPU_irfftn_transposed_batched": "irfftn_transposed_batched",
         "mGPU_scatter": "scatter",
         "mGPU_gather": "gather",
     }

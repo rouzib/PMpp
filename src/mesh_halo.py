@@ -2,8 +2,30 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+from jax.experimental.shard_map import shard_map
+from jax.sharding import PartitionSpec as P
 
 from .utils import AXIS_NAME
+
+
+def owned_mesh_partition_spec(ndim: int):
+    """Partition a mesh-local array along the owned x-slab axis."""
+    if ndim < 1:
+        raise ValueError(f"owned_mesh_partition_spec expects ndim >= 1, got {ndim}.")
+    return P(AXIS_NAME, *([None] * (ndim - 1)))
+
+
+def maybe_shard_map_mesh_local_op(local_fn, conf, in_specs, out_specs, check_rep=False):
+    """Bind AXIS_NAME for mesh-local operators that use halo collectives internally."""
+    if conf.compute_mesh is None or conf.num_devices == 1:
+        return local_fn
+    return shard_map(
+        local_fn,
+        mesh=conf.compute_mesh,
+        in_specs=in_specs,
+        out_specs=out_specs,
+        check_rep=check_rep,
+    )
 
 
 def zero_pad_owned_mesh_halo(mesh_owned, halo_width: int):

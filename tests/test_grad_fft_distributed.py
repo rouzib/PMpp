@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.FFT_distributed import create_ffts
+from src.FFT_distributed import create_batched_transposed_real_ffts, create_ffts
 from src.utils import create_compute_mesh
 
 try:
@@ -85,13 +85,86 @@ def test_distributed_fft_matches_reference_for_forward_and_gradients():
         assert np.allclose(grad_irfftn_out, grad_irfftn_ref, atol=1e-12, rtol=1e-12)
 
 
+def test_batched_transposed_irfftn_matches_scalar_transposed_path():
+    if GPU_COUNT < 1:
+        if pytest is not None:
+            pytest.skip("distributed FFT test requires at least 1 GPU")
+        raise SystemExit("distributed FFT test requires at least 1 GPU")
+
+    gpu_devices = [device for device in jax.devices() if device.platform == "gpu"][:2]
+    compute_mesh = create_compute_mesh(gpu_devices)
+    real_sharding = NamedSharding(compute_mesh, P(None, "gpus", None, None))
+    spectrum_sharding = NamedSharding(compute_mesh, P(None, None, "gpus", None))
+    _, _, _, _, rfftn_transposed, irfftn_transposed = create_ffts(compute_mesh)
+    batched_rfftn_transposed, batched_irfftn_transposed = create_batched_transposed_real_ffts(compute_mesh)
+
+    for real_shape in ((32, 32, 32), (32, 32, 33)):
+        batch_size = 3
+        spectrum_shape = (batch_size, real_shape[0], real_shape[1], real_shape[2] // 2 + 1)
+
+        real_batch = jax.random.normal(
+            jax.random.PRNGKey(600 + real_shape[2]),
+            (batch_size,) + real_shape,
+            dtype=jnp.float64,
+        )
+        real_batch_sharded = jax.device_put(real_batch, real_sharding)
+        scalar_rfftn = jnp.stack(
+            [rfftn_transposed(real_batch_sharded[i]) for i in range(batch_size)],
+            axis=0,
+        )
+        batched_rfftn_out = np.asarray(jax.device_get(batched_rfftn_transposed(real_batch_sharded)))
+        scalar_rfftn_ref = np.asarray(jax.device_get(scalar_rfftn))
+        assert np.allclose(batched_rfftn_out, scalar_rfftn_ref, atol=1e-12, rtol=1e-12)
+
+        spectrum_batch = (
+            jax.random.normal(jax.random.PRNGKey(700 + real_shape[2]), spectrum_shape, dtype=jnp.float64)
+            + 1j
+            * jax.random.normal(jax.random.PRNGKey(800 + real_shape[2]), spectrum_shape, dtype=jnp.float64)
+        ).astype(jnp.complex128)
+        spectrum_batch_sharded = jax.device_put(spectrum_batch, spectrum_sharding)
+
+        batched_irfftn_out = np.asarray(jax.device_get(batched_irfftn_transposed(spectrum_batch_sharded)))
+        scalar_irfftn_out = np.asarray(
+            jax.device_get(
+                jnp.stack(
+                    [irfftn_transposed(spectrum_batch_sharded[i]) for i in range(batch_size)],
+                    axis=0,
+                )
+            )
+        )
+        assert np.allclose(batched_irfftn_out, scalar_irfftn_out, atol=1e-12, rtol=1e-12)
+
+        output_shape = batched_irfftn_out.shape
+        irfftn_weights = jax.random.normal(
+            jax.random.PRNGKey(900 + real_shape[2]),
+            output_shape,
+            dtype=jnp.float64,
+        )
+
+        def loss_scalar(inp):
+            outs = [irfftn_transposed(inp[i]) for i in range(batch_size)]
+            return sum(jnp.sum(outs[i] * irfftn_weights[i]) for i in range(batch_size))
+
+        def loss_batched(inp):
+            return jnp.sum(batched_irfftn_transposed(inp) * irfftn_weights)
+
+        grad_scalar = np.asarray(jax.device_get(jax.grad(loss_scalar)(spectrum_batch_sharded)))
+        grad_batched = np.asarray(jax.device_get(jax.grad(loss_batched)(spectrum_batch_sharded)))
+        assert np.allclose(grad_batched, grad_scalar, atol=1e-12, rtol=1e-12)
+
+
 if pytest is not None:
     test_distributed_fft_matches_reference_for_forward_and_gradients = pytest.mark.skipif(
         GPU_COUNT < 1,
         reason="distributed FFT test requires at least 1 GPU",
     )(test_distributed_fft_matches_reference_for_forward_and_gradients)
+    test_batched_transposed_irfftn_matches_scalar_transposed_path = pytest.mark.skipif(
+        GPU_COUNT < 1,
+        reason="distributed FFT test requires at least 1 GPU",
+    )(test_batched_transposed_irfftn_matches_scalar_transposed_path)
 
 
 if __name__ == "__main__":
     test_distributed_fft_matches_reference_for_forward_and_gradients()
+    test_batched_transposed_irfftn_matches_scalar_transposed_path()
     print("distributed FFT regression passed")

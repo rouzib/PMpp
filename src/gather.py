@@ -44,7 +44,7 @@ def initialize_mGPU_gather(conf):
             P(AXIS_NAME, None, None),  # mesh
         ),
         out_specs=P(AXIS_NAME),
-        check_rep=False
+        check_rep=False,
     )
 
 
@@ -139,7 +139,8 @@ def _apply_exchange(val_in, pmid, disp, unused_index, conf, gpu_id, return_routi
     dummy_mask = unused_index
     x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % global_nMesh
 
-    val = jnp.where(dummy_mask, jnp.asarray(0, val_in.dtype), val_in)
+    mask_shape = dummy_mask.shape + (1,) * (val_in.ndim - 1)
+    val = jnp.where(dummy_mask.reshape(mask_shape), jnp.zeros_like(val_in), val_in)
 
     to_share_left = particles_in_slice_mask(x_mod, *halo_start) & ~dummy_mask
     to_share_right = particles_in_slice_mask(x_mod, *halo_end) & ~dummy_mask
@@ -204,8 +205,10 @@ def _apply_exchange(val_in, pmid, disp, unused_index, conf, gpu_id, return_routi
         incoming_valid_right,
     )
 
-    val = val.at[update_indices_left].add(incoming_from_left_val * match_left.astype(val.dtype))
-    val = val.at[update_indices_right].add(incoming_from_right_val * match_right.astype(val.dtype))
+    left_match_shape = match_left.shape + (1,) * (incoming_from_left_val.ndim - 1)
+    right_match_shape = match_right.shape + (1,) * (incoming_from_right_val.ndim - 1)
+    val = val.at[update_indices_left].add(incoming_from_left_val * match_left.reshape(left_match_shape).astype(val.dtype))
+    val = val.at[update_indices_right].add(incoming_from_right_val * match_right.reshape(right_match_shape).astype(val.dtype))
     if return_routing:
         return val, (
             update_indices_left,
@@ -233,10 +236,13 @@ def _apply_exchange_bwd_from_routing(val_cot_in, routing, unused_index, conf):
         to_share_right_valid,
     ) = routing
     dummy_mask = unused_index
-    val_cot = jnp.where(dummy_mask, jnp.asarray(0, val_cot_in.dtype), val_cot_in)
+    mask_shape = dummy_mask.shape + (1,) * (val_cot_in.ndim - 1)
+    val_cot = jnp.where(dummy_mask.reshape(mask_shape), jnp.zeros_like(val_cot_in), val_cot_in)
 
-    incoming_from_left_cot = val_cot[update_indices_left] * match_left.astype(val_cot.dtype)
-    incoming_from_right_cot = val_cot[update_indices_right] * match_right.astype(val_cot.dtype)
+    left_match_shape = match_left.shape + (1,) * (val_cot.ndim - 1)
+    right_match_shape = match_right.shape + (1,) * (val_cot.ndim - 1)
+    incoming_from_left_cot = val_cot[update_indices_left] * match_left.reshape(left_match_shape).astype(val_cot.dtype)
+    incoming_from_right_cot = val_cot[update_indices_right] * match_right.reshape(right_match_shape).astype(val_cot.dtype)
 
     to_share_right_cot = jax.lax.ppermute(
         incoming_from_left_cot,
@@ -249,10 +255,12 @@ def _apply_exchange_bwd_from_routing(val_cot_in, routing, unused_index, conf):
         perm=conf.right_perm,
     )
 
-    val_cot = val_cot.at[to_share_left_src].add(to_share_left_cot * to_share_left_valid.astype(val_cot.dtype))
-    val_cot = val_cot.at[to_share_right_src].add(to_share_right_cot * to_share_right_valid.astype(val_cot.dtype))
+    left_valid_shape = to_share_left_valid.shape + (1,) * (val_cot.ndim - 1)
+    right_valid_shape = to_share_right_valid.shape + (1,) * (val_cot.ndim - 1)
+    val_cot = val_cot.at[to_share_left_src].add(to_share_left_cot * to_share_left_valid.reshape(left_valid_shape).astype(val_cot.dtype))
+    val_cot = val_cot.at[to_share_right_src].add(to_share_right_cot * to_share_right_valid.reshape(right_valid_shape).astype(val_cot.dtype))
 
-    return jnp.where(dummy_mask, jnp.asarray(0, val_cot.dtype), val_cot)
+    return jnp.where(dummy_mask.reshape(mask_shape), jnp.zeros_like(val_cot), val_cot)
 
 
 @partial(custom_vjp, nondiff_argnums=(3,))
@@ -324,12 +332,68 @@ def gather(ptcl, conf, mesh):
     unused_index = jax.lax.stop_gradient(ptcl.unused_index)
     return conf.mGPU_gather(pmid, disp, unused_index, conf, mesh)
 
+
+def gather_stacked_mesh_halo(ptcl, conf, mesh_channels):
+    """Gather multiple mesh channels after a single mesh-halo edge exchange."""
+    if (
+        not conf.use_mGPU
+        or conf.compute_mesh is None
+        or conf.multigpu_mode != "mesh_halo"
+    ):
+        return jnp.stack(
+            [gather(ptcl, conf, mesh_channels[..., i]) for i in range(mesh_channels.shape[-1])],
+            axis=-1,
+        )
+
+    pmid = jax.lax.stop_gradient(ptcl.pmid)
+    disp = ptcl.disp
+    unused_index = jax.lax.stop_gradient(ptcl.unused_index)
+
+    @partial(
+        shard_map,
+        mesh=conf.compute_mesh,
+        in_specs=(
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME),
+            None,
+            P(AXIS_NAME, None, None, None),
+        ),
+        out_specs=P(AXIS_NAME, None),
+        check_rep=False,
+    )
+    def _gather_stacked_local(pmid_local, disp_local, unused_local, conf_local, mesh_channels_local):
+        gpu_id = jax.lax.axis_index(AXIS_NAME)
+        incoming_left, incoming_right = exchange_owned_mesh_halo_edges(
+            mesh_channels_local,
+            conf_local.mesh_halo_width,
+            conf_local.left_perm,
+            conf_local.right_perm,
+        )
+        mesh_halo = extend_owned_mesh_from_halo_edges(
+            mesh_channels_local,
+            incoming_left,
+            incoming_right,
+            conf_local.mesh_halo_width,
+        )
+        offset = conf_local.mesh_halo_offsets[gpu_id]
+        gathered = [
+            _gather(pmid_local, disp_local, conf_local, mesh_halo[..., i], 0, offset, None)
+            for i in range(mesh_halo.shape[-1])
+        ]
+        val = jnp.stack(gathered, axis=-1)
+        mask = unused_local.reshape(unused_local.shape + (1,) * (val.ndim - 1))
+        return jnp.where(mask, jnp.zeros_like(val), val)
+
+    return _gather_stacked_local(pmid, disp, unused_index, conf, mesh_channels)
+
+
 def _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size):
     ptcl_num, spatial_ndim = pmid.shape
 
     mesh = jnp.asarray(mesh, dtype=conf.float_dtype)
-
-    val = jnp.asarray(0, dtype=conf.float_dtype)
+    channel_shape = mesh.shape[spatial_ndim:]
+    val = jnp.zeros((ptcl_num,) + channel_shape, dtype=conf.float_dtype)
 
     if mesh.shape[spatial_ndim:] != val.shape[1:]:
         raise ValueError('channel shape mismatch: '
@@ -369,7 +433,10 @@ def _gather_chunk(carry, chunk):
     # gather
     ind = tuple(ind[..., i] for i in range(spatial_ndim))
     # += usually, but since val is always 0, now =
-    val = (mesh.at[ind].get(mode='drop', fill_value=0) * frac).sum(axis=1)
+    gathered = mesh.at[ind].get(mode='drop', fill_value=0)
+    channel_ndim = gathered.ndim - frac.ndim
+    frac_shape = frac.shape + (1,) * channel_ndim
+    val = (gathered * frac.reshape(frac_shape)).sum(axis=1)
 
     return carry, val
 
@@ -397,11 +464,15 @@ def _gather_chunk_adj(carry, chunk):
     ind = tuple(ind[..., i] for i in range(spatial_ndim))
     val = mesh.at[ind].get(mode='drop', fill_value=0)
 
-    val_cot = val_cot[:, jnp.newaxis]
-    disp_cot = ((val_cot * val)[..., jnp.newaxis] * frac_grad).sum(axis=1)
+    val_cot = val_cot[:, jnp.newaxis, ...]
+    inner = val_cot * val
+    if inner.ndim > 2:
+        inner = inner.sum(axis=tuple(range(2, inner.ndim)))
+    disp_cot = (inner[..., jnp.newaxis] * frac_grad).sum(axis=1)
     disp_cot /= cell_size if cell_size is not None else conf_cell_size
 
-    mesh_cot = mesh_cot.at[ind].add(val_cot * frac)
+    frac_shape = frac.shape + (1,) * (val.ndim - frac.ndim)
+    mesh_cot = mesh_cot.at[ind].add(val_cot * frac.reshape(frac_shape))
 
     carry = mesh, mesh_cot, offset, cell_size, conf_cell_size, conf_mesh_shape
     return carry, disp_cot

@@ -1,6 +1,8 @@
 import jax
 import jax.numpy as jnp
 
+from .utils import is_float0_array
+
 
 def _linear_interp_primal(x, xp, fp):
     x = jnp.asarray(x)
@@ -51,11 +53,11 @@ def _linear_interp_jvp(primals, tangents):
     y = _linear_interp_primal(x, xp, fp)
     y_dot = jnp.zeros_like(y)
 
-    if not isinstance(x_dot, jax.custom_derivatives.SymbolicZero):
+    if not isinstance(x_dot, jax.custom_derivatives.SymbolicZero) and not is_float0_array(x_dot):
         y_dot = y_dot + _linear_interp_slope(x, xp, fp) * x_dot
-    if not isinstance(xp_dot, jax.custom_derivatives.SymbolicZero):
+    if not isinstance(xp_dot, jax.custom_derivatives.SymbolicZero) and not is_float0_array(xp_dot):
         y_dot = y_dot + jax.jvp(lambda xp_arg: _linear_interp_primal(x, xp_arg, fp), (xp,), (xp_dot,))[1]
-    if not isinstance(fp_dot, jax.custom_derivatives.SymbolicZero):
+    if not isinstance(fp_dot, jax.custom_derivatives.SymbolicZero) and not is_float0_array(fp_dot):
         y_dot = y_dot + jax.jvp(lambda fp_arg: _linear_interp_primal(x, xp, fp_arg), (fp,), (fp_dot,))[1]
 
     return y, y_dot
