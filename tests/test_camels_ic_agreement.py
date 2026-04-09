@@ -129,6 +129,25 @@ def _build_cosmologies(pair, conf_pmpp, conf_pmwd):
     return cosmo_pmpp, cosmo_pmwd
 
 
+def _ordered_camels_ic(pair):
+    order = np.argsort(np.asarray(pair.ids, dtype=np.int64))
+    ids = np.asarray(pair.ids, dtype=np.int64)[order]
+    expected = np.arange(ids.size, dtype=np.int64)
+    assert np.array_equal(ids, expected), "CAMELS IC ids do not map to the canonical particle-grid order"
+    ic_pos = jnp.asarray(np.asarray(pair.ic_pos, dtype=np.float32)[order])
+    ic_vel = jnp.asarray(np.asarray(pair.ic_vel, dtype=np.float32)[order])
+    return ic_pos, ic_vel
+
+
+def _pmwd_particles_from_ordered_pos(conf_pmwd, pos, vel):
+    grid = ParticlesPMWD.gen_grid(conf_pmwd)
+    dtype = conf_pmwd.float_dtype
+    box_size = jnp.asarray(conf_pmwd.box_size, dtype=dtype)
+    anchor = grid.pmid.astype(dtype) * conf_pmwd.cell_size
+    disp = jnp.mod(pos.astype(dtype) - anchor + 0.5 * box_size, box_size) - 0.5 * box_size
+    return ParticlesPMWD(conf_pmwd, grid.pmid, disp, vel=vel.astype(dtype))
+
+
 def _first_drift_args(conf):
     a_prev = float(conf.a_nbody[0])
     a_next = float(conf.a_nbody[1])
@@ -186,11 +205,10 @@ def test_camels_ic_path_matches_pmwd(mesh_shape):
     conf_pmpp, conf_pmwd = _build_confs(pair, mesh_shape)
     cosmo_pmpp, cosmo_pmwd = _build_cosmologies(pair, conf_pmpp, conf_pmwd)
 
-    ic_pos = jnp.asarray(pair.ic_pos)
-    ic_vel = jnp.asarray(pair.ic_vel)
+    ic_pos, ic_vel = _ordered_camels_ic(pair)
 
-    ptcl_pmpp = Particles.from_pos(conf_pmpp, ic_pos, vel=ic_vel)
-    ptcl_pmwd = ParticlesPMWD.from_pos(conf_pmwd, ic_pos).replace(vel=ic_vel)
+    ptcl_pmpp = Particles.from_ordered_pos(conf_pmpp, ic_pos, vel=ic_vel)
+    ptcl_pmwd = _pmwd_particles_from_ordered_pos(conf_pmwd, ic_pos, ic_vel)
 
     jit_scatter_pmpp = jax.jit(scatter_pmpp, static_argnames=("conf",))
     jit_scatter_pmwd = jax.jit(scatter_pmwd, static_argnames=("conf",))
@@ -227,11 +245,10 @@ def test_camels_full_forward_matches_pmwd(mesh_shape):
     conf_pmpp, conf_pmwd = _build_confs(pair, mesh_shape)
     cosmo_pmpp, cosmo_pmwd = _build_cosmologies(pair, conf_pmpp, conf_pmwd)
 
-    ic_pos = jnp.asarray(pair.ic_pos)
-    ic_vel = jnp.asarray(pair.ic_vel)
+    ic_pos, ic_vel = _ordered_camels_ic(pair)
 
-    ptcl_pmpp = Particles.from_pos(conf_pmpp, ic_pos, vel=ic_vel)
-    ptcl_pmwd = ParticlesPMWD.from_pos(conf_pmwd, ic_pos).replace(vel=ic_vel)
+    ptcl_pmpp = Particles.from_ordered_pos(conf_pmpp, ic_pos, vel=ic_vel)
+    ptcl_pmwd = _pmwd_particles_from_ordered_pos(conf_pmwd, ic_pos, ic_vel)
 
     jit_nbody_pmpp = jax.jit(nbody_pmpp, static_argnames=("conf", "reverse"))
     jit_nbody_pmwd = jax.jit(nbody_pmwd, static_argnames=("conf", "reverse"))

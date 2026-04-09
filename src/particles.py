@@ -438,6 +438,45 @@ class Particles:
         return cls.from_pos(conf, pos, vel=vel, acc=acc, wrap=wrap)
 
     @classmethod
+    def from_ordered_pos(cls, conf, pos, vel=None, acc=None, wrap=True):
+        """Construct particle state from positions stored in particle-grid order.
+
+        This path keeps the particle-grid anchor unique by using the canonical
+        `Particles.gen_grid(...)` ordering rather than re-rounding the input
+        Eulerian positions. It is intended for ordered particle sets such as LPT
+        outputs or CAMELS snapshots that preserve particle-grid order.
+        """
+        del wrap
+        grid_axes = []
+        for sp, sm in zip(conf.ptcl_grid_shape, conf.mesh_shape):
+            axis = np.linspace(0, sm, num=sp, endpoint=False)
+            axis = np.rint(axis).astype(np.dtype(conf.pmid_dtype))
+            grid_axes.append(axis)
+        pmid_host = np.meshgrid(*grid_axes, indexing='ij')
+        pmid_host = np.stack(pmid_host, axis=-1).reshape(-1, conf.dim)
+
+        pos_host = np.asarray(jax.device_get(pos), dtype=np.dtype(conf.float_dtype))
+        if pos_host.shape[0] != pmid_host.shape[0]:
+            raise ValueError(
+                "from_ordered_pos requires a full particle-grid ordered position array: "
+                f"expected {pmid_host.shape[0]} particles, got {pos_host.shape[0]}."
+            )
+
+        anchor_host = pmid_host.astype(pos_host.dtype, copy=False) * np.asarray(conf.cell_size, dtype=pos_host.dtype)
+        box_host = np.asarray(conf.box_size, dtype=pos_host.dtype)
+        disp_host = (pos_host - anchor_host + 0.5 * box_host) % box_host - 0.5 * box_host
+
+        if conf.use_mGPU:
+            pmid, disp, vel, acc, unused_index, halo_mask = cls._partition_and_shard_particle_fields(
+                conf, pmid_host, disp_host, vel, acc
+            )
+            return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
+
+        pmid = jnp.asarray(pmid_host, dtype=conf.pmid_dtype)
+        disp = jnp.asarray(disp_host, dtype=conf.float_dtype)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=None, halo_mask=None)
+
+    @classmethod
     def from_pmid(cls, conf, pmid, disp, vel=None, acc=None):
         """Construct particle state of ``pmid`` and ``disp`` from positions.
 
