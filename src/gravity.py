@@ -68,16 +68,10 @@ def get_k_squared_transposed(kvec, conf):
     return create_k_magnitude_transposed(kx, ky, kz)
 
 
-def _filter_particle_nyquist_modes(src, conf: Configuration):
-    """Drop Fourier modes that cannot be represented on the particle grid."""
-    if conf.mesh_shape == conf.ptcl_grid_shape:
-        return src
-
-    k_nyquist = jnp.asarray(jnp.pi / conf.ptcl_spacing, dtype=conf.float_dtype)
-    eps = k_nyquist * jnp.asarray(8 * jnp.finfo(conf.float_dtype).eps, dtype=conf.float_dtype)
-    limit = k_nyquist + eps
-    for k in conf.kvec:
-        src = jnp.where(jnp.abs(k) <= limit, src, 0)
+def apply_particle_nyquist_filter(src, masks):
+    """Apply broadcastable per-axis particle-Nyquist masks."""
+    for mask in masks:
+        src = src * mask
     return src
 
 
@@ -153,7 +147,7 @@ def _gravity_potential_from_density(dens, omega_m, conf: Configuration, a=None, 
         dens = jnp.fft.rfftn(dens)
     else:
         dens = conf.mGPU_rfftn_transposed(dens)
-    dens = _filter_particle_nyquist_modes(dens, conf)
+    dens = apply_particle_nyquist_filter(dens, conf.particle_nyquist_masks)
     pot = laplace_transposed(conf.kvec, dens, conf, None)
     return apply_potential_correction(pot, a, cosmo, conf, correction, source_real=source_real)
 

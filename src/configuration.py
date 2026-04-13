@@ -16,7 +16,7 @@ from .multigpu_configuration import (
     build_multigpu_configuration,
     initialize_multigpu_runtime,
 )
-from .utils import pytree_dataclass
+from .utils import build_particle_nyquist_filter, pytree_dataclass
 
 
 @partial(pytree_dataclass,
@@ -215,9 +215,11 @@ class Configuration:
             raise ValueError(f'sum of symplectic splits = {symp_splits_sum} != (1, 1)')
 
         with jax.ensure_compile_time_eval():
-            object.__setattr__(self, "kvec", fftfreq(self.mesh_shape, self.cell_size, dtype=self.float_dtype))
+            kvec = fftfreq(self.mesh_shape, self.cell_size, dtype=self.float_dtype)
+            object.__setattr__(self, "kvec", kvec)
             object.__setattr__(self, "kvec_spacing",
                                fftfreq(self.ptcl_grid_shape, self.ptcl_spacing, dtype=self.float_dtype))
+            object.__setattr__(self, "particle_nyquist_masks", build_particle_nyquist_filter(kvec, self))
 
         object.__setattr__(self, "nMesh", self.mesh_shape[0])
 

@@ -11,6 +11,18 @@ from jax.tree_util import register_pytree_node, tree_leaves, tree_map
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 
+
+def build_particle_nyquist_filter(kvec, conf):
+    """Return per-axis broadcastable masks for particle-grid-resolvable modes."""
+    if conf.mesh_shape == conf.ptcl_grid_shape:
+        return ()
+
+    k_nyquist = jnp.asarray(jnp.pi / conf.ptcl_spacing, dtype=conf.float_dtype)
+    eps = k_nyquist * jnp.asarray(8 * jnp.finfo(conf.float_dtype).eps, dtype=conf.float_dtype)
+    limit = k_nyquist + eps
+    return tuple((jnp.abs(k) <= limit).astype(conf.float_dtype) for k in kvec)
+
+
 def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
     """Register python dataclasses as custom pytree nodes.
 

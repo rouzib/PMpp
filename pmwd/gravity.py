@@ -44,16 +44,10 @@ def neg_grad(k, pot, spacing):
     return grad
 
 
-def _filter_particle_nyquist_modes(src, kvec, conf):
-    """Drop Fourier modes that cannot be represented on the particle grid."""
-    if conf.mesh_shape == conf.ptcl_grid_shape:
-        return src
-
-    k_nyquist = jnp.asarray(jnp.pi / conf.ptcl_spacing, dtype=conf.float_dtype)
-    eps = k_nyquist * jnp.asarray(8 * jnp.finfo(conf.float_dtype).eps, dtype=conf.float_dtype)
-    limit = k_nyquist + eps
-    for k in kvec:
-        src = jnp.where(jnp.abs(k) <= limit, src, 0)
+def apply_particle_nyquist_filter(src, masks):
+    """Apply broadcastable per-axis particle-Nyquist masks."""
+    for mask in masks:
+        src = src * mask
     return src
 
 
@@ -67,7 +61,7 @@ def gravity(a, ptcl, cosmo, conf):
     dens *= 1.5 * cosmo.Omega_m.astype(conf.float_dtype)
 
     dens = fftfwd(dens)  # normalization canceled by that of irfftn below
-    dens = _filter_particle_nyquist_modes(dens, kvec, conf)
+    dens = apply_particle_nyquist_filter(dens, conf.particle_nyquist_masks)
 
     pot = laplace(kvec, dens, cosmo)
 

@@ -10,6 +10,7 @@ from jax.tree_util import tree_map
 from mcfit import TophatVar
 
 from pmwd.tree_util import pytree_dataclass
+from pmwd.pm_util import build_particle_nyquist_filter, fftfreq
 
 
 jax.config.update("jax_enable_x64", True)
@@ -169,6 +170,10 @@ class Configuration:
             raise ValueError('pmid_dtype must be signed integers')
         if not jnp.issubdtype(self.float_dtype, jnp.floating):
             raise ValueError('float_dtype must be floating point numbers')
+
+        with jax.ensure_compile_time_eval():
+            kvec = fftfreq(self.mesh_shape, self.cell_size, dtype=self.float_dtype)
+            object.__setattr__(self, "particle_nyquist_masks", build_particle_nyquist_filter(kvec, self))
 
         with jax.ensure_compile_time_eval():
             object.__setattr__(
