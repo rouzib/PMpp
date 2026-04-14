@@ -129,6 +129,7 @@ def reduce_grad_across_gpus(disp_cot, pmid, disp, valid_mask, conf):
 
 
 def initialize_mGPU_scatter(conf):
+    """Create the sharded scatter entry point for the configured multi-GPU mode."""
     if conf.multigpu_mode == "mesh_halo":
         return shard_map(
             _scatter_mGPU_mesh_halo,
@@ -161,6 +162,13 @@ def initialize_mGPU_scatter(conf):
 
 
 def _scatter_mGPU_mesh_halo(pmid, disp, conf, mesh, val, cell_size):
+    """Scatter through a temporary mesh halo and reduce edge contributions.
+
+    In ``mesh_halo`` mode particles are not duplicated across devices. Particles
+    near a slab boundary may deposit mass into a neighbor-owned cell, so each
+    device scatters into a local mesh with x-halo cells and then sends those
+    halo-cell contributions back to the owning neighbor.
+    """
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     mesh_halo = zero_pad_owned_mesh_halo(mesh, conf.mesh_halo_width)
     offset = conf.mesh_halo_offsets[gpu_id]
@@ -170,17 +178,20 @@ def _scatter_mGPU_mesh_halo(pmid, disp, conf, mesh, val, cell_size):
 
 @partial(custom_vjp, nondiff_argnums=(2,))
 def _scatter_mGPU(pmid, disp, conf, mesh, val, cell_size):
+    """Scatter for ``particle_halo`` mode, where halo particles already exist."""
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
     return _scatter(pmid, disp, conf, mesh, val, offset, cell_size)
 
 
 def _scatter_mGPU_fwd(pmid, disp, conf, mesh, val, cell_size):
+    """Forward rule for sharded particle-halo scatter."""
     result = _scatter_mGPU(pmid, disp, conf, mesh, val, cell_size)
     return result, (pmid, disp, mesh, val, cell_size)
 
 
 def _scatter_mGPU_bwd(conf, res, mesh_cot):
+    """Backward rule for sharded particle-halo scatter."""
     pmid, disp, mesh, val, cell_size_res = res
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
@@ -249,6 +260,7 @@ def scatter(ptcl, conf, mesh=None, val=None, offset=0, cell_size=None):
 
 @custom_vjp
 def _scatter(pmid, disp, conf, mesh, val, offset, cell_size):
+    """Local multilinear scatter primitive with a custom VJP."""
     ptcl_num, spatial_ndim = pmid.shape
 
     if val is None:
@@ -274,6 +286,7 @@ def _scatter(pmid, disp, conf, mesh, val, offset, cell_size):
 
 
 def _scatter_chunk(carry, chunk):
+    """Scatter one particle chunk into the carried mesh."""
     mesh, offset, cell_size, conf_cell_size, conf_mesh_shape = carry
     pmid, disp, val = chunk
 
@@ -337,11 +350,13 @@ def _scatter_chunk_adj(carry, chunk):
     return carry, (disp_cot, val_cot)
 
 def _scatter_fwd(pmid, disp, conf, mesh, val, offset, cell_size):
+    """Forward rule for the local scatter primitive."""
     mesh = _scatter(pmid, disp, conf, mesh, val, offset, cell_size)
     return mesh, (pmid, disp, conf, val, offset, cell_size)
 
 
 def _scatter_bwd(res, mesh_cot):
+    """Backward rule for the local scatter primitive."""
     pmid, disp, conf, val, offset, cell_size = res
 
     local_ptcl_num = len(pmid)

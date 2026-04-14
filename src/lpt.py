@@ -43,6 +43,12 @@ def _strain(kvec, i, j, pot, conf):
 
 
 def _L(kvec, pot_m, pot_n, conf):
+    """Quadratic LPT source built from products of strain tensors.
+
+    For second-order LPT this evaluates the invariant
+    ``sum_i<j phi_ii psi_jj - phi_ij psi_ji``. When ``pot_n`` is ``None`` the
+    same potential is used for both factors, which is the common 2LPT case.
+    """
     m_eq_n = pot_n is None
     if m_eq_n:
         pot_n = pot_m
@@ -104,14 +110,23 @@ def _L(kvec, pot_m, pot_n, conf):
 
 @partial(jax.custom_vjp, nondiff_argnums=(5,))
 def _attach_lpt_halo_move_vjp(disp_before, vel_before, disp_after, vel_after, ptcl_before, conf):
+    """Attach the halo-move pullback to LPT outputs.
+
+    LPT builds displacement/velocity on the canonical particle grid and then
+    calls the same halo-movement machinery as the N-body drift. This wrapper
+    makes the backward pass use that halo-move VJP while returning only the
+    post-move floating arrays in the primal result.
+    """
     return disp_after, vel_after
 
 
 def _attach_lpt_halo_move_vjp_fwd(disp_before, vel_before, disp_after, vel_after, ptcl_before, conf):
+    """Forward rule for the LPT halo-move custom VJP."""
     return (disp_after, vel_after), (disp_before, vel_before, ptcl_before)
 
 
 def _attach_lpt_halo_move_vjp_bwd(conf, res, cotangents):
+    """Backward rule that routes LPT cotangents through halo movement."""
     disp_before, vel_before, ptcl_before = res
     disp_cot, vel_cot = cotangents
     scratch_acc = disp_before[:, :0]

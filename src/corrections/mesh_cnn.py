@@ -25,6 +25,7 @@ from .common import (
 
 
 def _mesh_conditioning_channels(source, potential_real, a, cosmo, dtype):
+    """Build per-cell channels used to condition the mesh CNN."""
     spatial_shape = source.shape + (1,)
     a_channel = jnp.broadcast_to(jnp.asarray(a, dtype=dtype), spatial_shape)
     features = cosmo_features(cosmo, dtype)
@@ -36,6 +37,7 @@ def _mesh_conditioning_channels(source, potential_real, a, cosmo, dtype):
 
 
 def _mesh_conditioning_vector(a, cosmo, dtype):
+    """Build global conditioning features for scalar gain layers."""
     return jnp.concatenate(
         [
             jnp.asarray([a], dtype=dtype),
@@ -45,6 +47,7 @@ def _mesh_conditioning_vector(a, cosmo, dtype):
 
 
 def _periodic_pad_mesh_channels(x, halo_width, conf):
+    """Pad mesh-channel data periodically, exchanging x halos when sharded."""
     if halo_width <= 0:
         x_halo = x
     elif conf.compute_mesh is None or conf.num_devices == 1:
@@ -61,6 +64,7 @@ def _periodic_pad_mesh_channels(x, halo_width, conf):
 
 
 def _periodic_conv3d(x, output_channels, conf, kernel_shape=3, name=None, w_init=None, b_init=None):
+    """Apply a valid 3D convolution after explicit periodic padding."""
     require_haiku("mesh CNN potential corrections")
     halo_width = kernel_shape // 2
     x = _periodic_pad_mesh_channels(x, halo_width, conf)
@@ -128,6 +132,7 @@ class MeshResidualPotentialCorrection(HaikuModuleBase):
 
 
 def mesh_cnn_transform(conf, channels, depth, max_residual, output_init_scale):
+    """Return a Haiku transform bound to the mesh CNN architecture and config."""
     require_haiku("mesh CNN potential corrections")
     return hk.without_apply_rng(
         hk.transform(
@@ -148,6 +153,8 @@ def mesh_cnn_transform(conf, channels, depth, max_residual, output_init_scale):
     eq=False,
 )
 class MeshCNNPotentialCorrection:
+    """Trainable real-space residual potential correction."""
+
     params: dict
     channels: int = 8
     depth: int = 4
@@ -181,6 +188,7 @@ def init_mesh_cnn_potential_correction(
     conf=None,
     **unused_kwargs,
 ):
+    """Initialize mesh CNN correction parameters on a small representative mesh."""
     del unused_kwargs
     dtype = jnp.dtype(dtype)
     init_conf = conf
@@ -210,6 +218,7 @@ def init_mesh_cnn_potential_correction(
 
 
 def _apply_mesh_cnn_residual(params, source_real, potential_real, a, cosmo_features_in, conf, correction):
+    """Apply the mesh CNN and cast the residual back to solver precision."""
     transform = mesh_cnn_transform(
         conf,
         correction.channels,
@@ -228,6 +237,7 @@ def _apply_mesh_cnn_residual(params, source_real, potential_real, a, cosmo_featu
 
 
 def evaluate_mesh_potential_residual(correction, source_real, potential_real, a, cosmo, conf):
+    """Evaluate a mesh CNN residual potential on the local or sharded mesh."""
     if correction is None:
         return jnp.zeros_like(potential_real, dtype=conf.float_dtype)
     if not isinstance(correction, MeshCNNPotentialCorrection):
@@ -251,5 +261,6 @@ def evaluate_mesh_potential_residual(correction, source_real, potential_real, a,
 
 
 def evaluate_mesh_source_residual(correction, source_real, a, cosmo, conf):
+    """Evaluate a mesh CNN source-only residual using a zero input potential."""
     potential_real = jnp.zeros_like(source_real, dtype=conf.float_dtype)
     return evaluate_mesh_potential_residual(correction, source_real, potential_real, a, cosmo, conf)

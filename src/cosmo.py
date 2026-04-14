@@ -272,6 +272,7 @@ _COSMO_PARAM_FIELDS = (
 
 
 def cosmology_param_names(cosmo):
+    """Return differentiable cosmology parameter names for this instance."""
     names = ["A_s_1e9", "n_s", "Omega_m", "Omega_b", "h"]
     if cosmo.Omega_k_ is not None:
         names.append("Omega_k_")
@@ -283,16 +284,19 @@ def cosmology_param_names(cosmo):
 
 
 def cosmology_param_values(cosmo, names=None):
+    """Return cosmology parameter values in a stable tuple order."""
     if names is None:
         names = cosmology_param_names(cosmo)
     return tuple(getattr(cosmo, name) for name in names)
 
 
 def replace_cosmology_params(cosmo, names, values):
+    """Return a cosmology with selected parameter leaves replaced."""
     return cosmo.replace(**dict(zip(names, values)))
 
 
 def zero_cosmology_param_cotangent(cosmo):
+    """Build a cosmology-shaped zero cotangent for parameter gradients only."""
     kwargs = {
         "A_s_1e9": jnp.zeros_like(cosmo.A_s_1e9),
         "n_s": jnp.zeros_like(cosmo.n_s),
@@ -310,16 +314,19 @@ def zero_cosmology_param_cotangent(cosmo):
 
 
 def cosmology_param_cotangent(cosmo, names, values):
+    """Build a cosmology-shaped cotangent from named parameter cotangents."""
     return zero_cosmology_param_cotangent(cosmo).replace(**dict(zip(names, values)))
 
 
 def project_cosmology_param_cotangent(cot):
+    """Drop derived-table cotangents and keep only physical parameter leaves."""
     kwargs = {name: getattr(cot, name) for name in _COSMO_PARAM_FIELDS}
     kwargs.update(transfer=None, growth=None, varlin=None)
     return cot.replace(**kwargs)
 
 
 def _combine_optional_cotangents(lhs, rhs, op):
+    """Combine optional cotangent leaves used by fixed/free cosmology params."""
     if lhs is None:
         return rhs
     if rhs is None:
@@ -328,6 +335,7 @@ def _combine_optional_cotangents(lhs, rhs, op):
 
 
 def add_cosmology_cotangents(lhs, rhs):
+    """Add two cosmology parameter cotangents."""
     lhs = project_cosmology_param_cotangent(lhs)
     rhs = project_cosmology_param_cotangent(rhs)
     return lhs.replace(
@@ -346,6 +354,7 @@ def add_cosmology_cotangents(lhs, rhs):
 
 
 def sub_cosmology_cotangents(lhs, rhs):
+    """Subtract two cosmology parameter cotangents."""
     lhs = project_cosmology_param_cotangent(lhs)
     rhs = project_cosmology_param_cotangent(rhs)
     return lhs.replace(
@@ -364,6 +373,7 @@ def sub_cosmology_cotangents(lhs, rhs):
 
 
 def scale_cosmology_cotangent(cot, scalar):
+    """Scale all cosmology parameter cotangent leaves by ``scalar``."""
     cot = project_cosmology_param_cotangent(cot)
     return cot.replace(
         A_s_1e9=cot.A_s_1e9 * scalar,

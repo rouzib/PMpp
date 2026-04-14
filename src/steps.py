@@ -22,6 +22,7 @@ from .corrections import add_potential_correction_cotangents
 
 
 def _halo_move_float_outputs(ptcl, disp, vel, acc, conf):
+    """Run halo movement and expose only floating outputs to JAX VJP."""
     _, disp, vel, acc, _, _, _, _ = conf.mGPU_halo_moving(
         ptcl.pmid,
         ptcl.disp,
@@ -36,6 +37,7 @@ def _halo_move_float_outputs(ptcl, disp, vel, acc, conf):
 
 
 def _halo_move_float_outputs_with_aux(ptcl, disp, vel, acc, conf):
+    """Run halo movement with integer/bool routing metadata returned as aux."""
     pmid, disp, vel, acc, halo_mask, unused_indexes, _, _ = conf.mGPU_halo_moving(
         ptcl.pmid,
         ptcl.disp,
@@ -50,6 +52,7 @@ def _halo_move_float_outputs_with_aux(ptcl, disp, vel, acc, conf):
 
 
 def _halo_move_outputs_vjp_with_aux(ptcl, disp, vel, acc, conf):
+    """Create a VJP for halo movement while preserving the new particle layout."""
     (float_outputs, halo_move_vjp, aux) = vjp(
         lambda disp_in, vel_in, acc_in: _halo_move_float_outputs_with_aux(
             ptcl, disp_in, vel_in, acc_in, conf
@@ -63,6 +66,7 @@ def _halo_move_outputs_vjp_with_aux(ptcl, disp, vel, acc, conf):
 
 
 def _halo_move_vjp(ptcl, disp, vel, acc, disp_cot, vel_cot, acc_cot, conf):
+    """Pull cotangents through the halo-movement operation."""
     _, halo_move_vjp = vjp(
         lambda disp_in, vel_in, acc_in: _halo_move_float_outputs(
             ptcl, disp_in, vel_in, acc_in, conf
@@ -122,6 +126,7 @@ def kick_factor(a_acc, a_prev, a_next, cosmo, conf):
 
 
 def _drift_factor_param_grad(a_vel, a_prev, a_next, cosmo, conf):
+    """Return a drift factor and its cotangent with respect to cosmology params."""
     param_names = cosmology_param_names(cosmo)
     param_values = cosmology_param_values(cosmo, param_names)
     factor, param_cot = value_and_grad(
@@ -137,6 +142,7 @@ def _drift_factor_param_grad(a_vel, a_prev, a_next, cosmo, conf):
 
 
 def _kick_factor_param_grad(a_acc, a_prev, a_next, cosmo, conf):
+    """Return a kick factor and its cotangent with respect to cosmology params."""
     param_names = cosmology_param_names(cosmo)
     param_values = cosmology_param_values(cosmo, param_names)
     factor, param_cot = value_and_grad(

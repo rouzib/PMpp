@@ -46,11 +46,13 @@ zip = safe_zip
 
 
 def ravel_first_arg(f, unravel):
+    """Wrap an ODE function so its first pytree argument is a flat vector."""
     return ravel_first_arg_(lu.wrap_init(f, debug_info=_missing_debug_info("lu")), unravel).call_wrapped
 
 
 @lu.transformation
 def ravel_first_arg_(unravel, y_flat, *args):
+    """Linear-util transformation backing ``ravel_first_arg``."""
     y = unravel(y_flat)
     ans = yield (y,) + args, {}
     ans_flat, _ = ravel_pytree(ans)
@@ -58,6 +60,7 @@ def ravel_first_arg_(unravel, y_flat, *args):
 
 
 def interp_fit_dopri(y0, y1, k, dt):
+    """Fit Dormand-Prince dense-output interpolation coefficients."""
     # Fit a polynomial to the results of a Runge-Kutta step.
     dps_c_mid = jnp.array([
         6025192743 / 30085553152 / 2, 0, 51252292925 / 65400821598 / 2,
@@ -68,6 +71,7 @@ def interp_fit_dopri(y0, y1, k, dt):
 
 
 def fit_4th_order_polynomial(y0, y1, y_mid, dy0, dy1, dt):
+    """Fit a quartic polynomial from endpoint and midpoint RK data."""
     dt = dt.astype(y0.dtype)
     a = -2.*dt*dy0 + 2.*dt*dy1 - 8.*y0 - 8.*y1 + 16.*y_mid
     b = 5.*dt*dy0 - 3.*dt*dy1 + 18.*y0 + 14.*y1 - 32.*y_mid
@@ -78,6 +82,7 @@ def fit_4th_order_polynomial(y0, y1, y_mid, dy0, dy1, dt):
 
 
 def initial_step_size(fun, t0, y0, order, rtol, atol, f0):
+    """Choose an initial adaptive RK step size from Hairer et al.'s heuristic."""
     # Algorithm from:
     # E. Hairer, S. P. Norsett G. Wanner,
     # Solving Ordinary Differential Equations I: Nonstiff Problems, Sec. II.4.
@@ -101,6 +106,7 @@ def initial_step_size(fun, t0, y0, order, rtol, atol, f0):
 
 
 def runge_kutta_step(func, y0, f0, t0, dt):
+    """Take one Dormand-Prince 5(4) Runge-Kutta step."""
     # Dopri5 Butcher tableaux
     alpha = jnp.array([1 / 5, 3 / 10, 4 / 5, 8 / 9, 1., 1., 0], dtype=dt.dtype)
     beta = jnp.array(
@@ -134,6 +140,7 @@ def runge_kutta_step(func, y0, f0, t0, dt):
 
 
 def abs2(x):
+    """Squared magnitude that handles real and complex states."""
     if jnp.iscomplexobj(x):
         return x.real ** 2 + x.imag ** 2
     else:
@@ -141,6 +148,7 @@ def abs2(x):
 
 
 def mean_error_ratio(error_estimate, rtol, atol, y0, y1):
+    """Return the RMS local-error ratio against adaptive tolerances."""
     err_tol = atol + rtol * jnp.maximum(jnp.abs(y0), jnp.abs(y1))
     err_ratio = error_estimate / err_tol.astype(error_estimate.dtype)
     return jnp.sqrt(jnp.mean(abs2(err_ratio)))
@@ -195,6 +203,7 @@ def odeint(func, y0, t, *args, rtol=1.4e-8, atol=1.4e-8, mxstep=jnp.inf, hmax=jn
 
 @partial(jax.jit, static_argnums=(0, 1, 2, 3, 4, 5))
 def _odeint_wrapper(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args):
+    """Flatten pytree state, call the vector ODE integrator, and unravel output."""
     y0, unravel = ravel_pytree(y0)
     func = ravel_first_arg(func, unravel)
     out = _odeint(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args)
@@ -203,6 +212,7 @@ def _odeint_wrapper(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args):
 
 @partial(jax.custom_vjp, nondiff_argnums=(0, 1, 2, 3, 4, 5))
 def _odeint(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args):
+    """Flat-state adaptive ODE integrator with a custom adjoint."""
     def func_(y, t): return func(y, t, *args)
 
     def scan_fun(carry, target_t):
@@ -244,11 +254,13 @@ def _odeint(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args):
 
 
 def _odeint_fwd(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args):
+    """Forward rule for the adaptive ODE custom VJP."""
     ys = _odeint(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args)
     return ys, (ys, ts, args)
 
 
 def _odeint_rev(func, rtol, atol, mxstep, hmax, dt0, res, g):
+    """Reverse-time adjoint rule for the adaptive ODE solver."""
     dt = dt0[1] if isinstance(dt0, tuple) else dt0
     ys, ts, args = res
 

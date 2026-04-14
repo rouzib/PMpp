@@ -49,6 +49,7 @@ class PMWindowCompensationCorrection:
 
 
 def init_pm_window_compensation_correction(dtype=jnp.float32, **kwargs):
+    """Initialize an analytic CIC/PM assignment-window compensation correction."""
     return PMWindowCompensationCorrection(
         assignment_order=kwargs.get("assignment_order", 2),
         windows=kwargs.get("windows", 2),
@@ -63,6 +64,7 @@ def init_pm_window_compensation_correction(dtype=jnp.float32, **kwargs):
 
 
 def evaluate_pm_window_compensation(correction, conf):
+    """Evaluate the bounded inverse assignment-window transfer on the k grid."""
     kx, ky, kz = [jnp.squeeze(a).astype(correction.dtype) for a in conf.kvec]
     cell_size = jnp.asarray(conf.cell_size, dtype=correction.dtype)
     particle_nyquist = jnp.asarray(jnp.pi / conf.ptcl_spacing, dtype=correction.dtype)

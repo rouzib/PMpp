@@ -313,7 +313,7 @@ def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, C
 def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Callable, Callable, Callable]:
     """
     Create a set of Fourrier Transform functions that distribute computation across a provided compute mesh (a logical
-    grouping of devices for parallel computation).  It returns a tuple of functions: `rfftn_jit`, `irfftn_jit`, `fftn_jit`,
+    grouping of devices for parallel computation). It returns a tuple of functions: `rfftn_jit`, `irfftn_jit`, `fftn_jit`,
     and `ifftn_jit` for performing real forward, real inverse, complex forward and complex inverse FFT respectively.
 
     Args:

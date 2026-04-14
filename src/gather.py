@@ -19,6 +19,7 @@ from .utils import AXIS_NAME, raise_error, pmid_to_idx
 
 
 def initialize_mGPU_gather(conf):
+    """Create the sharded gather entry point for the configured multi-GPU mode."""
     if conf.multigpu_mode == "mesh_halo":
         return shard_map(
             _gather_mGPU_mesh_halo,
@@ -50,6 +51,7 @@ def initialize_mGPU_gather(conf):
 
 @partial(custom_vjp, nondiff_argnums=(3,))
 def _gather_mGPU_mesh_halo(pmid, disp, unused_index, conf, mesh):
+    """Gather in ``mesh_halo`` mode from an owned mesh plus exchanged edge cells."""
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     incoming_left, incoming_right = exchange_owned_mesh_halo_edges(
         mesh,
@@ -65,6 +67,7 @@ def _gather_mGPU_mesh_halo(pmid, disp, unused_index, conf, mesh):
 
 
 def _gather_mGPU_mesh_halo_fwd(pmid, disp, unused_index, conf, mesh):
+    """Forward rule that saves exchanged mesh edges for the mesh-halo gather VJP."""
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     incoming_left, incoming_right = exchange_owned_mesh_halo_edges(
         mesh,
@@ -81,6 +84,7 @@ def _gather_mGPU_mesh_halo_fwd(pmid, disp, unused_index, conf, mesh):
 
 
 def _gather_mGPU_mesh_halo_bwd(conf, res, val_cot):
+    """Backward rule that reduces halo-mesh cotangents to owned cells."""
     pmid, disp, unused_index, mesh, incoming_left, incoming_right, offset = res
     mesh_halo = extend_owned_mesh_from_halo_edges(mesh, incoming_left, incoming_right, conf.mesh_halo_width)
     mask = unused_index.reshape(unused_index.shape + (1,) * (val_cot.ndim - 1))
@@ -105,6 +109,7 @@ def _match_exchange_routing(local_left_pmid, local_left_slot, local_left_valid,
                             local_right_pmid, local_right_slot, local_right_valid,
                             conf, incoming_pmid_left, incoming_valid_left,
                             incoming_pmid_right, incoming_valid_right):
+    """Match particle-halo exchange buffers to their local destination slots."""
     missing_key = jnp.asarray(conf.mesh_size, dtype=jnp.int32)
     local_left_keys = jnp.where(local_left_valid, pmid_to_idx(local_left_pmid, conf), missing_key)
     local_right_keys = jnp.where(local_right_valid, pmid_to_idx(local_right_pmid, conf), missing_key)
@@ -265,6 +270,7 @@ def _apply_exchange_bwd_from_routing(val_cot_in, routing, unused_index, conf):
 
 @partial(custom_vjp, nondiff_argnums=(3,))
 def _gather_mGPU(pmid, disp, unused_index, conf, mesh):
+    """Gather in ``particle_halo`` mode and exchange values for halo slots."""
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
 
@@ -273,6 +279,7 @@ def _gather_mGPU(pmid, disp, unused_index, conf, mesh):
 
 
 def _gather_mGPU_fwd(pmid, disp, unused_index, conf, mesh):
+    """Forward rule that saves particle-halo exchange routing for the VJP."""
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
 
@@ -282,6 +289,7 @@ def _gather_mGPU_fwd(pmid, disp, unused_index, conf, mesh):
 
 
 def _gather_mGPU_bwd(conf, res, val_cot):
+    """Backward rule for particle-halo gather."""
     pmid, disp, unused_index, mesh, routing = res
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
@@ -389,6 +397,7 @@ def gather_stacked_mesh_halo(ptcl, conf, mesh_channels):
 
 
 def _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size):
+    """Local multilinear gather implementation, optionally chunked."""
     ptcl_num, spatial_ndim = pmid.shape
 
     mesh = jnp.asarray(mesh, dtype=conf.float_dtype)
@@ -415,10 +424,12 @@ def _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size):
 
 @custom_vjp
 def _gather(pmid, disp, conf, mesh, val, offset, cell_size):
+    """Local gather primitive with custom VJP."""
     return _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size)
 
 
 def _gather_chunk(carry, chunk):
+    """Gather one particle chunk from the carried mesh."""
     mesh, offset, cell_size, conf_cell_size, conf_mesh_shape = carry
     pmid, disp, val = chunk
 
@@ -480,11 +491,13 @@ def _gather_chunk_adj(carry, chunk):
 
 
 def _gather_fwd(pmid, disp, conf, mesh, val, offset, cell_size):
+    """Forward rule for the local gather primitive."""
     val_out = _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size)
     return val_out, (pmid, disp, conf, mesh, offset, cell_size)
 
 
 def _gather_bwd(res, val_cot):
+    """Backward rule for the local gather primitive."""
     pmid, disp, conf, mesh, offset, cell_size = res
 
     ptcl_num = len(pmid)

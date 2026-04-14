@@ -17,17 +17,20 @@ from .steps import (
 
 
 def nbody_init(a, ptcl, cosmo, conf, correction=None):
+    """Initialize the leapfrog state by computing the starting acceleration."""
     ptcl = force(a, ptcl, cosmo, conf, correction=correction)
     return ptcl
 
 
 @jax.jit
 def nbody_step(a_prev, a_next, ptcl, cosmo, conf, correction=None):
+    """Advance one N-body macro-step between adjacent scale factors."""
     ptcl = integrate(a_prev, a_next, ptcl, cosmo, conf, correction=correction)
     return ptcl
 
 
 def _nbody_scale_factors(conf, reverse):
+    """Return the integration scale-factor schedule in forward or reverse order."""
     return conf.a_nbody[::-1] if reverse else conf.a_nbody
 
 
@@ -106,6 +109,7 @@ def _nbody_impl(ptcl, cosmo, conf, reverse=False, correction=None):
 
 
 def _ptcl_state(ptcl):
+    """Flatten a ``Particles`` object into the differentiable custom-VJP state."""
     return (
         ptcl.pmid,
         ptcl.disp,
@@ -118,6 +122,7 @@ def _ptcl_state(ptcl):
 
 
 def _state_to_ptcl(conf, state):
+    """Rebuild ``Particles`` from the flat custom-VJP particle state."""
     pmid, disp, vel, acc, unused_index, halo_mask, attr = state
     return Particles(
         conf,
@@ -132,6 +137,7 @@ def _state_to_ptcl(conf, state):
 
 
 def _cosmo_state(cosmo):
+    """Flatten ``Cosmology`` so the custom VJP can return parameter cotangents."""
     return (
         cosmo.A_s_1e9,
         cosmo.n_s,
@@ -148,6 +154,7 @@ def _cosmo_state(cosmo):
 
 
 def _state_to_cosmo(conf, state):
+    """Rebuild ``Cosmology`` from the flat custom-VJP cosmology state."""
     A_s_1e9, n_s, Omega_m, Omega_b, h, Omega_k_, w_0_, w_a_, transfer, growth, varlin = state
     return Cosmology(
         conf,
@@ -166,6 +173,7 @@ def _state_to_cosmo(conf, state):
 
 
 def _nbody_state_impl(conf, reverse, pmid, disp, vel, acc, unused_index, halo_mask, attr, cosmo, correction=None):
+    """Run N-body on flat particle inputs and return a flat particle state."""
     ptcl_in = _state_to_ptcl(conf, (pmid, disp, vel, acc, unused_index, halo_mask, attr))
     ptcl_out = _nbody_impl(ptcl_in, cosmo, conf, reverse=reverse, correction=correction)
     return _ptcl_state(ptcl_out)
@@ -173,6 +181,7 @@ def _nbody_state_impl(conf, reverse, pmid, disp, vel, acc, unused_index, halo_ma
 
 @partial(jax.jit, static_argnums=(0, 1))
 def _nbody_flat_impl(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state, correction=None):
+    """Jitted bridge from flat custom-VJP arguments to the solver body."""
     cosmo = _state_to_cosmo(conf, cosmo_state)
     return _nbody_state_impl(
         conf,
@@ -232,6 +241,7 @@ def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False, correction=None):
 
 @partial(custom_vjp, nondiff_argnums=(0, 1))
 def _nbody_state(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state, correction=None):
+    """Flat custom-VJP primitive underlying the public ``nbody`` call."""
     # Keep the public nbody entry point flat so the backward can start from the
     # final particle state without carrying a full-step replay tape.
     return _nbody_flat_impl(
@@ -250,6 +260,12 @@ def _nbody_state(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, 
 
 
 def nbody_adjoint_fwd(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state, correction=None):
+    """Forward rule for the N-body custom VJP.
+
+    Only the final state and static option flags are saved. The backward rule
+    reconstructs the adjoint trajectory by sweeping the symplectic steps in
+    reverse, avoiding a full tape of every intermediate particle state.
+    """
     cosmo = _state_to_cosmo(conf, cosmo_state)
     ptcl_in = _state_to_ptcl(conf, (pmid, disp, vel, acc, unused_index, halo_mask, attr))
     ptcl_out = _nbody_impl(ptcl_in, cosmo, conf, reverse=reverse, correction=correction)
@@ -265,6 +281,7 @@ def nbody_adjoint_fwd(conf, reverse, pmid, unused_index, halo_mask, attr, disp, 
 
 
 def nbody_adjoint_bwd(conf, reverse, res, cotangents):
+    """Backward rule for the N-body custom VJP."""
     state_out, cosmo_state, input_optionals, correction = res
     vel_is_none, acc_is_none, _, _, _ = input_optionals
 

@@ -10,6 +10,8 @@ PLANCK18_OMEGA_B = 0.04897
 
 @dataclass(frozen=True)
 class CamelsMetadata:
+    """Simulation metadata needed to build PM++ CAMELS comparison runs."""
+
     box_size: float
     omega_m: float
     omega_l: float
@@ -24,6 +26,8 @@ class CamelsMetadata:
 
 @dataclass(frozen=True)
 class CamelsParticlePair:
+    """Paired initial and final CAMELS particle arrays in a common ID order."""
+
     ic_pos: np.ndarray
     ic_vel: np.ndarray
     final_pos: np.ndarray
@@ -33,10 +37,12 @@ class CamelsParticlePair:
 
 
 def periodic_wrap(pos, box_size):
+    """Wrap positions into a periodic box."""
     return np.mod(pos, box_size)
 
 
 def periodic_delta(pos, anchor, box_size):
+    """Shortest periodic displacement from ``anchor`` to ``pos``."""
     return ((pos - anchor + 0.5 * box_size) % box_size) - 0.5 * box_size
 
 
@@ -54,6 +60,7 @@ def gadget_velocity_to_pmpp(vel, redshift):
 
 
 def _infer_grid_size(num_particles):
+    """Infer the side length of a cubic Lagrangian particle grid."""
     grid_size = round(num_particles ** (1 / 3))
     if grid_size ** 3 != num_particles:
         raise ValueError(f"Expected a cubic particle grid, got {num_particles} particles.")
@@ -61,6 +68,7 @@ def _infer_grid_size(num_particles):
 
 
 def _parse_two_lpt_param(path: Path) -> Dict[str, float]:
+    """Parse the simple whitespace ``2LPT.param`` files shipped with CAMELS."""
     params = {}
     with open(path, "r", encoding="utf-8") as handle:
         for raw_line in handle:
@@ -79,6 +87,7 @@ def _parse_two_lpt_param(path: Path) -> Dict[str, float]:
 
 
 def _load_camels_snapshot_npz(path: Path):
+    """Load the cached final CAMELS snapshot format used by local scripts."""
     with np.load(path, allow_pickle=True) as data:
         return {
             "pos": np.asarray(data["pos"], dtype=np.float32),
@@ -92,6 +101,7 @@ def _load_camels_snapshot_npz(path: Path):
 
 
 def _load_camels_ics_npz(path: Path):
+    """Load cached CAMELS IC arrays from ``ics.npz``."""
     with np.load(path, allow_pickle=True) as data:
         return {
             "pos": np.asarray(data["pos"], dtype=np.float32),
@@ -105,6 +115,7 @@ def _load_camels_ics_npz(path: Path):
 
 
 def _load_camels_ics_hdf5(ics_dir: Path):
+    """Load raw CAMELS HDF5 IC shards and sort particles by ID."""
     pos, vel, ids = [], [], []
     for path in sorted(ics_dir.glob("ics.*.hdf5")):
         with h5py.File(path, "r") as handle:
@@ -134,6 +145,7 @@ def _load_camels_ics_hdf5(ics_dir: Path):
 
 
 def load_camels_pair(base_dir):
+    """Load CAMELS ICs and final snapshot as a paired supervised dataset."""
     base_dir = Path(base_dir)
     snapshot_npz = base_dir / "snapshot_090.npz"
     if snapshot_npz.exists():
@@ -194,12 +206,14 @@ def load_camels_pair(base_dir):
 
 
 def _grid_linear_index_from_pos(pos, box_size, grid_size):
+    """Map regular-grid IC positions back to their Lagrangian linear index."""
     spacing = box_size / grid_size
     grid = np.rint(pos / spacing).astype(np.int64) % grid_size
     return grid[:, 2] + grid_size * (grid[:, 1] + grid_size * grid[:, 0])
 
 
 def _reshape_on_lagrangian_grid(pair: CamelsParticlePair):
+    """Reshape paired particle arrays onto the Lagrangian grid."""
     n = pair.metadata.grid_size
     count = pair.ids.shape[0]
     linear_index = np.asarray(pair.ids, dtype=np.int64)
@@ -220,6 +234,7 @@ def _reshape_on_lagrangian_grid(pair: CamelsParticlePair):
 
 
 def _block_mean(array, factor):
+    """Average a vector grid over cubic blocks."""
     n = array.shape[0]
     coarse_n = n // factor
     reshaped = array.reshape(coarse_n, factor, coarse_n, factor, coarse_n, factor, array.shape[-1])
@@ -227,6 +242,7 @@ def _block_mean(array, factor):
 
 
 def coarsen_camels_pair(pair: CamelsParticlePair, factor: int):
+    """Downsample a CAMELS pair by averaging displacements and velocities."""
     if factor < 1:
         raise ValueError("factor must be >= 1")
     if factor == 1:

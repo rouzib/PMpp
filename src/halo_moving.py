@@ -1,3 +1,19 @@
+"""Particle routing helpers for PM++ multi-GPU slab decompositions.
+
+The N-body drift can move particles across x-slab boundaries. This module
+keeps the static-capacity particle buffers canonical after such moves:
+
+* build the authoritative owned-particle block for each device,
+* exchange boundary particles when ``particle_halo`` needs duplicated slots,
+* keep ``mesh_halo`` authoritative-only storage compact,
+* provide explicit transposes used by the hand-written adjoint.
+
+Most private helpers preserve a common invariant: valid particles are packed in
+monotonic raveled-``pmid`` order, and invalid/padding entries carry a sentinel
+key. That invariant is what lets gather/scatter gradient exchanges match
+compact buffers by position instead of doing expensive per-step hash lookups.
+"""
+
 from functools import partial
 
 import jax
@@ -31,20 +47,24 @@ def compute_halo_mask(x_mod, halo_start, halo_end, unused_indexes):
 
 
 def _key_fill_value(conf):
+    """Sentinel raveled key that sorts after every real particle key."""
     return jnp.asarray(conf.mesh_size, dtype=jnp.int32)
 
 
 def _owned_slice_bounds(global_nMesh, num_gpus, offsets):
+    """Return the owned x-slab bounds for the current shard."""
     owned_start = offsets[jax.lax.axis_index(AXIS_NAME)]
     owned_end = (owned_start + global_nMesh // num_gpus) % global_nMesh
     return owned_start, owned_end
 
 
 def _x_mod_from_disp(pmid, disp, global_nMesh, disp_size):
+    """Particle x-position in mesh-cell units, wrapped into ``[0, nMesh)``."""
     return (pmid[:, 0] + disp[:, 0] * disp_size) % global_nMesh
 
 
 def _capacity_check(count, capacity, message):
+    """Raise a JAX-side error when a static-capacity buffer would overflow."""
     _ = jax.lax.cond(
         count > capacity,
         lambda _: raise_error(message, x=count, y=capacity),
@@ -54,6 +74,7 @@ def _capacity_check(count, capacity, message):
 
 
 def _compact_sorted_indices(mask, capacity, error_message):
+    """Compact valid indices while preserving the source order."""
     count = jnp.sum(mask)
     _capacity_check(count, capacity, error_message)
     fill_index = jnp.asarray(mask.shape[0] - 1, dtype=jnp.int32)
@@ -63,6 +84,7 @@ def _compact_sorted_indices(mask, capacity, error_message):
 
 
 def _gather_compacted(values, compact_idx, valid, fill_value):
+    """Gather compacted payload entries and fill invalid tail slots."""
     gathered = values[compact_idx]
     valid_shape = (valid.shape[0],) + (1,) * (gathered.ndim - 1)
     return jnp.where(
@@ -73,6 +95,7 @@ def _gather_compacted(values, compact_idx, valid, fill_value):
 
 
 def _compact_sorted_particles(keys, pmid, disp, vel, acc, mask, capacity, key_fill, error_message):
+    """Compact a sorted particle payload into a fixed-capacity buffer."""
     # Canonical callers compact from an already key-sorted authoritative
     # sequence, so a single ordered index extraction can feed every payload.
     compact_idx, valid = _compact_sorted_indices(mask, capacity, error_message)
@@ -85,6 +108,7 @@ def _compact_sorted_particles(keys, pmid, disp, vel, acc, mask, capacity, key_fi
 
 
 def _compact_sorted_particles_with_slots(keys, pmid, disp, vel, acc, mask, capacity, key_fill, error_message):
+    """Compact particles and remember their original source slots."""
     compact_idx, valid = _compact_sorted_indices(mask, capacity, error_message)
     keys_compact = _gather_compacted(keys, compact_idx, valid, key_fill)
     pmid_compact = _gather_compacted(pmid, compact_idx, valid, 0)
@@ -112,6 +136,7 @@ def _sorted_merge_two(
     key_fill,
     error_message,
 ):
+    """Merge two sorted fixed-capacity particle streams."""
     count_a = jnp.sum(valid_a)
     count_b = jnp.sum(valid_b)
     total = count_a + count_b
@@ -170,6 +195,7 @@ def _sorted_merge_two_with_provenance(
     error_message,
     src_tag_b=jnp.int32(2),
 ):
+    """Merge two sorted streams and record which input produced each output."""
     # Searchsorted-based merge with provenance tracking.
     # Same position formula as _sorted_merge_two; additionally scatter src_tag/src_idx.
     count_a = jnp.sum(valid_a)
@@ -248,6 +274,7 @@ def _sorted_merge_three(
     key_fill,
     error_message,
 ):
+    """Merge three sorted fixed-capacity particle streams."""
     count_a = jnp.sum(valid_a)
     count_b = jnp.sum(valid_b)
     count_c = jnp.sum(valid_c)
@@ -322,6 +349,7 @@ def _pack_left_halo_and_authoritative(
     global_nMesh,
     disp_size,
 ):
+    """Build ``particle_halo`` storage: left-halo copies followed by owned particles."""
     del left_keys, auth_keys
     left_count = jnp.sum(left_valid)
     auth_count = jnp.sum(auth_valid)
@@ -443,6 +471,7 @@ def _canonical_authoritative_from_full(
     offsets,
     conf,
 ):
+    """Extract owned authoritative particles from a full particle-halo slab."""
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
     x_mod = _x_mod_from_disp(pmid, source_disp, global_nMesh, disp_size)
     owned_mask = particles_in_slice_mask(x_mod, owned_start, owned_end) & ~unused_index
@@ -474,6 +503,7 @@ def _canonical_authoritative_from_full_with_slots(
     offsets,
     conf,
 ):
+    """Extract owned authoritative particles and keep original slot indices."""
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
     x_mod = _x_mod_from_disp(pmid, source_disp, global_nMesh, disp_size)
     owned_mask = particles_in_slice_mask(x_mod, owned_start, owned_end) & ~unused_index
@@ -493,6 +523,7 @@ def _canonical_authoritative_from_full_with_slots(
 
 
 def _scatter_compact_to_dense(compact_values, compact_slots, compact_valid, out_size):
+    """Scatter compact cotangents back to their original dense slots."""
     out = jnp.zeros((out_size,) + compact_values.shape[1:], dtype=compact_values.dtype)
     slots = jnp.where(compact_valid, compact_slots, 0)
     mask = compact_valid.reshape((compact_valid.shape[0],) + (1,) * (compact_values.ndim - 1))
@@ -501,11 +532,13 @@ def _scatter_compact_to_dense(compact_values, compact_slots, compact_valid, out_
 
 
 def _mask_compact_prefix(compact_values, compact_valid):
+    """Zero invalid entries in a compact fixed-capacity buffer."""
     mask = compact_valid.reshape((compact_valid.shape[0],) + (1,) * (compact_values.ndim - 1))
     return compact_values * mask.astype(compact_values.dtype)
 
 
 def _compact_positions(mask, capacity, error_message):
+    """Compact source positions for later route transposes."""
     pos, valid = _compact_sorted_indices(mask, capacity, error_message)
     return jnp.where(valid, pos, jnp.asarray(-1, pos.dtype))
 
@@ -533,6 +566,7 @@ def _sorted_merge_three_with_provenance(
     key_fill,
     error_message,
 ):
+    """Merge three sorted streams and keep source tags for the transpose."""
     count_a = jnp.sum(valid_a)
     count_b = jnp.sum(valid_b)
     count_c = jnp.sum(valid_c)
@@ -582,11 +616,13 @@ def _sorted_merge_three_with_provenance(
 
 
 def _ordered_block_take(values, start, count, slots):
+    """Take a contiguous logical block into arbitrary output slots."""
     idx, mask = _ordered_block_take_plan(start, count, slots, values.shape[0])
     return mask, _ordered_block_take_from_plan(values, idx, mask)
 
 
 def _ordered_block_take_plan(start, count, slots, value_count):
+    """Precompute indices and masks for ``_ordered_block_take``."""
     start = start.astype(slots.dtype)
     count = count.astype(slots.dtype)
     idx = jnp.clip(slots - start, 0, value_count - 1)
@@ -595,12 +631,14 @@ def _ordered_block_take_plan(start, count, slots, value_count):
 
 
 def _ordered_block_take_from_plan(values, idx, mask):
+    """Apply a precomputed ordered-block take plan to one payload array."""
     taken = values[idx]
     mask_shape = (mask.shape[0],) + (1,) * (values.ndim - 1)
     return jnp.where(mask.reshape(mask_shape), taken, jnp.zeros_like(taken))
 
 
 def _extract_compact_block(values, start, count, out_size):
+    """Extract a fixed-capacity compact block from a larger ordered buffer."""
     slots = jnp.arange(out_size, dtype=jnp.int32)
     idx = jnp.clip(start + slots, 0, values.shape[0] - 1)
     taken = values[idx]
@@ -610,6 +648,7 @@ def _extract_compact_block(values, start, count, out_size):
 
 
 def _positions_from_range(start, count, capacity):
+    """Return source positions for a compact contiguous range."""
     slots = jnp.arange(capacity, dtype=jnp.int32)
     start = start.astype(slots.dtype)
     return jnp.where(slots < count, start + slots, jnp.asarray(-1, slots.dtype))
@@ -633,6 +672,7 @@ def _route_merge_two_topology(
     error_message,
     num_gpus,
 ):
+    """Merge stay and one incoming migration stream in slab-topology order."""
     count_stay = jnp.sum(valid_stay)
     count_incoming = jnp.sum(valid_incoming)
     total = count_stay + count_incoming
@@ -693,6 +733,7 @@ def _route_merge_two_topology_with_blocks(
     error_message,
     num_gpus,
 ):
+    """Two-stream topology merge that also returns compact block metadata."""
     count_stay = jnp.sum(valid_stay)
     count_incoming = jnp.sum(valid_incoming)
     total = count_stay + count_incoming
@@ -767,6 +808,7 @@ def _route_merge_two_topology_with_source_tags(
     num_gpus,
     incoming_src_tag=jnp.uint8(1),
 ):
+    """Two-stream topology merge with source tags for custom transposes."""
     count_stay = jnp.sum(valid_stay)
     count_incoming = jnp.sum(valid_incoming)
     total = count_stay + count_incoming
@@ -830,6 +872,7 @@ def _route_merge_two_topology_with_provenance(
     num_gpus,
     incoming_src_tag=jnp.int32(2),
 ):
+    """Two-stream topology merge with explicit source indices and tags."""
     count_stay = jnp.sum(valid_stay)
     count_incoming = jnp.sum(valid_incoming)
     total = count_stay + count_incoming
@@ -919,6 +962,7 @@ def _route_merge_three_topology(
     error_message,
     num_gpus,
 ):
+    """Merge stay, left-incoming, and right-incoming streams in slab order."""
     count_stay = jnp.sum(valid_stay)
     count_left = jnp.sum(valid_left)
     count_right = jnp.sum(valid_right)
@@ -1003,6 +1047,7 @@ def _route_merge_three_topology_with_blocks(
     error_message,
     num_gpus,
 ):
+    """Three-stream topology merge that also returns compact block metadata."""
     count_stay = jnp.sum(valid_stay)
     count_left = jnp.sum(valid_left)
     count_right = jnp.sum(valid_right)
@@ -1100,6 +1145,7 @@ def _route_merge_three_topology_with_source_tags(
     error_message,
     num_gpus,
 ):
+    """Three-stream topology merge with source tags for custom transposes."""
     count_stay = jnp.sum(valid_stay)
     count_left = jnp.sum(valid_left)
     count_right = jnp.sum(valid_right)
@@ -1186,6 +1232,7 @@ def _route_merge_three_topology_with_provenance(
     error_message,
     num_gpus,
 ):
+    """Three-stream topology merge with explicit source indices and tags."""
     count_stay = jnp.sum(valid_stay)
     count_left = jnp.sum(valid_left)
     count_right = jnp.sum(valid_right)
@@ -1290,6 +1337,7 @@ def _canonical_route_authoritative(
     offsets,
     conf,
 ):
+    """Route authoritative particles to their post-drift owner slabs."""
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
     slice_width = global_nMesh // num_gpus
     left_start = (owned_start - slice_width) % global_nMesh
@@ -1373,6 +1421,7 @@ def _canonical_route_authoritative_with_source_tags(
     offsets,
     conf,
 ):
+    """Route authoritative particles and tag whether they stayed or migrated."""
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
     slice_width = global_nMesh // num_gpus
     left_start = (owned_start - slice_width) % global_nMesh
@@ -1452,6 +1501,7 @@ def _canonical_route_authoritative_with_block_metadata(
     offsets,
     conf,
 ):
+    """Route authoritative particles and return compact block metadata."""
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
     slice_width = global_nMesh // num_gpus
     left_start = (owned_start - slice_width) % global_nMesh
@@ -1530,6 +1580,7 @@ def _canonical_route_authoritative_with_aux(
     offsets,
     conf,
 ):
+    """Route authoritative particles and save the data needed by the transpose."""
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
     slice_width = global_nMesh // num_gpus
     left_start = (owned_start - slice_width) % global_nMesh
@@ -1619,6 +1670,7 @@ def _reverse_build_full_cot(
     right_perm,
     disp_size,
 ):
+    """Transpose ``_canonical_build_full_from_authoritative`` for one payload."""
     auth_pos = jnp.arange(auth_pmid.shape[0], dtype=jnp.int32)
     x_mod = _x_mod_from_disp(auth_pmid, auth_disp, global_nMesh, disp_size)
     right_halo_mask = auth_valid & particles_in_slice_mask(
@@ -1678,6 +1730,7 @@ def _reverse_route_cot(
     left_perm,
     right_perm,
 ):
+    """Transpose the authoritative particle migration route."""
     dtype = merged_cot.dtype
     cot_shape = merged_cot.shape[1:]
     stay_cot = jnp.zeros((stay_pos.shape[0],) + cot_shape, dtype=dtype)
@@ -1739,7 +1792,7 @@ def _reverse_route_cot_two_gpu(
     """2-GPU fast path for _reverse_route_cot.
 
     In the 2-GPU topology send_right is always zero, so merge_src_tag never
-    equals 1 (incoming_from_left).  We skip the zero-ppermute on that side
+    equals 1 (incoming_from_left). We skip the zero-ppermute on that side
     and the associated scatter.
     """
     dtype = merged_cot.dtype
@@ -1803,6 +1856,7 @@ def halo_move_pullback_from_prestate_shard_map(
     offsets,
     conf,
 ):
+    """Pull cotangents through a canonical ``particle_halo`` move."""
     # Reverse the canonical move in two logical stages:
     # 1. recover the authoritative sequence before the move,
     # 2. transpose the deterministic route/build back to the original slots.
@@ -1923,6 +1977,7 @@ def halo_move_pullback_mesh_halo_from_prestate_shard_map(
     offsets,
     conf,
 ):
+    """Pull cotangents through a ``mesh_halo`` authoritative-only move."""
     del halo_end, max_halo_values_to_share, max_ptcl_per_slice
     (
         auth_keys,
@@ -2015,6 +2070,7 @@ def _canonical_build_full_from_authoritative(
     disp_size,
     conf,
 ):
+    """Rebuild deterministic ``particle_halo`` storage from authoritative particles."""
     # The stored particle slab is deterministic:
     # 1. authoritative owned particles,
     # 2. exported right-edge particles mirrored from the neighbor as left halo.
@@ -2072,6 +2128,7 @@ def move_particles_canonical_shard_map(
     offsets,
     conf,
 ):
+    """Move particles across slabs and rebuild duplicated particle-halo storage."""
     # Forward halo move:
     # 1. drop duplicated storage and keep the authoritative slab only,
     # 2. reroute that slab based on post-drift positions,
@@ -2141,6 +2198,7 @@ def move_particles_mesh_halo_shard_map(
     offsets,
     conf,
 ):
+    """Move particles across slabs while storing only authoritative particles."""
     del halo_start, halo_end, max_halo_values_to_share
     auth = _canonical_authoritative_from_full(
         pmid,
@@ -2199,6 +2257,7 @@ def reconstruct_pre_drift_canonical_shard_map(
     offsets,
     conf,
 ):
+    """Reconstruct the canonical pre-drift particle-halo state from post-drift data."""
     auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid = _canonical_authoritative_from_full(
         pmid,
         disp,
@@ -2268,6 +2327,7 @@ def reconstruct_pre_drift_mesh_halo_shard_map(
     offsets,
     conf,
 ):
+    """Reconstruct the pre-drift authoritative-only state from post-drift data."""
     del halo_start, halo_end, max_halo_values_to_share
     auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid = _authoritative_prefix_from_owned_only(
         pmid,
@@ -2326,6 +2386,7 @@ def reconstruct_pre_drift_and_pullback_mesh_halo_shard_map(
     offsets,
     conf,
 ):
+    """Fused mesh-halo reconstruction plus halo-move pullback for drift adjoints."""
     pre_pmid, pre_disp, pre_vel, pre_acc, pre_unused_index, pre_halo_mask = (
         reconstruct_pre_drift_mesh_halo_shard_map(
             pmid,
@@ -2386,11 +2447,13 @@ def reconstruct_pre_drift_and_pullback_mesh_halo_shard_map(
 
 @partial(jax.jit, static_argnames=["global_nMesh", "disp_size"])
 def compute_halo_mask_shard_map(pmid, disp, unused_indexes, halo_start, halo_end, global_nMesh, disp_size):
+    """Compute halo masks from sharded particle positions."""
     x_mod = (pmid[:, 0] + disp[:, 0] * disp_size) % global_nMesh
     return compute_halo_mask(x_mod, halo_start.squeeze(), halo_end.squeeze(), unused_indexes)
 
 
 def _halo_capacity(conf):
+    """Return the static capacity for halo-copy exchange buffers."""
     if conf.max_halo_share_ptcl is not None:
         return conf.max_halo_share_ptcl
     return min(
@@ -2401,6 +2464,7 @@ def _halo_capacity(conf):
 
 
 def initialize_mGPU_halo_movement_canonical(conf):
+    """Create the sharded forward particle-movement callable."""
     if conf.num_devices == 1:
         def _halo_noop(pmid, disp_before, disp_after, vel, acc, halo_start, halo_end, unused_indexes):
             del disp_before, halo_start, halo_end
@@ -2461,6 +2525,7 @@ def initialize_mGPU_halo_movement_canonical(conf):
 
 
 def initialize_mGPU_reconstruct_pre_drift(conf):
+    """Create the sharded pre-drift reconstruction callable."""
     if conf.num_devices == 1:
         def _reconstruct_noop(pmid, disp, vel, acc, halo_start, halo_end, unused_indexes, drift_factor):
             del halo_start, halo_end, drift_factor
@@ -2511,6 +2576,7 @@ def initialize_mGPU_reconstruct_pre_drift(conf):
 
 
 def initialize_mGPU_reconstruct_pre_drift_pullback(conf):
+    """Create the fused mesh-halo reconstruction/pullback callable when available."""
     if conf.num_devices == 1 or conf.multigpu_mode != "mesh_halo":
         return None
 
@@ -2557,6 +2623,7 @@ def initialize_mGPU_reconstruct_pre_drift_pullback(conf):
 
 
 def initialize_mGPU_halo_move_pullback(conf):
+    """Create the sharded halo-move transpose callable."""
     if conf.num_devices == 1:
         def _pullback_noop(
             pmid,
@@ -2616,6 +2683,7 @@ def initialize_mGPU_halo_move_pullback(conf):
 
 
 def initialize_mGPU_compute_halo_mask(conf):
+    """Create the sharded halo-mask helper for the active multi-GPU mode."""
     if conf.multigpu_mode == "mesh_halo":
         if conf.num_devices == 1:
             def _compute_halo_mask_mesh_halo_noop(pmid, disp, unused_indexes, halo_start, halo_end):

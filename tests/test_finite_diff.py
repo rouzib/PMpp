@@ -6,7 +6,7 @@ centered finite-difference (FD) approximation along a random perturbation.
 
 Multi-GPU note: for tests that perturb particle displacements, the loss
 function includes a halo exchange so that halo copies stay consistent with
-the perturbed owned values.  Float64 accumulation is used in loss reductions
+the perturbed owned values. Float64 accumulation is used in loss reductions
 to avoid cancellation errors in the FD subtraction.
 """
 

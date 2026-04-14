@@ -385,10 +385,12 @@ def _safe_power(x1, x2):
     return x1 ** x2
 
 def _safe_power_fwd(x1, x2):
+    """Forward rule for ``_safe_power``."""
     y = _safe_power(x1, x2)
     return y, (x1, x2, y)
 
 def _safe_power_bwd(res, y_cot):
+    """Backward rule that avoids ``log(0)`` and ``x1 ** (x2 - 1)`` at zero."""
     x1, x2, y = res
 
     x1_cot = jnp.where(x1 != 0, x2 * y / x1 * y_cot, 0)

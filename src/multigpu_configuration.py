@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 
 def _uninitialized_runtime_callable(*args, **kwargs):
+    """Placeholder for runtime helpers before ``Configuration`` initializes them."""
     raise RuntimeError("MultiGPU runtime helper was used before initialization.")
 
 
@@ -83,6 +84,13 @@ class MultiGPUConfiguration:
 
 
 def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUConfiguration | None = None) -> MultiGPUConfiguration | None:
+    """Derive static multi-GPU topology from the user-facing configuration.
+
+    This function computes slab ownership, halo extents, communication
+    permutations, and static buffer capacities. It intentionally does not
+    create jitted helper functions; that happens in ``initialize_multigpu_runtime``
+    after the final ``Configuration`` object exists.
+    """
     compute_mesh = runtime_seed.compute_mesh if runtime_seed is not None and runtime_seed.compute_mesh is not None else conf.compute_mesh
     if compute_mesh is None:
         return None
@@ -187,6 +195,7 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
 
 
 def initialize_multigpu_runtime(conf: "Configuration", runtime: MultiGPUConfiguration) -> MultiGPUConfiguration:
+    """Attach distributed FFT, scatter/gather, and halo-movement callables."""
     rfftn_jit, irfftn_jit, _, _, rfftn_transposed_jit, irfftn_transposed_jit = create_ffts(runtime.compute_mesh)
     _, irfftn_transposed_batched_jit = create_batched_transposed_real_ffts(runtime.compute_mesh)
     return runtime.replace(

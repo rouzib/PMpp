@@ -23,6 +23,7 @@ _MAS_POWER = {
 
 
 def _normalize_mas(mas: str | None) -> str | None:
+    """Normalize and validate the mass-assignment scheme name."""
     if mas is None:
         return None
     mas = mas.upper()
@@ -32,14 +33,17 @@ def _normalize_mas(mas: str | None) -> str | None:
 
 
 def _box_size_1d(conf) -> float:
+    """Return the scalar box size assumed by isotropic shell binning."""
     return float(conf.box_size[0])
 
 
 def _fundamental_mode(conf):
+    """Return the fundamental wavenumber ``2 pi / L``."""
     return jnp.asarray(2 * jnp.pi / _box_size_1d(conf), dtype=conf.float_dtype)
 
 
 def _max_shell_index(conf) -> int:
+    """Largest integer-radius Fourier shell represented by the mesh."""
     with jax.ensure_compile_time_eval():
         nyquist = conf.mesh_shape[0] // 2
         return math.floor(math.sqrt(3) * nyquist)
@@ -47,6 +51,12 @@ def _max_shell_index(conf) -> int:
 
 @lru_cache(maxsize=None)
 def _shell_statistics(shape: tuple[int, int, int], cell_size: float):
+    """Host-side shell centers and mode counts for an rFFT mesh.
+
+    The rFFT half-spectrum omits negative ``kz`` modes. ``multiplicity`` counts
+    the missing conjugate partners except on self-conjugate ``kz=0`` and
+    Nyquist planes, so shell averages match a full complex FFT.
+    """
     box_size = float(shape[0]) * float(cell_size)
     k_fundamental = 2 * math.pi / box_size
 
@@ -75,6 +85,7 @@ def _shell_statistics(shape: tuple[int, int, int], cell_size: float):
 
 
 def _shell_vectors(conf):
+    """Return cached shell-center and mode-count arrays on the active backend."""
     k_shell, nmodes = _shell_statistics(tuple(int(s) for s in conf.mesh_shape), float(conf.cell_size))
     return (
         lax.stop_gradient(jnp.asarray(k_shell, dtype=conf.float_dtype)),
@@ -83,6 +94,7 @@ def _shell_vectors(conf):
 
 
 def _fft_mode_numbers(size: int, *, real_axis: bool, dtype):
+    """Integer Fourier labels matching FFT storage order."""
     half = size // 2
     if real_axis:
         return jnp.arange(half + 1, dtype=dtype)
@@ -102,6 +114,7 @@ def _fft_mode_numbers(size: int, *, real_axis: bool, dtype):
 
 
 def _mode_numbers_transposed(conf):
+    """Mode-number vectors for the transposed spectral layout."""
     mode_dtype = jnp.int32
     return (
         lax.stop_gradient(_fft_mode_numbers(conf.mesh_shape[0], real_axis=False, dtype=mode_dtype)),
@@ -111,6 +124,7 @@ def _mode_numbers_transposed(conf):
 
 
 def _mas_power_deconvolution(mode_x, mode_y, mode_z, conf, mas_power: int):
+    """Return the inverse squared mass-assignment window for P(k)."""
     if mas_power <= 0:
         return None
 
@@ -124,6 +138,7 @@ def _mas_power_deconvolution(mode_x, mode_y, mode_z, conf, mas_power: int):
 
 
 def _shell_reduce_local(spectral, mode_x, mode_y, mode_z, conf, mas_power: int, num_shells: int):
+    """Accumulate spectral power into integer-radius shells on one local shard."""
     mode_sq = (
         mode_x[:, None, None].astype(jnp.int64) ** 2
         + mode_y[None, :, None].astype(jnp.int64) ** 2
@@ -150,6 +165,7 @@ def _shell_reduce_local(spectral, mode_x, mode_y, mode_z, conf, mas_power: int, 
 
 
 def _shell_reduce_transposed(spectral, conf, mas_power: int, num_shells: int):
+    """Reduce shell power on single-GPU or distributed transposed spectra."""
     mode_x, mode_y, mode_z = _mode_numbers_transposed(conf)
     if conf.compute_mesh is None or conf.num_devices == 1:
         return _shell_reduce_local(spectral, mode_x, mode_y, mode_z, conf, mas_power, num_shells)
@@ -185,6 +201,7 @@ def _shell_reduce_transposed(spectral, conf, mas_power: int, num_shells: int):
 
 
 def _finalize_shell_averages(p_sum, conf):
+    """Convert shell power sums into physical ``P(k)`` normalization."""
     k, nmodes = _shell_vectors(conf)
     pk = p_sum[1:] / nmodes.astype(conf.float_dtype)
     pk = pk * (conf.cell_size ** 3 / conf.mesh_size)
@@ -192,6 +209,7 @@ def _finalize_shell_averages(p_sum, conf):
 
 
 def _spectral_delta(delta, conf):
+    """FFT an overdensity mesh into the solver's spectral layout."""
     if conf.compute_mesh is None:
         return jnp.fft.rfftn(delta)
     return conf.mGPU_rfftn_transposed(delta)

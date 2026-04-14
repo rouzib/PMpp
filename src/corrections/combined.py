@@ -17,6 +17,8 @@ from .radial import RadialPotentialCorrection
     eq=False,
 )
 class CombinedPotentialCorrection:
+    """Correction that applies a radial transfer followed by a mesh-CNN residual."""
+
     radial: RadialPotentialCorrection
     mesh_cnn: MeshCNNPotentialCorrection
     dtype: jnp.dtype = field(default=jnp.float32, repr=False)

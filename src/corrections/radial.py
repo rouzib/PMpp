@@ -62,6 +62,7 @@ class NeuralSplineFourierFilter(HaikuModuleBase):
 
 @lru_cache(maxsize=None)
 def radial_transform(n_knots, latent_size):
+    """Return the cached Haiku transform for the radial spline filter."""
     require_haiku("radial potential corrections")
     return hk.without_apply_rng(
         hk.transform(
@@ -80,6 +81,8 @@ def radial_transform(n_knots, latent_size):
     eq=False,
 )
 class RadialPotentialCorrection:
+    """Trainable rotationally invariant multiplicative potential correction."""
+
     params: dict
     n_knots: int = 8
     latent_size: int = 16
@@ -109,6 +112,7 @@ def init_radial_potential_correction(
     conf=None,
     **unused_kwargs,
 ):
+    """Initialize radial correction parameters for a representative k grid."""
     del unused_kwargs
     dtype = jnp.dtype(dtype)
     transform = radial_transform(n_knots, latent_size)
@@ -133,6 +137,7 @@ def init_radial_potential_correction(
 
 
 def sample_radial_potential_transfer(correction, radius_fraction, a, cosmo, conf):
+    """Evaluate the radial transfer on user-supplied normalized radii."""
     if correction is None:
         return jnp.ones_like(radius_fraction, dtype=conf.float_dtype)
     radius_fraction = jnp.asarray(radius_fraction, dtype=correction.dtype)
@@ -149,6 +154,7 @@ def sample_radial_potential_transfer(correction, radius_fraction, a, cosmo, conf
 
 
 def evaluate_radial_potential_transfer(correction, a, cosmo, conf):
+    """Evaluate the radial transfer on the full solver k grid."""
     if correction is None:
         return jnp.ones(tuple(conf.mesh_shape[:-1]) + (conf.mesh_shape[-1] // 2 + 1,), dtype=conf.float_dtype)
     k_norm = normalized_k_magnitude_transposed(conf)

@@ -61,21 +61,38 @@ def white_noise(seed, conf, real=False, unit_abs=False):
 
 
 def _complex_dtype_for(float_dtype):
+    """Return the complex dtype that preserves the requested real precision."""
     if jnp.dtype(float_dtype) == jnp.float64:
         return jnp.complex128
     return jnp.complex64
 
 
 def _fft_mode_numbers(size):
+    """Integer Fourier labels for a full FFT axis.
+
+    JAX/NumPy FFT output stores positive modes first and wraps negative modes
+    at the end of the axis. Nested white noise needs the physical integer
+    label, not the storage index, so that the same low-k mode hashes to the
+    same value at different grid resolutions.
+    """
     idx = jnp.arange(size, dtype=jnp.int32)
     return jnp.where(idx < (size + 1) // 2, idx, idx - size)
 
 
 def _rfft_mode_numbers(size):
+    """Integer Fourier labels for the non-negative axis of an rFFT output."""
     return jnp.arange(size // 2 + 1, dtype=jnp.int32)
 
 
 def _mix_uint32(x):
+    """Avalanche-mix uint32 values for mode-local deterministic randomness.
+
+    This is not a cryptographic hash, but a cheap integer finalizer used by
+    ``white_noise_nested`` so each Fourier mode can be sampled as a pure
+    function of ``(seed, kx, ky, kz)``. This avoids drawing from an
+    array-shaped PRNG stream, where changing the resolution would change the
+    random numbers assigned to already-shared low-k modes.
+    """
     x = jnp.asarray(x, dtype=jnp.uint32)
     x = jnp.bitwise_xor(x, x >> 16)
     x *= jnp.uint32(0x7FEB352D)
@@ -86,6 +103,12 @@ def _mix_uint32(x):
 
 
 def _hash_mode_u32(seed, kx, ky, kz, salt):
+    """Hash a seed and integer Fourier coordinate into one uint32 stream.
+
+    ``salt`` gives independent streams for the real and imaginary Gaussian
+    variates of the same mode while keeping both streams tied to the same
+    physical mode coordinate.
+    """
     h = _mix_uint32(jnp.uint32(seed) ^ jnp.uint32(salt))
     h = _mix_uint32(h ^ _mix_uint32(jnp.asarray(kx, dtype=jnp.uint32) + jnp.uint32(0x9E3779B9)))
     h = _mix_uint32(h ^ _mix_uint32(jnp.asarray(ky, dtype=jnp.uint32) + jnp.uint32(0x85EBCA6B)))
@@ -94,11 +117,13 @@ def _hash_mode_u32(seed, kx, ky, kz, salt):
 
 
 def _hash_to_uniform(hash_value, dtype):
+    """Map a uint32 hash to an open-bin uniform variate in ``(0, 1)``."""
     dtype = jnp.dtype(dtype)
     return (hash_value.astype(dtype) + jnp.asarray(0.5, dtype=dtype)) * jnp.asarray(2.3283064365386963e-10, dtype=dtype)
 
 
 def _box_muller(hash_real, hash_imag, dtype):
+    """Convert two hashed uint32 streams into standard-normal variates."""
     dtype = jnp.dtype(dtype)
     u1 = _hash_to_uniform(hash_real, dtype)
     u2 = _hash_to_uniform(hash_imag, dtype)
@@ -108,6 +133,7 @@ def _box_muller(hash_real, hash_imag, dtype):
 
 
 def _is_self_inverse_mode(k_mode, size):
+    """Return whether a 1D Fourier mode equals its own negative on the grid."""
     mask = k_mode == 0
     if size % 2 == 0:
         mask = mask | (k_mode == -(size // 2))
@@ -115,6 +141,14 @@ def _is_self_inverse_mode(k_mode, size):
 
 
 def _canonical_xy_pair(kx, ky, shape):
+    """Choose one representative from each Hermitian pair on self-conjugate planes.
+
+    In an rFFT array, modes with ``kz = 0`` and, for even grids, ``kz = N/2``
+    must satisfy ``F(kx, ky, kz) = conj(F(-kx, -ky, kz))``. This helper
+    selects the canonical ``(kx, ky)`` member to hash, tells the caller whether
+    the stored mode should be conjugated, and identifies points whose imaginary
+    part must be exactly zero.
+    """
     partner_x = jnp.where(_is_self_inverse_mode(kx, shape[0]), kx, -kx)
     partner_y = jnp.where(_is_self_inverse_mode(ky, shape[1]), ky, -ky)
     keep_self = (kx < partner_x) | ((kx == partner_x) & (ky <= partner_y))
@@ -125,6 +159,13 @@ def _canonical_xy_pair(kx, ky, shape):
 
 
 def _nested_fourier_modes_from_numbers(seed, conf, kx_modes, ky_modes, kz_modes, unit_abs):
+    """Build resolution-consistent white-noise Fourier coefficients.
+
+    Coefficients are generated from integer Fourier coordinates instead of a
+    sequential PRNG draw. The physical mode ``(1, 2, 3)`` therefore receives
+    the same random value on a 256^3 and 512^3 grid when the box size and seed
+    match. The extra Hermitian handling keeps the inverse rFFT real.
+    """
     float_dtype = jnp.dtype(conf.float_dtype)
     complex_dtype = _complex_dtype_for(float_dtype)
     shape = tuple(int(s) for s in conf.ptcl_grid_shape)
@@ -191,15 +232,18 @@ def white_noise_nested(seed, conf, real=False, unit_abs=False):
 
 @custom_vjp
 def _safe_sqrt(x):
+    """Square root whose custom VJP returns zero derivative at exactly zero."""
     return jnp.sqrt(x)
 
 
 def _safe_sqrt_fwd(x):
+    """Forward rule for ``_safe_sqrt``."""
     y = _safe_sqrt(x)
     return y, y
 
 
 def _safe_sqrt_bwd(y, y_cot):
+    """Avoid the infinite ``0.5 / sqrt(x)`` cotangent at ``x == 0``."""
     x_cot = jnp.where(y != 0, 0.5 / y * y_cot, 0)
     return (x_cot,)
 
@@ -208,6 +252,7 @@ _safe_sqrt.defvjp(_safe_sqrt_fwd, _safe_sqrt_bwd)
 
 
 def _to_transposed_spectral_layout(modes, conf):
+    """Apply the sharding layout expected by distributed transposed rFFT data."""
     if conf.compute_mesh is None:
         return modes
     return jax.lax.with_sharding_constraint(
@@ -217,6 +262,7 @@ def _to_transposed_spectral_layout(modes, conf):
 
 
 def get_k_magnitude(kvec, conf):
+    """Return ``|k|`` on the standard spectral layout without dense all-gather."""
     kx, ky, kz = [jnp.squeeze(a) for a in kvec]
     if conf.compute_mesh is None:
         return jnp.sqrt(kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(
@@ -249,6 +295,7 @@ def get_k_magnitude(kvec, conf):
 
 
 def get_k_magnitude_transposed(kvec, conf):
+    """Return ``|k|`` on the transposed spectral layout used by distributed FFTs."""
     kx, ky, kz = [jnp.squeeze(a) for a in kvec]
     if conf.compute_mesh is None:
         return jnp.sqrt(kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(

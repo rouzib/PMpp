@@ -1,3 +1,9 @@
+"""Legacy particle-halo gather implementation kept for comparisons.
+
+Active code should use ``src.gather``. This file mirrors the older gather path
+that exchanged gathered values on duplicated particle-halo slots.
+"""
+
 from functools import partial
 
 import jax
@@ -13,6 +19,7 @@ from .utils import AXIS_NAME, raise_error, pmid_to_idx
 
 
 def initialize_mGPU_gather(conf):
+    """Create the legacy sharded gather entry point."""
     return shard_map(
         _gather_mGPU,
         mesh=conf.compute_mesh,
@@ -32,6 +39,7 @@ def _match_exchange_routing(local_left_pmid, local_left_slot, local_left_valid,
                             local_right_pmid, local_right_slot, local_right_valid,
                             conf, incoming_pmid_left, incoming_valid_left,
                             incoming_pmid_right, incoming_valid_right):
+    """Match legacy particle-halo exchange buffers to local slots."""
     missing_key = jnp.asarray(conf.mesh_size, dtype=jnp.int32)
     local_left_keys = jnp.where(local_left_valid, pmid_to_idx(local_left_pmid, conf), missing_key)
     local_right_keys = jnp.where(local_right_valid, pmid_to_idx(local_right_pmid, conf), missing_key)
@@ -184,6 +192,7 @@ def _apply_exchange_bwd_from_routing(val_cot_in, routing, unused_index, conf):
 
 @partial(custom_vjp, nondiff_argnums=(3,))
 def _gather_mGPU(pmid, disp, unused_index, conf, mesh):
+    """Legacy sharded gather with particle-halo value exchange."""
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
 
@@ -192,6 +201,7 @@ def _gather_mGPU(pmid, disp, unused_index, conf, mesh):
 
 
 def _gather_mGPU_fwd(pmid, disp, unused_index, conf, mesh):
+    """Forward rule for legacy sharded gather."""
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
 
@@ -201,6 +211,7 @@ def _gather_mGPU_fwd(pmid, disp, unused_index, conf, mesh):
 
 
 def _gather_mGPU_bwd(conf, res, val_cot):
+    """Backward rule for legacy sharded gather."""
     pmid, disp, unused_index, mesh, routing = res
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
@@ -250,6 +261,7 @@ def gather(ptcl, conf, mesh):
 
 @custom_vjp
 def _gather(pmid, disp, conf, mesh, val, offset, cell_size):
+    """Legacy local gather primitive with custom VJP."""
     ptcl_num, spatial_ndim = pmid.shape
 
     mesh = jnp.asarray(mesh, dtype=conf.float_dtype)
@@ -275,6 +287,7 @@ def _gather(pmid, disp, conf, mesh, val, offset, cell_size):
 
 
 def _gather_chunk(carry, chunk):
+    """Gather one chunk from the legacy local mesh path."""
     mesh, offset, cell_size, conf_cell_size, conf_mesh_shape = carry
     pmid, disp, val = chunk
 
@@ -329,11 +342,13 @@ def _gather_chunk_adj(carry, chunk):
 
 
 def _gather_fwd(pmid, disp, conf, mesh, val, offset, cell_size):
+    """Forward rule for the legacy local gather primitive."""
     val_out = _gather(pmid, disp, conf, mesh, val, offset, cell_size)
     return val_out, (pmid, disp, conf, mesh, offset, cell_size)
 
 
 def _gather_bwd(res, val_cot):
+    """Backward rule for the legacy local gather primitive."""
     pmid, disp, conf, mesh, offset, cell_size = res
 
     ptcl_num = len(pmid)

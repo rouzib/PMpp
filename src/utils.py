@@ -221,6 +221,7 @@ def distribute_array_on_gpus(array: Array, compute_mesh: Mesh, partition: P) -> 
 
 
 def is_float0_array(x):
+    """Return whether ``x`` is JAX's float0 cotangent sentinel."""
     return hasattr(x, 'dtype') and x.dtype == float0
 
 

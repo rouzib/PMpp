@@ -5,6 +5,7 @@ from .utils import is_float0_array
 
 
 def _linear_interp_primal(x, xp, fp):
+    """Piecewise-linear interpolation with constant extrapolation."""
     x = jnp.asarray(x)
     idx = jnp.clip(jnp.searchsorted(xp, x, side='right') - 1, 0, xp.shape[0] - 2)
     x0 = xp[idx]
@@ -19,6 +20,7 @@ def _linear_interp_primal(x, xp, fp):
 
 
 def _linear_interp_slope(x, xp, fp):
+    """Derivative of the custom interpolation rule with respect to ``x``."""
     x = jnp.asarray(x)
     left_pos = jnp.searchsorted(xp, x, side='left')
     right_pos = jnp.searchsorted(xp, x, side='right')
@@ -43,11 +45,18 @@ def _linear_interp_slope(x, xp, fp):
 
 @jax.custom_jvp
 def _linear_interp(x, xp, fp):
+    """Linear interpolation with a custom JVP at knots.
+
+    ``jnp.interp`` has sharp derivative choices at tabulated growth knots. This
+    custom JVP averages the left and right slopes at interior knots so growth
+    interpolation is less sensitive to exact table hits during differentiation.
+    """
     return _linear_interp_primal(x, xp, fp)
 
 
 @_linear_interp.defjvp
 def _linear_interp_jvp(primals, tangents):
+    """JVP rule for differentiating through growth-table interpolation."""
     x, xp, fp = primals
     x_dot, xp_dot, fp_dot = tangents
     y = _linear_interp_primal(x, xp, fp)
