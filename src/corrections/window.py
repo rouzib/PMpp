@@ -25,21 +25,79 @@ from ..utils import pytree_dataclass
     eq=False,
 )
 class PMWindowCompensationCorrection:
-    """Analytic PM assignment-window compensation in Fourier space.
+    """Analytic Fourier-space compensation for PM assignment smoothing.
 
-    For CIC scatter plus CIC gather, the linear particle-force response is
-    suppressed by two CIC windows. This correction multiplies the potential by a
-    bounded inverse window expressed only in dimensionless mesh units.
+    Particle-mesh gravity is softened by the mass-assignment windows used to
+    scatter particles to the mesh and gather forces back to particles.  For CIC
+    scatter plus CIC gather, the linear force response contains approximately
+    two CIC windows.  This correction partially inverts that response by
+    multiplying the Fourier-space potential by a bounded transfer function,
+
+    ``gain(k) = W(k) ** (-(assignment_order * windows * alpha))``,
+
+    where ``W(k)`` is the absolute product of one-dimensional sinc assignment
+    windows on the PM force mesh.  The gain is capped and tapered near the
+    particle Nyquist scale to avoid amplifying poorly resolved modes.
+
+    Parameters
+    ----------
+    assignment_order : int, optional
+        Order of the assignment window being compensated.  Use ``1`` for NGP,
+        ``2`` for CIC, ``3`` for TSC, and ``4`` for PCS.  PM++ currently uses
+        CIC scatter/gather in the force path, so the default is ``2``.
+    windows : int, optional
+        Number of assignment windows to compensate.  A particle-mesh force built
+        from CIC scatter and CIC gather has two such windows, so the default is
+        ``2``.  Lower values compensate less aggressively.
+    alpha : float, optional
+        Fractional compensation strength.  ``0`` disables the window boost,
+        ``1`` applies the full inverse of the requested assignment windows, and
+        values between them provide a stable partial inverse.  Values that are
+        too large can add excess small-scale power.
+    max_gain : float or None, optional
+        Upper bound on the multiplicative potential boost.  A positive value
+        clips the transfer function to ``max_gain``.  Set to ``None`` or a
+        non-positive value to disable clipping, which is usually less stable
+        near the mesh scale.
+    taper_start : float, optional
+        Start of the high-k taper as a fraction of the particle Nyquist
+        wavenumber.  The taper coordinate is
+        ``max(abs(kx), abs(ky), abs(kz)) / k_particle_nyquist``.  Below this
+        value, the capped gain is applied unchanged.
+    taper_stop : float, optional
+        End of the high-k taper as a fraction of the particle Nyquist
+        wavenumber.  Between ``taper_start`` and ``taper_stop`` the boost is
+        smoothly reduced back to unity.  If ``taper_stop <= taper_start``, no
+        taper is applied.
+    interlacing : bool, optional
+        Whether gravity should use interlaced density assignment: one regular
+        scatter and one half-cell shifted scatter are averaged in Fourier space
+        after phase correction.  This can reduce odd aliasing terms, but costs
+        an additional scatter/FFT path and was not the best setting in the
+        Quijote 256^3 window-correction sweep.
+    green_kernel : {"continuum", "discrete_laplacian"}, optional
+        Poisson Green's function used before the window transfer.  ``"continuum"``
+        uses ``-1 / k^2``.  ``"discrete_laplacian"`` uses the lattice Laplacian
+        symbol with ``2 sin(k_i dx / 2) / dx`` on each axis, which usually gives
+        a stronger and more accurate near-mesh response for this correction.
+    dtype : dtype, optional
+        Floating-point dtype used for evaluating the transfer field.
+
+    Notes
+    -----
+    This is an analytic force/power-spectrum correction, not a learned
+    position correction.  It can substantially improve ``P(k)`` while moving
+    individual particles farther from an N-body reference.
     """
 
     assignment_order: int = 2
     windows: int = 2
-    alpha: float = 0.5
+    alpha: float = 0.48
     max_gain: float = 4.0
     taper_start: float = 0.75
     taper_stop: float = 1.0
     interlacing: bool = False
-    green_kernel: str = "continuum"
+    green_kernel: str = "discrete_laplacian"
     dtype: jnp.dtype = field(default=jnp.float32, repr=False)
 
     def __post_init__(self):
@@ -53,12 +111,12 @@ def init_pm_window_compensation_correction(dtype=jnp.float32, **kwargs):
     return PMWindowCompensationCorrection(
         assignment_order=kwargs.get("assignment_order", 2),
         windows=kwargs.get("windows", 2),
-        alpha=kwargs.get("alpha", kwargs.get("window_alpha", 0.5)),
+        alpha=kwargs.get("alpha", kwargs.get("window_alpha", 0.48)),
         max_gain=kwargs.get("max_gain", kwargs.get("window_max_gain", 4.0)),
         taper_start=kwargs.get("taper_start", kwargs.get("window_taper_start", 0.75)),
         taper_stop=kwargs.get("taper_stop", kwargs.get("window_taper_stop", 1.0)),
         interlacing=kwargs.get("interlacing", False),
-        green_kernel=kwargs.get("green_kernel", "continuum"),
+        green_kernel=kwargs.get("green_kernel", "discrete_laplacian"),
         dtype=dtype,
     )
 
