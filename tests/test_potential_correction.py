@@ -7,7 +7,7 @@ import pytest
 from src.configuration import Configuration
 from src.cosmo import SimpleLCDM
 from src.multigpu_configuration import MultiGPUConfiguration
-from src.potential_correction import (
+from src.corrections import (
     apply_potential_correction,
     build_correction_optimizer,
     evaluate_mesh_potential_residual,

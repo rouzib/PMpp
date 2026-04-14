@@ -7,7 +7,7 @@ from jax.tree_util import tree_map
 
 from .cosmo import Cosmology, add_cosmology_cotangents, zero_cosmology_param_cotangent
 from .particles import Particles
-from .potential_correction import add_potential_correction_cotangents, zero_potential_correction_cotangent
+from .corrections import add_potential_correction_cotangents, zero_potential_correction_cotangent
 from .steps import (
     force,
     integrate,

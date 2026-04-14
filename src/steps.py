@@ -18,7 +18,7 @@ from .cosmo import (
 from .gravity import gravity, duplicate_slot_counts
 from .growth import growth
 from .particles import Particles
-from .potential_correction import add_potential_correction_cotangents
+from .corrections import add_potential_correction_cotangents
 
 
 def _halo_move_float_outputs(ptcl, disp, vel, acc, conf):

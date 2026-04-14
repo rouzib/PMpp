@@ -7,8 +7,8 @@ from jax.experimental.shard_map import shard_map
 from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .configuration import Configuration
+from .corrections import apply_potential_correction, force_green_kernel, force_uses_interlacing
 from .gather import gather, gather_stacked_mesh_halo
-from .potential_correction import apply_potential_correction
 from .scatter import scatter, reduce_grad_across_gpus
 from .utils import AXIS_NAME
 
@@ -66,6 +66,39 @@ def get_k_squared_transposed(kvec, conf):
         return local_shard.astype(conf.float_dtype)
 
     return create_k_magnitude_transposed(kx, ky, kz)
+
+
+def get_discrete_k_squared_transposed(kvec, conf):
+    kx, ky, kz = [jnp.squeeze(a) for a in kvec]
+    cell_size = jnp.asarray(conf.cell_size, dtype=conf.float_dtype)
+    kx_eff = 2 * jnp.sin(kx * cell_size / 2) / cell_size
+    ky_eff = 2 * jnp.sin(ky * cell_size / 2) / cell_size
+    kz_eff = 2 * jnp.sin(kz * cell_size / 2) / cell_size
+    if conf.compute_mesh is None:
+        return (
+            kx_eff[:, None, None] ** 2
+            + ky_eff[None, :, None] ** 2
+            + kz_eff[None, None, :] ** 2
+        ).astype(conf.float_dtype)
+
+    @partial(
+        jax.jit,
+        in_shardings=(
+            NamedSharding(conf.compute_mesh, P(None)),
+            NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
+            NamedSharding(conf.compute_mesh, P(None)),
+        ),
+        out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
+    )
+    def create_discrete_k_magnitude_transposed(kx_replicated, ky_sharded, kz_replicated):
+        local_shard = (
+            kx_replicated[:, None, None] ** 2
+            + ky_sharded[None, :, None] ** 2
+            + kz_replicated[None, None, :] ** 2
+        )
+        return local_shard.astype(conf.float_dtype)
+
+    return create_discrete_k_magnitude_transposed(kx_eff, ky_eff, kz_eff)
 
 
 def apply_particle_nyquist_filter(src, masks):
@@ -129,6 +162,20 @@ def laplace_transposed_bwd(res, pot_cot):
 laplace_transposed.defvjp(laplace_transposed_fwd, laplace_transposed_bwd)
 
 
+def laplace_transposed_with_kernel(kvec, src, conf, kernel="continuum"):
+    """Fourier-space Poisson kernel with selectable PM Green's function."""
+    if kernel == "continuum":
+        return laplace_transposed(kvec, src, conf, None)
+    if kernel == "discrete_laplacian":
+        k2 = get_discrete_k_squared_transposed(kvec, conf)
+    else:
+        raise ValueError(f"Unsupported PM Green's function {kernel!r}.")
+
+    denom = jnp.where(k2 != 0, k2, jnp.ones_like(k2))
+    pot = -src / denom
+    return jnp.where(k2 != 0, pot, jnp.zeros_like(pot))
+
+
 def neg_grad(k, pot, spacing):
     nyquist = jnp.pi / spacing
     eps = nyquist * jnp.finfo(k.dtype).eps
@@ -148,44 +195,46 @@ def _gravity_potential_from_density(dens, omega_m, conf: Configuration, a=None, 
     else:
         dens = conf.mGPU_rfftn_transposed(dens)
     dens = apply_particle_nyquist_filter(dens, conf.particle_nyquist_masks)
-    pot = laplace_transposed(conf.kvec, dens, conf, None)
+    pot = laplace_transposed_with_kernel(conf.kvec, dens, conf, force_green_kernel(correction))
     return apply_potential_correction(pot, a, cosmo, conf, correction, source_real=source_real)
+
+
+def _density_hat_from_real(dens, conf):
+    return jnp.fft.rfftn(dens) if conf.compute_mesh is None else conf.mGPU_rfftn_transposed(dens)
+
+
+def _interlacing_phase(conf):
+    ksum = conf.kvec[0] + conf.kvec[1] + conf.kvec[2]
+    return jnp.exp(-1j * ksum * jnp.asarray(conf.cell_size / 2, dtype=conf.float_dtype))
+
+
+def _gravity_potential_interlaced(ptcl, omega_m, conf: Configuration, a=None, cosmo=None, correction=None):
+    factor = 1.5 * omega_m.astype(conf.float_dtype)
+    dens0 = (scatter(ptcl, conf) - 1) * factor
+    offset = jnp.asarray(conf.cell_size / 2, dtype=conf.float_dtype)
+    dens1 = (scatter(ptcl, conf, offset=offset) - 1) * factor
+    dens_hat = 0.5 * (_density_hat_from_real(dens0, conf) + _density_hat_from_real(dens1, conf) * _interlacing_phase(conf))
+    dens_hat = apply_particle_nyquist_filter(dens_hat, conf.particle_nyquist_masks)
+    pot = laplace_transposed_with_kernel(conf.kvec, dens_hat, conf, force_green_kernel(correction))
+    return apply_potential_correction(pot, a, cosmo, conf, correction, source_real=dens0)
 
 
 def _spectral_gradient_components(pot, conf: Configuration):
     return jnp.stack([neg_grad(k, pot, conf.cell_size) for k in conf.kvec], axis=0)
 
 
-def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration, a=None, correction=None):
-    pot = _gravity_potential_from_density(dens, cosmo.Omega_m, conf, a=a, cosmo=cosmo, correction=correction)
-    if conf.compute_mesh is not None and correction is None and conf.mGPU_irfftn_transposed_batched is not None:
-        spectral_grads = _spectral_gradient_components(pot, conf)
-        grad_meshes = conf.mGPU_irfftn_transposed_batched(spectral_grads).astype(conf.float_dtype)
-        return gather_stacked_mesh_halo(ptcl, conf, jnp.moveaxis(grad_meshes, 0, -1))
-
-    grad_meshes = []
-    for k in conf.kvec:
-        grad = neg_grad(k, pot, conf.cell_size)
-        if conf.compute_mesh is None:
-            grad = jnp.fft.irfftn(grad).astype(conf.float_dtype)
-        else:
-            grad = conf.mGPU_irfftn_transposed(grad).astype(conf.float_dtype)
-        grad_meshes.append(grad)
-
-    if correction is not None:
-        stacked_grad_meshes = jnp.stack(grad_meshes, axis=0)
-        return jax.vmap(lambda mesh: gather(ptcl, conf, mesh), in_axes=0, out_axes=-1)(stacked_grad_meshes)
-
-    acc = [gather(ptcl, conf, grad) for grad in grad_meshes]
-    return jnp.stack(acc, axis=-1)
+def _can_use_batched_gradient_fft(conf: Configuration):
+    return conf.compute_mesh is not None and conf.mGPU_irfftn_transposed_batched is not None
 
 
-def _gravity_mesh_fields_from_density(dens, omega_m, conf: Configuration, a=None, cosmo=None, correction=None):
-    pot = _gravity_potential_from_density(dens, omega_m, conf, a=a, cosmo=cosmo, correction=correction)
+def _batched_gradient_meshes_from_potential(pot, conf: Configuration):
+    spectral_grads = _spectral_gradient_components(pot, conf)
+    return conf.mGPU_irfftn_transposed_batched(spectral_grads).astype(conf.float_dtype)
 
-    if conf.compute_mesh is not None and conf.mGPU_irfftn_transposed_batched is not None:
-        spectral_grads = _spectral_gradient_components(pot, conf)
-        grad_meshes = conf.mGPU_irfftn_transposed_batched(spectral_grads).astype(conf.float_dtype)
+
+def _gradient_meshes_from_potential(pot, conf: Configuration, use_batched=True):
+    if use_batched and _can_use_batched_gradient_fft(conf):
+        grad_meshes = _batched_gradient_meshes_from_potential(pot, conf)
         return tuple(grad_meshes[i] for i in range(grad_meshes.shape[0]))
 
     grad_meshes = []
@@ -196,8 +245,38 @@ def _gravity_mesh_fields_from_density(dens, omega_m, conf: Configuration, a=None
         else:
             grad = conf.mGPU_irfftn_transposed(grad)
         grad_meshes.append(grad.astype(conf.float_dtype))
-
     return tuple(grad_meshes)
+
+
+def _acceleration_from_potential(pot, ptcl, conf: Configuration, use_batched=True, use_vmap_gather=False):
+    if use_batched and _can_use_batched_gradient_fft(conf):
+        grad_meshes = _batched_gradient_meshes_from_potential(pot, conf)
+        return gather_stacked_mesh_halo(ptcl, conf, jnp.moveaxis(grad_meshes, 0, -1))
+
+    grad_meshes = _gradient_meshes_from_potential(pot, conf, use_batched=False)
+
+    if use_vmap_gather:
+        stacked_grad_meshes = jnp.stack(grad_meshes, axis=0)
+        return jax.vmap(lambda mesh: gather(ptcl, conf, mesh), in_axes=0, out_axes=-1)(stacked_grad_meshes)
+
+    acc = [gather(ptcl, conf, grad) for grad in grad_meshes]
+    return jnp.stack(acc, axis=-1)
+
+
+def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration, a=None, correction=None):
+    pot = _gravity_potential_from_density(dens, cosmo.Omega_m, conf, a=a, cosmo=cosmo, correction=correction)
+    return _acceleration_from_potential(
+        pot,
+        ptcl,
+        conf,
+        use_batched=correction is None,
+        use_vmap_gather=correction is not None,
+    )
+
+
+def _gravity_mesh_fields_from_density(dens, omega_m, conf: Configuration, a=None, cosmo=None, correction=None):
+    pot = _gravity_potential_from_density(dens, omega_m, conf, a=a, cosmo=cosmo, correction=correction)
+    return _gradient_meshes_from_potential(pot, conf)
 
 
 def _reduce_gather_disp_cot(pmid, disp, unused_index, disp_cot, conf: Configuration):
@@ -273,5 +352,9 @@ def duplicate_slot_counts(ptcl, conf: Configuration):
 
 def gravity(a, ptcl, cosmo, conf: Configuration, correction=None):
     """Gravitational accelerations of particles in [H_0^2], solved on a mesh with FFT."""
+    if force_uses_interlacing(correction):
+        pot = _gravity_potential_interlaced(ptcl, cosmo.Omega_m, conf, a=a, cosmo=cosmo, correction=correction)
+        return _acceleration_from_potential(pot, ptcl, conf)
+
     dens = scatter(ptcl, conf)
     return _gravity_from_density(dens, ptcl, cosmo, conf, a=a, correction=correction)
