@@ -14,7 +14,7 @@ from pmwd.configuration import Configuration as ConfigurationPMWD
 from pmwd.gather import gather as gather_pmwd
 from pmwd.particles import Particles as ParticlesPMWD
 
-from src.gather_old import gather as gather_pmpp
+from src.gather import gather as gather_pmpp
 from src.particles import Particles
 
 from test_utils import init_conf

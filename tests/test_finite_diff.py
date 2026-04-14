@@ -30,7 +30,7 @@ from src.growth import growth as growth_fn
 from src.modes import white_noise, linear_modes
 from src.lpt import lpt
 from src.scatter import scatter
-from src.gather_old import gather
+from src.gather import gather
 from src.gravity import gravity
 from src.steps import drift, kick, force, integrate
 from src.nbody import nbody
