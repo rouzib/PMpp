@@ -183,7 +183,7 @@ class Cosmology:
     @classmethod
     def from_sigma8(cls, conf, sigma8, *args, **kwargs):
         """Construct cosmology with sigma8 instead of A_s."""
-        from pmwd.boltzmann import boltzmann
+        from .boltzmann import boltzmann
 
         cosmo = cls(conf, 1, *args, **kwargs)
         cosmo = boltzmann(cosmo, conf)
@@ -239,7 +239,7 @@ class Cosmology:
     @property
     def sigma8(self):
         """Linear matter rms overdensity within a tophat sphere of 8 Mpc/h radius at a=1."""
-        from pmwd.boltzmann import varlin
+        from .boltzmann import varlin
         R = 8 * self.conf.Mpc_SI / self.conf.L
         return jnp.sqrt(varlin(R, 1, self, self.conf))
 
@@ -257,3 +257,134 @@ SimpleLCDM = partial(
     Omega_b=0.05,
     h=0.7,
 )
+
+
+_COSMO_PARAM_FIELDS = (
+    "A_s_1e9",
+    "n_s",
+    "Omega_m",
+    "Omega_b",
+    "h",
+    "Omega_k_",
+    "w_0_",
+    "w_a_",
+)
+
+
+def cosmology_param_names(cosmo):
+    """Return differentiable cosmology parameter names for this instance."""
+    names = ["A_s_1e9", "n_s", "Omega_m", "Omega_b", "h"]
+    if cosmo.Omega_k_ is not None:
+        names.append("Omega_k_")
+    if cosmo.w_0_ is not None:
+        names.append("w_0_")
+    if cosmo.w_a_ is not None:
+        names.append("w_a_")
+    return tuple(names)
+
+
+def cosmology_param_values(cosmo, names=None):
+    """Return cosmology parameter values in a stable tuple order."""
+    if names is None:
+        names = cosmology_param_names(cosmo)
+    return tuple(getattr(cosmo, name) for name in names)
+
+
+def replace_cosmology_params(cosmo, names, values):
+    """Return a cosmology with selected parameter leaves replaced."""
+    return cosmo.replace(**dict(zip(names, values)))
+
+
+def zero_cosmology_param_cotangent(cosmo):
+    """Build a cosmology-shaped zero cotangent for parameter gradients only."""
+    kwargs = {
+        "A_s_1e9": jnp.zeros_like(cosmo.A_s_1e9),
+        "n_s": jnp.zeros_like(cosmo.n_s),
+        "Omega_m": jnp.zeros_like(cosmo.Omega_m),
+        "Omega_b": jnp.zeros_like(cosmo.Omega_b),
+        "h": jnp.zeros_like(cosmo.h),
+        "Omega_k_": None if cosmo.Omega_k_ is None else jnp.zeros_like(cosmo.Omega_k_),
+        "w_0_": None if cosmo.w_0_ is None else jnp.zeros_like(cosmo.w_0_),
+        "w_a_": None if cosmo.w_a_ is None else jnp.zeros_like(cosmo.w_a_),
+        "transfer": None,
+        "growth": None,
+        "varlin": None,
+    }
+    return cosmo.replace(**kwargs)
+
+
+def cosmology_param_cotangent(cosmo, names, values):
+    """Build a cosmology-shaped cotangent from named parameter cotangents."""
+    return zero_cosmology_param_cotangent(cosmo).replace(**dict(zip(names, values)))
+
+
+def project_cosmology_param_cotangent(cot):
+    """Drop derived-table cotangents and keep only physical parameter leaves."""
+    kwargs = {name: getattr(cot, name) for name in _COSMO_PARAM_FIELDS}
+    kwargs.update(transfer=None, growth=None, varlin=None)
+    return cot.replace(**kwargs)
+
+
+def _combine_optional_cotangents(lhs, rhs, op):
+    """Combine optional cotangent leaves used by fixed/free cosmology params."""
+    if lhs is None:
+        return rhs
+    if rhs is None:
+        return lhs
+    return op(lhs, rhs)
+
+
+def add_cosmology_cotangents(lhs, rhs):
+    """Add two cosmology parameter cotangents."""
+    lhs = project_cosmology_param_cotangent(lhs)
+    rhs = project_cosmology_param_cotangent(rhs)
+    return lhs.replace(
+        A_s_1e9=lhs.A_s_1e9 + rhs.A_s_1e9,
+        n_s=lhs.n_s + rhs.n_s,
+        Omega_m=lhs.Omega_m + rhs.Omega_m,
+        Omega_b=lhs.Omega_b + rhs.Omega_b,
+        h=lhs.h + rhs.h,
+        Omega_k_=_combine_optional_cotangents(lhs.Omega_k_, rhs.Omega_k_, add),
+        w_0_=_combine_optional_cotangents(lhs.w_0_, rhs.w_0_, add),
+        w_a_=_combine_optional_cotangents(lhs.w_a_, rhs.w_a_, add),
+        transfer=None,
+        growth=None,
+        varlin=None,
+    )
+
+
+def sub_cosmology_cotangents(lhs, rhs):
+    """Subtract two cosmology parameter cotangents."""
+    lhs = project_cosmology_param_cotangent(lhs)
+    rhs = project_cosmology_param_cotangent(rhs)
+    return lhs.replace(
+        A_s_1e9=lhs.A_s_1e9 - rhs.A_s_1e9,
+        n_s=lhs.n_s - rhs.n_s,
+        Omega_m=lhs.Omega_m - rhs.Omega_m,
+        Omega_b=lhs.Omega_b - rhs.Omega_b,
+        h=lhs.h - rhs.h,
+        Omega_k_=_combine_optional_cotangents(lhs.Omega_k_, rhs.Omega_k_, sub),
+        w_0_=_combine_optional_cotangents(lhs.w_0_, rhs.w_0_, sub),
+        w_a_=_combine_optional_cotangents(lhs.w_a_, rhs.w_a_, sub),
+        transfer=None,
+        growth=None,
+        varlin=None,
+    )
+
+
+def scale_cosmology_cotangent(cot, scalar):
+    """Scale all cosmology parameter cotangent leaves by ``scalar``."""
+    cot = project_cosmology_param_cotangent(cot)
+    return cot.replace(
+        A_s_1e9=cot.A_s_1e9 * scalar,
+        n_s=cot.n_s * scalar,
+        Omega_m=cot.Omega_m * scalar,
+        Omega_b=cot.Omega_b * scalar,
+        h=cot.h * scalar,
+        Omega_k_=None if cot.Omega_k_ is None else cot.Omega_k_ * scalar,
+        w_0_=None if cot.w_0_ is None else cot.w_0_ * scalar,
+        w_a_=None if cot.w_a_ is None else cot.w_a_ * scalar,
+        transfer=None,
+        growth=None,
+        varlin=None,
+    )

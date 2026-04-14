@@ -1,6 +1,6 @@
 from functools import partial
 
-from jax import value_and_grad, jit, vjp, custom_vjp
+from jax import value_and_grad, jit, vjp, custom_vjp, lax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 
@@ -218,8 +218,14 @@ def nbody(ptcl, obsvbl, cosmo, conf, reverse=False):
     a_nbody = conf.a_nbody[::-1] if reverse else conf.a_nbody
 
     ptcl, obsvbl = nbody_init(a_nbody[0], ptcl, obsvbl, cosmo, conf)
-    for a_prev, a_next in zip(a_nbody[:-1], a_nbody[1:]):
+
+    def body(carry, ab):
+        ptcl, obsvbl = carry
+        a_prev, a_next = ab
         ptcl, obsvbl = nbody_step(a_prev, a_next, ptcl, obsvbl, cosmo, conf)
+        return (ptcl, obsvbl), None
+
+    (ptcl, obsvbl), _ = lax.scan(body, (ptcl, obsvbl), (a_nbody[:-1], a_nbody[1:]))
     return ptcl, obsvbl
 
 
@@ -254,9 +260,20 @@ def nbody_adj(ptcl, ptcl_cot, obsvbl_cot, cosmo, conf, reverse=False):
 
     ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force = nbody_adj_init(
         a_nbody[-1], ptcl, ptcl_cot, obsvbl_cot, cosmo, conf)
-    for a_prev, a_next in zip(a_nbody[:0:-1], a_nbody[-2::-1]):
-        ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force = nbody_adj_step(
-            a_prev, a_next, ptcl, ptcl_cot, obsvbl_cot, cosmo, cosmo_cot, cosmo_cot_force, conf)
+
+    def body(carry, ab):
+        ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force = carry
+        a_prev, a_next = ab
+        carry = nbody_adj_step(
+            a_prev, a_next, ptcl, ptcl_cot, obsvbl_cot, cosmo, cosmo_cot, cosmo_cot_force, conf
+        )
+        return carry, None
+
+    (ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force), _ = lax.scan(
+        body,
+        (ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force),
+        (a_nbody[:0:-1], a_nbody[-2::-1]),
+    )
     return ptcl, ptcl_cot, cosmo_cot
 
 

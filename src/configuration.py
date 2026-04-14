@@ -1,21 +1,22 @@
 import math
 from functools import partial
-from typing import ClassVar, Optional, Tuple, Union, List, Callable
+from typing import ClassVar, List, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.tree_util import tree_map
 from jax.sharding import Mesh
-from jax.typing import ArrayLike, DTypeLike
+from jax.typing import DTypeLike
 from mcfit import TophatVar
 
-from .FFT_distributed import create_ffts
 from .fft import fftfreq
-from .gather import initialize_mGPU_gather
-from .particles import Particles
-from .scatter import initialize_mGPU_scatter
-from .utils import pytree_dataclass, build_ring_permutations
+from .multigpu_configuration import (
+    MultiGPUConfiguration,
+    build_multigpu_configuration,
+    initialize_multigpu_runtime,
+)
+from .utils import build_particle_nyquist_filter, pytree_dataclass
 
 
 @partial(pytree_dataclass,
@@ -76,6 +77,12 @@ class Configuration:
         respectively.
     lpt_order : int, optional
         LPT order, with 1 for Zel'dovich approximation, 2 for 2LPT, and 3 for 3LPT.
+    lpt_cache_strains : bool, optional
+        Whether to cache the diagonal strain arrays in the 2LPT tidal tensor computation.
+        When True (default), each unique strain is computed once and reused, saving
+        ``dim - 1`` redundant 3D irfftn calls per ``_L`` evaluation at the cost of keeping
+        ``dim`` extra strain arrays (each of shape ``ptcl_grid_shape``) alive simultaneously
+        on the GPU. Set to False to trade compute for memory when GPU memory is tight.
     a_start : float, optional
         LPT scale factor and N-body starting time.
     a_stop : float, optional
@@ -93,7 +100,6 @@ class Configuration:
         i.e., kick and then drift. Default is the Newton-Störmer-Verlet-leapfrog method.
     chunk_size : int, optional
         Chunk size to split particles in batches in scatter and gather to save memory.
-
     Raises
     ------
     ValueError
@@ -104,8 +110,10 @@ class Configuration:
     ptcl_spacing: float
     ptcl_grid_shape: Tuple[int, ...]  # tuple[int, ...] for python >= 3.9 (PEP 585)
 
-    # mGPU compute_mesh
+    # Legacy top-level multigpu inputs remain as compatibility fallbacks.
     compute_mesh: Mesh = None
+    multigpu_mode: str = "mesh_halo"
+    multigpu: Optional[MultiGPUConfiguration] = None
 
     mesh_shape: Union[float, Tuple[int, ...]] = 1
     nMesh: int = None
@@ -142,45 +150,27 @@ class Configuration:
     Tuple[Optional[float], Optional[float]]] = (1, None)
 
     lpt_order: int = 2
+    lpt_cache_strains: bool = True
 
     a_start: float = 1 / 64
     a_stop: float = 1
     a_lpt_maxstep: float = 1 / 128
     a_nbody_maxstep: float = 1 / 64
+    a_custom: Optional[List[float]] = None
 
     symp_splits: Tuple[Tuple[float, float], ...] = ((0, 0.5), (1, 0.5))
 
     chunk_size: int = 2 ** 24
 
-    # mGPU setup
-    use_mGPU: bool = False
-    num_devices: int = None
-    devices: List[jax.Device] = None
-    devices_index: List[int] = None
-
-    local_mesh_shape: Tuple[int, ...] = None
-
-    # mGPU halos
-    slice_start: List[int] = None
-    slice_end: List[int] = None
-    halo_start: ArrayLike = None
-    halo_end: ArrayLike = None
-    offsets: List[int] = None
-    scatter_offsets: List[List[int]] = None
+    to_save_z: List[int] = None
+    to_save_a: List[int] = None
+    slice_to_save: List[int] = None
+    max_slice_width: int = None
 
     max_ptcl_per_slice: int = None
     max_share_ptcl: int = 50000
+    max_halo_share_ptcl: Optional[int] = None
     max_share_gather_ptcl: int = 200000
-
-    left_perm: Tuple[Tuple[int, int]] = None
-    right_perm: Tuple[Tuple[int, int]] = None
-
-    # mGPU functions that need initialization
-    mGPU_halo_moving: Callable = lambda x: x
-    mGPU_rfftn: Callable = lambda x: x
-    mGPU_irfftn: Callable = lambda x: x
-    mGPU_scatter: Callable = lambda x: x
-    mGPU_gather: Callable = lambda x: x
 
     def __post_init__(self):
         if self._is_transforming():
@@ -208,6 +198,9 @@ class Configuration:
         if not jnp.issubdtype(self.float_dtype, jnp.floating):
             raise ValueError('float_dtype must be floating point numbers')
 
+        if self.a_custom is not None:
+            object.__setattr__(self, 'a_custom', jnp.array(self.a_custom))
+
         # ~ 1.5e-8 for float64, 3.5e-4 for float32
         growth_tol = math.sqrt(jnp.finfo(self.cosmo_dtype).eps)
         if self.growth_rtol is None:
@@ -222,80 +215,121 @@ class Configuration:
             raise ValueError(f'sum of symplectic splits = {symp_splits_sum} != (1, 1)')
 
         with jax.ensure_compile_time_eval():
-            object.__setattr__(self, "kvec", fftfreq(self.mesh_shape, self.cell_size, dtype=self.float_dtype))
+            kvec = fftfreq(self.mesh_shape, self.cell_size, dtype=self.float_dtype)
+            object.__setattr__(self, "kvec", kvec)
             object.__setattr__(self, "kvec_spacing",
                                fftfreq(self.ptcl_grid_shape, self.ptcl_spacing, dtype=self.float_dtype))
+            object.__setattr__(self, "particle_nyquist_masks", build_particle_nyquist_filter(kvec, self))
 
         object.__setattr__(self, "nMesh", self.mesh_shape[0])
 
-        # mGPU setup
-        if self.compute_mesh is not None:
-            if self.compute_mesh.size < 1:
-                raise ValueError(
-                    f"mGPU used, but less than 1 device was set in the compute_mesh (actual: {self.compute_mesh.size}).")
-            with jax.ensure_compile_time_eval():
-                object.__setattr__(self, "use_mGPU", True)
-                object.__setattr__(self, "num_devices", self.compute_mesh.size)
-                object.__setattr__(self, "devices", self.compute_mesh.devices)
-                object.__setattr__(self, "devices_index", list(device.id for device in self.devices))
+        if self.to_save_z is None:
+            object.__setattr__(self, "to_save_z", None)
 
-                object.__setattr__(self, "local_mesh_shape",
-                                   (self.mesh_shape[0] // self.num_devices, self.mesh_shape[1], self.mesh_shape[2]))
+        if self.to_save_a is None and self.to_save_z is not None:
+            object.__setattr__(self, "to_save_a", list(1 / (1 + z) for z in self.to_save_z))
 
-                global_nMesh = self.mesh_shape[0]
-                slice_start = list(
-                    (global_nMesh // self.num_devices * device_idx) % global_nMesh for device_idx in self.devices_index)
-                slice_end = list((global_nMesh // self.num_devices * (device_idx + 1)) % global_nMesh for device_idx in
-                                 self.devices_index)
-                halo_size = 0 if self.num_devices == 1 else 1
-                halo_start = list(
-                    [(slice_s - halo_size) % global_nMesh, (slice_s + halo_size) % global_nMesh] for slice_s in
-                    slice_start)
-                halo_end = list([(slice_e - halo_size) % global_nMesh, slice_e] for slice_e in slice_end)
-                object.__setattr__(self, "slice_start", jnp.array(halo_start)[:, 0])
-                object.__setattr__(self, "slice_end",
-                                   jnp.array(halo_end)[:, 1] if self.num_devices > 1 else jnp.array([global_nMesh]))
-                object.__setattr__(self, "halo_start", jnp.array(halo_start))
-                object.__setattr__(self, "halo_end", jnp.array(halo_end))
+        if self.slice_to_save is not None:
+            object.__setattr__(self, "slice_to_save", jnp.array(self.slice_to_save))
 
-                offsets = jnp.array(slice_start)
-                object.__setattr__(self, "offsets", offsets)
-                object.__setattr__(self, "scatter_offsets", jnp.array([[o, 0., 0.] for o in offsets]) * self.cell_size)
 
-                """print(f"slice_start = {self.slice_start}")
-                print(f"slice_end = {self.slice_end}")
-                print(f"halo_start = {self.halo_start}")
-                print(f"halo_end = {self.halo_end}")"""
+        # with jax.ensure_compile_time_eval():
+        #     object.__setattr__(
+        #         self,
+        #         'var_tophat',
+        #         TophatVar(self.transfer_k[1:], lowring=True, backend='jax'),
+        #     )
 
-                if self.max_ptcl_per_slice is None:
-                    scaling = 1.3 + (self.num_devices.bit_length() - 3) * 0.1
-                    if self.num_devices == 1:
-                        scaling = 1
-                    object.__setattr__(self, "max_ptcl_per_slice",
-                                       math.floor(self.ptcl_num // self.num_devices * scaling))
-                object.__setattr__(self, "max_share_ptcl", min(self.max_share_ptcl, self.max_ptcl_per_slice // 2))
-                object.__setattr__(self, "max_share_gather_ptcl", min(self.max_share_gather_ptcl,
-                                                                      self.max_ptcl_per_slice // 2))
-
-                left_perm, right_perm = build_ring_permutations(self.num_devices)
-                object.__setattr__(self, "left_perm", left_perm)
-                object.__setattr__(self, "right_perm", right_perm)
-
-                # initialization of mGPU functions
-                rfftn_jit, irfftn_jit, _, _ = create_ffts(self.compute_mesh, self.mesh_shape[0])
-                object.__setattr__(self, "mGPU_rfftn", rfftn_jit)
-                object.__setattr__(self, "mGPU_irfftn", irfftn_jit)
-                object.__setattr__(self, "mGPU_halo_moving", Particles.initialize_mGPU_halo_movement(self))
-                object.__setattr__(self, "mGPU_scatter", initialize_mGPU_scatter(self))
-                object.__setattr__(self, "mGPU_gather", initialize_mGPU_gather(self))
-        else:
-            object.__setattr__(self, "local_mesh_shape", self.mesh_shape)
+        # Multi-GPU topology and initialized helper functions live in a dedicated
+        # runtime object so the main configuration can stay focused on the
+        # physical simulation parameters and their derived scalar/array values.
+        with jax.ensure_compile_time_eval():
+            runtime_seed = self._build_multigpu_seed()
+            runtime = build_multigpu_configuration(self, runtime_seed)
+            object.__setattr__(self, "multigpu", runtime)
+            if runtime is not None:
+                object.__setattr__(self, "compute_mesh", runtime.compute_mesh)
+                object.__setattr__(self, "multigpu_mode", runtime.mode)
+                object.__setattr__(self, "max_ptcl_per_slice", runtime.max_ptcl_per_slice)
+                object.__setattr__(self, "max_share_ptcl", runtime.max_share_ptcl)
+                object.__setattr__(self, "max_halo_share_ptcl", runtime.max_halo_share_ptcl)
+                object.__setattr__(self, "max_share_gather_ptcl", runtime.max_share_gather_ptcl)
+                object.__setattr__(self, "multigpu", initialize_multigpu_runtime(self, runtime))
 
         # finalize
         dtype = self.cosmo_dtype
         for name, value in self.named_children():
             value = tree_map(lambda x: jnp.asarray(x, dtype=dtype), value)
             object.__setattr__(self, name, value)
+
+    def _build_multigpu_seed(self):
+        runtime_seed = self.multigpu
+        if runtime_seed is None:
+            if self.compute_mesh is None:
+                return None
+            return MultiGPUConfiguration(
+                compute_mesh=self.compute_mesh,
+                mode=self.multigpu_mode,
+            )
+
+        if runtime_seed.compute_mesh is None and self.compute_mesh is not None:
+            runtime_seed = runtime_seed.replace(compute_mesh=self.compute_mesh)
+        if runtime_seed.mode is None:
+            runtime_seed = runtime_seed.replace(mode=self.multigpu_mode)
+        return runtime_seed
+
+    @property
+    def use_mGPU(self):
+        return self.multigpu is not None
+
+    _MULTIGPU_FORWARD = {
+        "num_devices": "num_devices",
+        "devices": "devices",
+        "devices_index": "devices_index",
+        "mesh_halo_width": "mesh_halo_width",
+        "mesh_halo_offsets": "mesh_halo_offsets",
+        "local_mesh_shape": "local_mesh_shape",
+        "local_mesh_with_halo_shape": "local_mesh_with_halo_shape",
+        "owned_slice_start": "owned_slice_start",
+        "owned_slice_end": "owned_slice_end",
+        "ptcl_halo_width": "ptcl_halo_width",
+        "slice_start": "slice_start",
+        "slice_end": "slice_end",
+        "halo_start": "halo_start",
+        "halo_end": "halo_end",
+        "offsets": "offsets",
+        "scatter_offsets": "scatter_offsets",
+        "left_perm": "left_perm",
+        "right_perm": "right_perm",
+        "mGPU_halo_moving": "halo_moving",
+        "mGPU_reconstruct_pre_drift": "reconstruct_pre_drift",
+        "mGPU_reconstruct_pre_drift_pullback": "reconstruct_pre_drift_pullback",
+        "mGPU_halo_move_pullback": "halo_move_pullback",
+        "mGPU_compute_halo_mask": "compute_halo_mask",
+        "mGPU_rfftn": "rfftn",
+        "mGPU_irfftn": "irfftn",
+        "mGPU_rfftn_transposed": "rfftn_transposed",
+        "mGPU_irfftn_transposed": "irfftn_transposed",
+        "mGPU_irfftn_transposed_batched": "irfftn_transposed_batched",
+        "mGPU_scatter": "scatter",
+        "mGPU_gather": "gather",
+    }
+
+    def __getattr__(self, name):
+        runtime_name = self._MULTIGPU_FORWARD.get(name)
+        if runtime_name is None:
+            raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
+        if self.multigpu is None:
+            if name == "local_mesh_shape":
+                return self.mesh_shape
+            if name == "local_mesh_with_halo_shape":
+                return self.mesh_shape
+            if name == "mesh_halo_width":
+                return 0
+            if name == "ptcl_halo_width":
+                return 0
+            return None
+        return getattr(self.multigpu, runtime_name)
 
     @property
     def dim(self):
@@ -337,14 +371,12 @@ class Configuration:
     @property
     def mesh_size(self):
         """Number of mesh grid points."""
-        with jax.ensure_compile_time_eval():
-            return jnp.array(self.mesh_shape).prod().item()
+        return math.prod(self.mesh_shape)
 
     @property
     def local_mesh_size(self):
         """Number of mesh grid points."""
-        with jax.ensure_compile_time_eval():
-            return jnp.array(self.local_mesh_shape).prod().item()
+        return math.prod(self.local_mesh_shape)
 
     @property
     def V(self):
@@ -419,6 +451,8 @@ class Configuration:
     @property
     def a_nbody(self):
         """N-body time integration scale factor steps, including ``a_start``, of ``cosmo_dtype``."""
+        if self.a_custom is not None:
+            return self.a_custom
         return jnp.linspace(self.a_start, self.a_stop, num=1 + self.a_nbody_num,
                             dtype=self.cosmo_dtype)
 
@@ -429,4 +463,10 @@ class Configuration:
 
     @property
     def var_tophat(self):
-        return TophatVar(self.transfer_k[1:], lowring=True, backend='jax')
+        with jax.ensure_compile_time_eval():
+            return TophatVar(self.transfer_k[1:], lowring=True, backend='jax')
+
+    @property
+    def varlin_R(self):
+        """Linear matter overdensity variance in a top-hat window of radius R in [L], of ``cosmo_dtype``."""
+        return self.var_tophat.y

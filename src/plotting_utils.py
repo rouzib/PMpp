@@ -2,6 +2,7 @@ import jaxlib
 import jax.numpy as jnp
 from jax.experimental import io_callback
 from matplotlib import pyplot as plt
+from jax.typing import ArrayLike
 
 
 def plot_particle_distribution_on_gpus(particles, force_mGPU=False):
@@ -68,6 +69,7 @@ def plot_particle_distribution_on_gpus(particles, force_mGPU=False):
 
 
 def plot_pos_distribution(positions, config):
+    """Plot a simple x-axis histogram for particle positions."""
     bins = jnp.linspace(0, config.mesh_shape[0], num=config.mesh_shape[0] + 1)
 
     plt.figure(figsize=(10, 6))
@@ -114,7 +116,7 @@ def plot_particle_bins(pos, nMesh, title=None, mask=None):
         particles = pos[mask]
     else:
         particles = pos
-    if type(title) is jaxlib.xla_extension.ArrayImpl:
+    if type(title) is ArrayLike:
         title = resolve_title(title.item())
     elif type(title) is not str:
         title = resolve_title(title)
@@ -156,6 +158,7 @@ def plot_particle_bins_callback(pos, mask, nMesh, title_idx=None):
 
 # Function to resolve numeric title index back into a string
 def resolve_title(title_idx):
+    """Map callback-friendly integer title IDs to plot labels."""
     title_map = {
         0: "All particles",
         1: "Particles in halo",

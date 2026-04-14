@@ -1,6 +1,17 @@
 import jax.numpy as jnp
 
 
+def build_particle_nyquist_filter(kvec, conf):
+    """Return per-axis broadcastable masks for particle-grid-resolvable modes."""
+    if conf.mesh_shape == conf.ptcl_grid_shape:
+        return ()
+
+    k_nyquist = jnp.asarray(jnp.pi / conf.ptcl_spacing, dtype=conf.float_dtype)
+    eps = k_nyquist * jnp.asarray(8 * jnp.finfo(conf.float_dtype).eps, dtype=conf.float_dtype)
+    limit = k_nyquist + eps
+    return tuple((jnp.abs(k) <= limit).astype(conf.float_dtype) for k in kvec)
+
+
 def _chunk_split(ptcl_num, chunk_size, *arrays):
     """Split and reshape particle arrays into chunks and remainders, with the remainders
     preceding the chunks. 0D ones are duplicated as full arrays in the chunks."""

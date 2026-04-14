@@ -3,3 +3,9 @@
 /CAMELS/snapshot_090.hdf5
 /CAMELS/snapshot_090.npz
 .idea
+/profiles/
+/notebooks/tests/output/
+/diagnostics/
+/notebooks/
+/Quijote/
+/CAMELS/

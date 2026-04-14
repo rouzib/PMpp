@@ -44,6 +44,13 @@ def neg_grad(k, pot, spacing):
     return grad
 
 
+def apply_particle_nyquist_filter(src, masks):
+    """Apply broadcastable per-axis particle-Nyquist masks."""
+    for mask in masks:
+        src = src * mask
+    return src
+
+
 def gravity(a, ptcl, cosmo, conf):
     """Gravitational accelerations of particles in [H_0^2], solved on a mesh with FFT."""
     kvec = fftfreq(conf.mesh_shape, conf.cell_size, dtype=conf.float_dtype)
@@ -54,6 +61,7 @@ def gravity(a, ptcl, cosmo, conf):
     dens *= 1.5 * cosmo.Omega_m.astype(conf.float_dtype)
 
     dens = fftfwd(dens)  # normalization canceled by that of irfftn below
+    dens = apply_particle_nyquist_filter(dens, conf.particle_nyquist_masks)
 
     pot = laplace(kvec, dens, cosmo)
 

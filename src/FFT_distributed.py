@@ -28,7 +28,7 @@ from jax import lax
 from jax import custom_vjp
 from jax.experimental import mesh_utils
 from jax.experimental.custom_partitioning import custom_partitioning
-from jax.sharding import Mesh, PartitionSpec as P, NamedSharding, PositionalSharding
+from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 import jax.tree_util as tree
 import jax.numpy as jnp
 
@@ -179,15 +179,145 @@ def _irfftn_second_pass(x):
     return jnp.fft.irfftn(x, axes=[1, 2])
 
 
-def create_ffts(compute_mesh: Mesh, max_n: int) -> Tuple[Callable, Callable, Callable, Callable]:
+def _batched_fftn_first_pass(x):
+    """Perform the batched FFT along the distributed x-axis."""
+    return jnp.fft.fft(x, axis=1)
+
+
+def _batched_rfftn_second_pass(x):
+    """Perform the batched real FFT on the local y/z planes."""
+    return jnp.fft.rfftn(x, axes=[2, 3])
+
+
+def _batched_ifftn_first_pass(x):
+    """Perform the batched inverse FFT along the distributed x-axis."""
+    return jnp.fft.ifft(x, axis=1)
+
+
+def _batched_irfftn_second_pass(x):
+    """Perform the batched real inverse FFT on the local y/z planes."""
+    return jnp.fft.irfftn(x, axes=[2, 3])
+
+
+def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable]:
+    """Create batched real FFT helpers for the transposed spectral layout.
+
+    The leading axis is treated as a pure batch dimension and remains replicated.
+    """
+    if compute_mesh.size == 1:
+        _batched_rfftn_transposed_jit = jax.jit(lambda x: _batched_fftn_first_pass(_batched_rfftn_second_pass(x)))
+        _batched_irfftn_transposed_jit = jax.jit(lambda x: _batched_irfftn_second_pass(_batched_ifftn_first_pass(x)))
+
+        @custom_vjp
+        def batched_irfftn_transposed(x):
+            return _batched_irfftn_transposed_jit(x)
+
+        def batched_irfftn_transposed_fwd(x):
+            return _batched_irfftn_transposed_jit(x), x.shape
+
+        def batched_irfftn_transposed_bwd(res, g):
+            real_shape = g.shape
+            g = _batched_rfftn_transposed_jit(g).conj()
+            n = g.shape[-1]
+            is_even = (real_shape[-1] % 2 == 0)
+
+            mask = jnp.ones((n,), dtype=g.real.dtype)
+            if n > 1:
+                mask = mask.at[1:].set(2.0)
+                if is_even:
+                    mask = mask.at[n - 1].set(1.0)
+
+            scale = jnp.asarray(1 / np.prod(real_shape[1:]), dtype=g.real.dtype)
+            out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
+            return (out,)
+
+        batched_irfftn_transposed.defvjp(
+            batched_irfftn_transposed_fwd,
+            batched_irfftn_transposed_bwd,
+        )
+        return _batched_rfftn_transposed_jit, batched_irfftn_transposed
+
+    batched_fftn_first_pass = create_sharded_fft(
+        _batched_fftn_first_pass,
+        P(None, None, "gpus", None),
+        compute_mesh,
+    )
+    batched_rfftn_second_pass = create_sharded_fft(
+        _batched_rfftn_second_pass,
+        P(None, "gpus", None, None),
+        compute_mesh,
+    )
+    batched_ifftn_first_pass = create_sharded_fft(
+        _batched_ifftn_first_pass,
+        P(None, None, "gpus", None),
+        compute_mesh,
+    )
+    batched_irfftn_second_pass = create_sharded_fft(
+        _batched_irfftn_second_pass,
+        P(None, "gpus", None, None),
+        compute_mesh,
+    )
+
+    def _batched_rfftn_transposed(x):
+        x = batched_rfftn_second_pass(x)
+        x = batched_fftn_first_pass(x)
+        return x
+
+    def _batched_irfftn_transposed(x):
+        x = batched_ifftn_first_pass(x)
+        x = batched_irfftn_second_pass(x)
+        return x
+
+    _batched_rfftn_transposed_jit = jax.jit(
+        _batched_rfftn_transposed,
+        in_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None, None))),
+        out_shardings=(NamedSharding(compute_mesh, P(None, None, "gpus", None))),
+    )
+    _batched_irfftn_transposed_jit = jax.jit(
+        _batched_irfftn_transposed,
+        in_shardings=(NamedSharding(compute_mesh, P(None, None, "gpus", None))),
+        out_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None, None))),
+    )
+
+    @custom_vjp
+    def batched_irfftn_transposed(x):
+        return _batched_irfftn_transposed_jit(x)
+
+    def batched_irfftn_transposed_fwd(x):
+        return _batched_irfftn_transposed_jit(x), x.shape
+
+    def batched_irfftn_transposed_bwd(res, g):
+        real_shape = g.shape
+        g = _batched_rfftn_transposed_jit(g).conj()
+        n = g.shape[-1]
+        is_even = (real_shape[-1] % 2 == 0)
+
+        mask = jnp.ones((n,), dtype=g.real.dtype)
+        if n > 1:
+            mask = mask.at[1:].set(2.0)
+            if is_even:
+                mask = mask.at[n - 1].set(1.0)
+
+        scale = jnp.asarray(1 / np.prod(real_shape[1:]), dtype=g.real.dtype)
+        out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
+        return (out,)
+
+    batched_irfftn_transposed.defvjp(
+        batched_irfftn_transposed_fwd,
+        batched_irfftn_transposed_bwd,
+    )
+
+    return _batched_rfftn_transposed_jit, batched_irfftn_transposed
+
+
+def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Callable, Callable, Callable]:
     """
     Create a set of Fourrier Transform functions that distribute computation across a provided compute mesh (a logical
-    grouping of devices for parallel computation).  It returns a tuple of functions: `rfftn_jit`, `irfftn_jit`, `fftn_jit`,
+    grouping of devices for parallel computation). It returns a tuple of functions: `rfftn_jit`, `irfftn_jit`, `fftn_jit`,
     and `ifftn_jit` for performing real forward, real inverse, complex forward and complex inverse FFT respectively.
 
     Args:
         compute_mesh (Mesh): The compute mesh defining the layout of devices for parallel computation.
-        max_n (int): The maximum size of elements along the largest dimensions of the input arrays.
 
     Returns:
         tuple: The forward and inverse FFT functions including real and complex variants. These functions are JIT
@@ -203,6 +333,55 @@ def create_ffts(compute_mesh: Mesh, max_n: int) -> Tuple[Callable, Callable, Cal
         Among the returned functions, `rfftn` and `irfftn` functions are differentiable while `fftn` and `ifftn` are not.
 
     """
+    # Single-device shortcut: bypass distributed 2-pass FFT entirely.
+    # The strided-batched cuFFT plan created by the first pass is incompatible
+    # with some single-GPU hardware (e.g. GTX 1650 / cuFFT 12).
+    if compute_mesh.size == 1:
+        _fftn_jit = jax.jit(jnp.fft.fftn)
+        _ifftn_jit = jax.jit(jnp.fft.ifftn)
+        _rfftn_jit = jax.jit(jnp.fft.rfftn)
+        _irfftn_jit = jax.jit(jnp.fft.irfftn)
+
+        @custom_vjp
+        def rfftn(x):
+            return _rfftn_jit(x)
+
+        def rfftn_fwd(x):
+            return _rfftn_jit(x), x.shape
+
+        def rfftn_bwd(x_shape, g):
+            g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
+            g = _ifftn_jit(g.conj()).real
+            g *= jnp.prod(jnp.array(x_shape))
+            return (g,)
+
+        rfftn.defvjp(rfftn_fwd, rfftn_bwd)
+
+        @custom_vjp
+        def irfftn(x):
+            return _irfftn_jit(x)
+
+        def irfftn_fwd(x):
+            return _irfftn_jit(x), x.shape
+
+        def irfftn_bwd(res, g):
+            real_shape = g.shape
+            g = _rfftn_jit(g).conj()
+            n = g.shape[-1]
+            is_even = (real_shape[-1] % 2 == 0)
+            mask = jnp.ones((n,), dtype=g.real.dtype)
+            if n > 1:
+                mask = mask.at[1:].set(2.0)
+                if is_even:
+                    mask = mask.at[n - 1].set(1.0)
+            scale = jnp.asarray(1 / np.prod(real_shape), dtype=g.real.dtype)
+            out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
+            return (out,)
+
+        irfftn.defvjp(irfftn_fwd, irfftn_bwd)
+
+        return rfftn, irfftn, _fftn_jit, _ifftn_jit, rfftn, irfftn
+
     # Creating sharded versions of FFT and IFFT functions for specific GPU sharding
     fftn_first_pass = create_sharded_fft(_fftn_first_pass, P(None, "gpus", None), compute_mesh)
     fftn_second_pass = create_sharded_fft(_fftn_second_pass, P("gpus", None, None), compute_mesh)
@@ -244,6 +423,28 @@ def create_ffts(compute_mesh: Mesh, max_n: int) -> Tuple[Callable, Callable, Cal
                         out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))))
     _ifftn_jit = jax.jit(_ifftn, in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
                          out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))))
+    # Natural spectral layout: keep the intermediate transpose produced by the
+    # x-axis FFT so downstream spectral operators can avoid bouncing layouts.
+    _rfftn_transposed_jit = jax.jit(
+        _rfftn,
+        in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+        out_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
+    )
+    _irfftn_transposed_jit = jax.jit(
+        _irfftn,
+        in_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
+        out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+    )
+    _fftn_transposed_jit = jax.jit(
+        _fftn,
+        in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+        out_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
+    )
+    _ifftn_transposed_jit = jax.jit(
+        _ifftn,
+        in_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
+        out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+    )
 
     @custom_vjp
     def rfftn(x):
@@ -261,15 +462,6 @@ def create_ffts(compute_mesh: Mesh, max_n: int) -> Tuple[Callable, Callable, Cal
 
     def rfftn_bwd(x_shape, g):
         """ Backward pass for custom VJP of real-valued forward FFT """
-        # TODO: Weird behaviour when x_shape is not a power of 2
-        # TODO: See FFT shift
-        # TODO: Fix is maybe cropping before padding to ensure size on last dimension
-        #  if fft_type == xla_client.FftType.IRFFT:
-        #       in_s[-1] = (in_s[-1] // 2 + 1)
-        #     # Cropping
-        #     arr = arr[tuple(map(slice, in_s))]
-        #     # Padding
-        #     arr = jnp.pad(arr, [(0, x - y) for x, y in zip(in_s, arr.shape)])
         g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
         g = _ifftn_jit(g.conj()).real
         # the previous code is equivalent to jnp.fft.ifftn(g.conj(), s=x_shape).real
@@ -277,6 +469,21 @@ def create_ffts(compute_mesh: Mesh, max_n: int) -> Tuple[Callable, Callable, Cal
         return (g,)
 
     rfftn.defvjp(rfftn_fwd, rfftn_bwd)
+
+    @custom_vjp
+    def rfftn_transposed(x):
+        return _rfftn_transposed_jit(x)
+
+    def rfftn_transposed_fwd(x):
+        return _rfftn_transposed_jit(x), x.shape
+
+    def rfftn_transposed_bwd(x_shape, g):
+        g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
+        g = _ifftn_transposed_jit(g.conj()).real
+        g *= jnp.prod(jnp.array(x_shape))
+        return (g,)
+
+    rfftn_transposed.defvjp(rfftn_transposed_fwd, rfftn_transposed_bwd)
 
     @custom_vjp
     def irfftn(x):
@@ -292,40 +499,55 @@ def create_ffts(compute_mesh: Mesh, max_n: int) -> Tuple[Callable, Callable, Cal
         """ Forward pass for custom VJP of real-valued inverse FFT """
         return _irfftn_jit(x), x.shape
 
-    def create_mask(n, is_odd, dtype):
-        # Create a large enough static mask
-        assert n <= max_n, f"max_n provided ({max_n}) is not big enough for array size of {n}."
-        mask = jnp.ones(max_n, dtype=dtype)
-        mask = mask.at[1:max_n - 1].set(2.0)  # Set the middle values to 2.0
-        mask = mask.at[max_n - 1].set(1.0 - is_odd)  # Adjust the last value based on odd/even
-        return mask[:n]  # Slice the mask to the desired size dynamically
-
     def irfftn_bwd(res, g):
         """ Backward pass for custom VJP of real-valued inverse FFT """
-        fft_lengths = jnp.array(g.shape)
-        dtype = g.dtype
+        real_shape = g.shape
         # Compute the RFFT of the gradient (changes the size of g)
         g = _rfftn_jit(g).conj()  # jnp.fft.rfftn(g) # _rfftn_jit(g)
         # Apply the scaling factor and mask
         n = g.shape[-1]
-        is_odd = fft_lengths[-1] % 2
+        is_even = (real_shape[-1] % 2 == 0)
 
-        # for jax.jit computation, the mask needs to be static. The commented code is more intuitive, but dynamic
-        """full = partial(lax.full_like, g, dtype=x.dtype)
-        mask = lax.concatenate(
-            [full(1.0, shape=(1,)),
-             full(2.0, shape=(n - 2 + is_odd,)),
-             full(1.0, shape=(1 - is_odd,))],
-            dimension=0)"""
-        mask = create_mask(n, is_odd, dtype)
+        # The FFT shape is static under JIT, so the Hermitian weighting can be built
+        # directly without padding to an external max size.
+        mask = jnp.ones((n,), dtype=g.real.dtype)
+        if n > 1:
+            mask = mask.at[1:].set(2.0)
+            if is_even:
+                mask = mask.at[n - 1].set(1.0)
 
-        scale = 1 / jnp.prod(fft_lengths, dtype=dtype)
+        scale = jnp.asarray(1 / np.prod(real_shape), dtype=g.real.dtype)
         out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
         return (out,)
 
     irfftn.defvjp(irfftn_fwd, irfftn_bwd)
 
-    return rfftn, irfftn, _fftn_jit, _ifftn_jit
+    @custom_vjp
+    def irfftn_transposed(x):
+        return _irfftn_transposed_jit(x)
+
+    def irfftn_transposed_fwd(x):
+        return _irfftn_transposed_jit(x), x.shape
+
+    def irfftn_transposed_bwd(res, g):
+        real_shape = g.shape
+        g = _rfftn_transposed_jit(g).conj()
+        n = g.shape[-1]
+        is_even = (real_shape[-1] % 2 == 0)
+
+        mask = jnp.ones((n,), dtype=g.real.dtype)
+        if n > 1:
+            mask = mask.at[1:].set(2.0)
+            if is_even:
+                mask = mask.at[n - 1].set(1.0)
+
+        scale = jnp.asarray(1 / np.prod(real_shape), dtype=g.real.dtype)
+        out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
+        return (out,)
+
+    irfftn_transposed.defvjp(irfftn_transposed_fwd, irfftn_transposed_bwd)
+
+    return rfftn, irfftn, _fftn_jit, _ifftn_jit, rfftn_transposed, irfftn_transposed
 
 
 def test_functions(distributed_func_jit: Callable, reference_func: Callable, array: np.ndarray, mesh: Mesh) -> Tuple[

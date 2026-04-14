@@ -1,19 +1,27 @@
 from dataclasses import field
 from functools import partial
 from itertools import accumulate
-from operator import add, sub, itemgetter, mul
-from typing import Optional, Any
+from operator import itemgetter, mul
+from typing import Optional, Any, List
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax import NamedSharding
 from jax.tree_util import tree_map
 from jax.experimental.shard_map import shard_map
 from jax.typing import ArrayLike
-from jax.sharding import PartitionSpec as P
+from jax.sharding import NamedSharding, PartitionSpec as P
 
-from .utils import pytree_dataclass, is_float0_array, raise_error, distribute_array_on_gpus, AXIS_NAME
+from .halo_moving import (
+    compute_halo_mask as halo_compute_halo_mask,
+    compute_halo_mask_shard_map as halo_compute_halo_mask_shard_map,
+    initialize_mGPU_compute_halo_mask as halo_initialize_mGPU_compute_halo_mask,
+    initialize_mGPU_halo_move_pullback as halo_initialize_mGPU_halo_move_pullback,
+    initialize_mGPU_halo_movement_canonical as halo_initialize_mGPU_halo_movement_canonical,
+    initialize_mGPU_reconstruct_pre_drift as halo_initialize_mGPU_reconstruct_pre_drift,
+    particles_in_slice_mask as halo_particles_in_slice_mask,
+)
+from .utils import pytree_dataclass, is_float0_array, raise_error, AXIS_NAME, pmid_to_idx
 
 
 @partial(pytree_dataclass, aux_fields=("conf",), frozen=True, eq=False)
@@ -38,7 +46,7 @@ class Particles:
         Particle comoving displacements from pmid in [L]. For displacements from
         particles' grid Lagrangian positions, use ``ptcl_rpos(ptcl,
         Particles.gen_grid(ptcl.conf), ptcl.conf)``. It can save the particle locations
-        with much more uniform precision than positions, whereever they are. Call
+        with much more uniform precision than positions, wherever they are. Call
         ``pos`` for the positions.
     vel : ArrayLike, optional
         Particle canonical velocities in [H_0 L].
@@ -59,7 +67,6 @@ class Particles:
     # mGPU attributes
     unused_index: Optional[ArrayLike] = None
     halo_mask: Optional[ArrayLike] = None
-    idx: Optional[ArrayLike] = None
 
     attr: Any = None
 
@@ -72,8 +79,6 @@ class Particles:
                 return conf.float_dtype
             elif (name == "unused_index") | (name == "halo_mask"):
                 return jnp.bool
-            elif name == "idx":
-                return jnp.int32
             else:
                 return conf.float_dtype
 
@@ -100,88 +105,165 @@ class Particles:
     @staticmethod
     @jax.jit
     def particles_in_slice_mask(x_mod, slice_start, slice_end):
-        """
-        Compute a boolean mask for particles within a specified range of the global mesh.
-
-        This function uses modular arithmetic and JAX's conditional operation
-        to determine whether particles fall within a specified start and
-        end range, considering cyclic boundaries.
-
-        :param p: ndarray
-            Particle positions. The first column of this array represents the
-            x-coordinates of the particles.
-        :param slice_start: int
-            Start of the mesh slice.
-        :param slice_end: int
-            End of the mesh slice.
-        :param global_nMesh: int
-            The total size of the mesh, used for modular arithmetic.
-        :return: ndarray
-            A boolean mask indicating whether each particle lies within the
-            specified slice.
-        """
-        """ This uses jax.lax.cond which is not replicated.
-        return jax.lax.cond(
-            slice_start > slice_end,
-            lambda _: ((p[:, 0] % global_nMesh) >= slice_start) |
-                      ((p[:, 0] % global_nMesh) < slice_end),
-            lambda _: ((p[:, 0] % global_nMesh) >= slice_start) &
-                      ((p[:, 0] % global_nMesh) < slice_end),
-            operand=None
-        )"""
-        within_slice = (x_mod >= slice_start) & (x_mod < slice_end)
-        across_boundary = (x_mod >= slice_start) | (x_mod < slice_end)
-        return jnp.where(slice_start > slice_end, across_boundary, within_slice)
+        """Compatibility wrapper for the standalone halo-moving helper."""
+        return halo_particles_in_slice_mask(x_mod, slice_start, slice_end)
 
     @staticmethod
     @jax.jit
     def compute_halo_mask(x_mod, halo_start, halo_end, unused_indexes):
-        """
-        Computes a mask for particles based on their positions and halo boundaries.
-
-        This function calculates a boolean mask for a set of particles represented
-        by their positions. The mask is determined by checking whether the particles
-        fall within certain defined halo regions (start or end). This computation
-        takes into account periodic boundary conditions, leveraging modular arithmetic
-        to support wrapping around the edges of the simulation space. The function
-        also ensures particles with zero positions in the dataset are excluded from
-        the resulting mask.
-
-        :param p: Position array of particles with shape (n, m), where `n` is the
-                  number of particles and `m` is the dimensionality of positions.
-        :param halo_start: A tuple of two integers that define the start halo
-                           boundaries as `(start, end)` in periodic space.
-        :param halo_end: A tuple of two integers that define the end halo
-                         boundaries as `(start, end)` in periodic space.
-        :param global_nMesh: The size of the global periodic domain along the
-                             position axis.
-        :return: A boolean mask of shape `(n,)` indicating whether each particle
-                 satisfies the given halo conditions.
-        :rtype: jax.numpy.ndarray
-        """
-
-        def slice_mask(xm, start, end):
-            """ Not replicated branching
-            return jax.lax.cond(
-                start > end,
-                lambda _: (xm >= start) | (xm < end),
-                lambda _: (xm >= start) & (xm < end),
-                operand=None
-            )"""
-            within_range = (xm >= start) & (xm < end)
-            across_boundary = (xm >= start) | (xm < end)
-            return jnp.where(start > end, across_boundary, within_range)
-
-        mask_start = slice_mask(x_mod, halo_start[0], halo_start[1])
-        mask_end = slice_mask(x_mod, halo_end[0], halo_end[1])
-
-        return (mask_start | mask_end) & ~unused_indexes
+        """Compatibility wrapper for the standalone halo-moving helper."""
+        return halo_compute_halo_mask(x_mod, halo_start, halo_end, unused_indexes)
 
     @staticmethod
-    def distribute_ptcl_pos(pmid, disp, vel, acc, conf, gpu_id):
+    def _host_particles_in_slice_mask(x_mod, slice_start, slice_end):
+        if slice_start > slice_end:
+            return (x_mod >= slice_start) | (x_mod < slice_end)
+        return (x_mod >= slice_start) & (x_mod < slice_end)
+
+    @staticmethod
+    def _host_compute_halo_mask(x_mod, halo_start, halo_end, unused_index):
+        mask_start = Particles._host_particles_in_slice_mask(x_mod, halo_start[0], halo_start[1])
+        mask_end = Particles._host_particles_in_slice_mask(x_mod, halo_end[0], halo_end[1])
+        return (mask_start | mask_end) & ~unused_index
+
+    @staticmethod
+    def _shard_host_slices(conf, slices: List[np.ndarray], dtype):
+        slices = [jnp.asarray(s, dtype=dtype) for s in slices]
+        total_shape = (conf.num_devices * slices[0].shape[0],) + slices[0].shape[1:]
+        partition = P(AXIS_NAME, *([None] * (slices[0].ndim - 1)))
+        sharding = NamedSharding(conf.compute_mesh, partition)
+        mesh_devices = list(conf.compute_mesh.devices.flat)
+        device_arrays = [
+            jax.device_put(slices[i], device=mesh_devices[i])
+            for i in range(conf.num_devices)
+        ]
+        return jax.make_array_from_single_device_arrays(total_shape, sharding, device_arrays)
+
+    @staticmethod
+    def _partition_and_shard_particle_fields(conf, pmid, disp, vel, acc):
+        runtime = conf.multigpu
+        if runtime is None:
+            raise ValueError("Host-side particle partitioning requires an initialized multi-GPU runtime.")
+
+        store_particle_halos = runtime.store_particle_halos
+        pmid_host = np.asarray(jax.device_get(pmid), dtype=np.dtype(conf.pmid_dtype))
+        disp_host = np.asarray(jax.device_get(disp), dtype=np.dtype(conf.float_dtype))
+        vel_host = None if vel is None else np.asarray(jax.device_get(vel), dtype=np.dtype(conf.float_dtype))
+        acc_host = None if acc is None else np.asarray(jax.device_get(acc), dtype=np.dtype(conf.float_dtype))
+
+        slice_start = runtime.slice_start if store_particle_halos else runtime.owned_slice_start
+        slice_end = runtime.slice_end if store_particle_halos else runtime.owned_slice_end
+        slice_start = np.asarray(jax.device_get(slice_start), dtype=np.int64)
+        slice_end = np.asarray(jax.device_get(slice_end), dtype=np.int64)
+        halo_start = np.asarray(jax.device_get(runtime.halo_start), dtype=np.int64)
+        halo_end = np.asarray(jax.device_get(runtime.halo_end), dtype=np.int64)
+        mesh_shape_host = np.asarray(jax.device_get(conf.mesh_shape), dtype=np.int64)
+
+        # Use float32 arithmetic to match the GPU-side x_mod computation in
+        # _x_mod_from_disp (JAX 32-bit mode). Using float64 here can place
+        # boundary particles on the wrong slab, causing them to be dropped
+        # during the first authoritative extraction in _canonical_authoritative_from_full.
+        # `pmid` is already stored in mesh-grid coordinates because it is
+        # derived from `pos / conf.cell_size`.
+        x_mod = (
+            pmid_host[:, 0].astype(np.float32) + disp_host[:, 0].astype(np.float32) * np.float32(conf.disp_size)
+        ) % np.float32(conf.nMesh)
+        capacity = conf.max_ptcl_per_slice
+        spatial_ndim = pmid_host.shape[1]
+
+        pmid_slices, disp_slices = [], []
+        vel_slices = [] if vel_host is not None else None
+        acc_slices = [] if acc_host is not None else None
+        unused_slices, halo_slices = [], []
+
+        for slice_idx in range(conf.num_devices):
+            in_slice_mask = Particles._host_particles_in_slice_mask(
+                x_mod,
+                slice_start[slice_idx],
+                slice_end[slice_idx],
+            )
+            indices = np.flatnonzero(in_slice_mask)
+            count = indices.size
+            if count > capacity:
+                raise ValueError(
+                    "[ERROR] [GPU {gpu}] Exceeded max_ptcl_per_slice: max_ptcl_per_slice={cap}, "
+                    "actual particles in slice={count}. Consider increasing 'conf.max_ptcl_per_slice'."
+                    .format(gpu=slice_idx, cap=capacity, count=count)
+                )
+
+            count = min(count, capacity)
+            selected = indices[:count]
+            if count:
+                pmid_selected = pmid_host[selected].astype(np.int64, copy=False)
+                keys_selected = (
+                    (pmid_selected[:, 0] % mesh_shape_host[0]) * mesh_shape_host[1]
+                    + (pmid_selected[:, 1] % mesh_shape_host[1])
+                ) * mesh_shape_host[2] + (pmid_selected[:, 2] % mesh_shape_host[2])
+                selected = selected[np.argsort(keys_selected, kind="stable")]
+
+            pmid_slice = np.zeros((capacity, spatial_ndim), dtype=pmid_host.dtype)
+            disp_slice = np.zeros((capacity, spatial_ndim), dtype=disp_host.dtype)
+            if count:
+                pmid_slice[:count] = pmid_host[selected]
+                disp_slice[:count] = disp_host[selected]
+
+            unused_index = np.ones((capacity,), dtype=np.bool_)
+            unused_index[:count] = False
+            if store_particle_halos:
+                x_mod_local = (pmid_slice[:, 0] + disp_slice[:, 0] * conf.disp_size) % conf.nMesh
+                halo_mask = Particles._host_compute_halo_mask(
+                    x_mod_local,
+                    halo_start[slice_idx],
+                    halo_end[slice_idx],
+                    unused_index,
+                )
+            else:
+                halo_mask = np.zeros((capacity,), dtype=np.bool_)
+
+            pmid_slices.append(pmid_slice)
+            disp_slices.append(disp_slice)
+            unused_slices.append(unused_index)
+            halo_slices.append(halo_mask)
+
+            if vel_slices is not None:
+                vel_slice = np.zeros((capacity, spatial_ndim), dtype=vel_host.dtype)
+                if count:
+                    vel_slice[:count] = vel_host[selected]
+                vel_slices.append(vel_slice)
+
+            if acc_slices is not None:
+                acc_slice = np.zeros((capacity, spatial_ndim), dtype=acc_host.dtype)
+                if count:
+                    acc_slice[:count] = acc_host[selected]
+                acc_slices.append(acc_slice)
+
+        pmid = Particles._shard_host_slices(conf, pmid_slices, conf.pmid_dtype)
+        disp = Particles._shard_host_slices(conf, disp_slices, conf.float_dtype)
+        unused_index = Particles._shard_host_slices(conf, unused_slices, jnp.bool_)
+        halo_mask = Particles._shard_host_slices(conf, halo_slices, jnp.bool_)
+
+        vel = None if vel_slices is None else Particles._shard_host_slices(conf, vel_slices, conf.float_dtype)
+        acc = None if acc_slices is None else Particles._shard_host_slices(conf, acc_slices, conf.float_dtype)
+        return pmid, disp, vel, acc, unused_index, halo_mask
+
+    @staticmethod
+    def distribute_ptcl_pos(pmid, disp, vel, acc, conf, slice_idx):
+        runtime = conf.multigpu
+        store_particle_halos = runtime is not None and runtime.store_particle_halos
+        if runtime is None:
+            slice_start = conf.slice_start[slice_idx]
+            slice_end = conf.slice_end[slice_idx]
+        elif store_particle_halos:
+            slice_start = runtime.slice_start[slice_idx]
+            slice_end = runtime.slice_end[slice_idx]
+        else:
+            slice_start = runtime.owned_slice_start[slice_idx]
+            slice_end = runtime.owned_slice_end[slice_idx]
+
         x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % conf.nMesh
-        in_slice_mask = Particles.particles_in_slice_mask(x_mod, conf.slice_start[gpu_id], conf.slice_end[gpu_id])
-        indices = jnp.compress(in_slice_mask, jnp.arange(pmid.shape[0]), axis=0, size=conf.max_ptcl_per_slice,
+        in_slice_mask = Particles.particles_in_slice_mask(x_mod, slice_start, slice_end)
+        indices = jnp.compress(in_slice_mask, jnp.arange(pmid.shape[0]), axis=0,
+                               size=min(conf.max_ptcl_per_slice, pmid.shape[0]),
                                fill_value=-1)
 
         _ = jax.lax.cond(
@@ -190,7 +272,7 @@ class Particles:
                 "[ERROR] [GPU {a}] Exceeded max_ptcl_per_slice: "
                 "max_ptcl_per_slice={x}, actual max_ptcl_per_slice={y}. Some particles may have "
                 f"disappeared. Consider making 'conf.max_ptcl_per_slice' bigger so that this does not happen again.",
-                a=gpu_id, x=conf.max_ptcl_per_slice, y=jnp.sum(in_slice_mask)),
+                a=slice_idx, x=conf.max_ptcl_per_slice, y=jnp.sum(in_slice_mask)),
             lambda _: None,
             operand=None
         )
@@ -300,17 +382,17 @@ class Particles:
 
         unused_index = jnp.all(pmid_sliced == 0, axis=1) & jnp.all(disp_sliced == 0, axis=1)
         unused_index = unused_index.at[0].set(False)
-        # unused_index = (indices == -1)
-        x_mod = (pmid_sliced[:, 0] + disp_sliced[:, 0] * conf.disp_size) % conf.nMesh
-        temp = [conf.halo_start[gpu_id, 0], (conf.halo_start[gpu_id, 1] - 1) % conf.nMesh]
-        halo_mask = Particles.compute_halo_mask(x_mod, temp,
-                                                conf.halo_end[gpu_id], unused_index)
+        if runtime is not None and not store_particle_halos:
+            halo_mask = jnp.zeros_like(unused_index)
+        else:
+            x_mod = (pmid_sliced[:, 0] + disp_sliced[:, 0] * conf.disp_size) % conf.nMesh
+            halo_mask = Particles.compute_halo_mask(x_mod, conf.halo_start[slice_idx],
+                                                    conf.halo_end[slice_idx], unused_index)
 
         unused_index.astype(jnp.bool)
         halo_mask.astype(jnp.bool)
-        indices.astype(jnp.int32)
 
-        return pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask, indices
+        return pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask
 
     @classmethod
     def from_pos(cls, conf, pos, vel=None, acc=None, wrap=True):
@@ -327,8 +409,18 @@ class Particles:
             Whether to wrap around the periodic boundaries.
 
         """
-        pos = jnp.asarray(pos)
+        if conf.use_mGPU:
+            pos_host = np.asarray(jax.device_get(pos), dtype=np.dtype(conf.float_dtype))
+            pmid = np.rint(pos_host / conf.cell_size).astype(np.dtype(conf.pmid_dtype))
+            disp = (pos_host - pmid * conf.cell_size).astype(np.dtype(conf.float_dtype))
+            if wrap:
+                pmid = np.mod(pmid, np.asarray(conf.mesh_shape, dtype=pmid.dtype))
+            pmid, disp, vel, acc, unused_index, halo_mask = cls._partition_and_shard_particle_fields(
+                conf, pmid, disp, vel, acc
+            )
+            return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
 
+        pos = jnp.asarray(pos)
         pmid = jnp.rint(pos / conf.cell_size)
         disp = pos - pmid * conf.cell_size
 
@@ -338,77 +430,51 @@ class Particles:
         if wrap:
             pmid %= jnp.array(conf.mesh_shape, dtype=conf.pmid_dtype)
 
-        unused_index, halo_mask, indices = None, None, None
-        if conf.use_mGPU:
-            def stack_and_shard(array: ArrayLike, dtype=jnp.float32):
-                return distribute_array_on_gpus(jnp.concatenate(array, axis=0, dtype=dtype), conf.compute_mesh,
-                                                P(AXIS_NAME))
-
-            pmid_sliced_list, disp_sliced_list, vel_sliced_list, acc_sliced_list, unused_index_list, halo_mask_list, indices_list = [], [], [], [], [], [], []
-            for i in range(conf.num_devices):
-                gpu_id = conf.devices_index[i]  # jax.lax.axis_index('gpus')
-                pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask, indices = cls.distribute_ptcl_pos(
-                    pmid, disp, vel, acc, conf, gpu_id)
-
-                print(pmid_sliced.shape, pmid_sliced.device)
-
-                pmid_sliced_list.append(pmid_sliced)
-                disp_sliced_list.append(disp_sliced)
-                vel_sliced_list.append(vel_sliced)
-                acc_sliced_list.append(acc_sliced)
-                unused_index_list.append(unused_index)
-                halo_mask_list.append(halo_mask)
-                indices_list.append(indices)
-
-            pmid = stack_and_shard(pmid_sliced_list, conf.pmid_dtype)
-            disp = stack_and_shard(disp_sliced_list, conf.float_dtype)
-            unused_index = stack_and_shard(unused_index_list, jnp.bool)
-            halo_mask = stack_and_shard(halo_mask_list, jnp.bool)
-            indices = stack_and_shard(indices_list, jnp.int32)
-
-            if vel is not None:
-                vel = stack_and_shard(vel_sliced_list, conf.float_dtype)
-            if acc is not None:
-                acc = stack_and_shard(acc_sliced_list, conf.float_dtype)
-
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask, idx=indices)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=None, halo_mask=None)
 
     @classmethod
     def from_pos_sharded(cls, conf, pos, vel=None, acc=None, wrap=True):
         """Construct particle state of ``pmid`` and ``disp`` from positions."""
-        pos = jnp.asarray(pos)
+        return cls.from_pos(conf, pos, vel=vel, acc=acc, wrap=wrap)
 
-        pmid = jnp.rint(pos / conf.cell_size)
-        disp = pos - pmid * conf.cell_size
+    @classmethod
+    def from_ordered_pos(cls, conf, pos, vel=None, acc=None, wrap=True):
+        """Construct particle state from positions stored in particle-grid order.
 
-        pmid = pmid.astype(conf.pmid_dtype)
-        disp = disp.astype(conf.float_dtype)
+        This path keeps the particle-grid anchor unique by using the canonical
+        `Particles.gen_grid(...)` ordering rather than re-rounding the input
+        Eulerian positions. It is intended for ordered particle sets such as LPT
+        outputs or CAMELS snapshots that preserve particle-grid order.
+        """
+        del wrap
+        grid_axes = []
+        for sp, sm in zip(conf.ptcl_grid_shape, conf.mesh_shape):
+            axis = np.linspace(0, sm, num=sp, endpoint=False)
+            axis = np.rint(axis).astype(np.dtype(conf.pmid_dtype))
+            grid_axes.append(axis)
+        pmid_host = np.meshgrid(*grid_axes, indexing='ij')
+        pmid_host = np.stack(pmid_host, axis=-1).reshape(-1, conf.dim)
 
-        if wrap:
-            pmid %= jnp.array(conf.mesh_shape, dtype=conf.pmid_dtype)
+        pos_host = np.asarray(jax.device_get(pos), dtype=np.dtype(conf.float_dtype))
+        if pos_host.shape[0] != pmid_host.shape[0]:
+            raise ValueError(
+                "from_ordered_pos requires a full particle-grid ordered position array: "
+                f"expected {pmid_host.shape[0]} particles, got {pos_host.shape[0]}."
+            )
 
-        unused_index, halo_mask, indices = None, None, None
+        anchor_host = pmid_host.astype(pos_host.dtype, copy=False) * np.asarray(conf.cell_size, dtype=pos_host.dtype)
+        box_host = np.asarray(conf.box_size, dtype=pos_host.dtype)
+        disp_host = (pos_host - anchor_host + 0.5 * box_host) % box_host - 0.5 * box_host
+
         if conf.use_mGPU:
-            @partial(shard_map, mesh=conf.compute_mesh, in_specs=(
-                    P(None, None),
-                    P(None, None),
-                    P(None, None),
-                    P(None, None),
-                    None
-            ), out_specs=(P(AXIS_NAME),
-                          P(AXIS_NAME),
-                          P(AXIS_NAME),
-                          P(AXIS_NAME),
-                          P(AXIS_NAME),
-                          P(AXIS_NAME),
-                          P(AXIS_NAME)
-            ))
-            def sharded_slicing(pmid, disp, vel, acc, conf):
-                gpu_id = jax.lax.axis_index(AXIS_NAME)
-                return cls.distribute_ptcl_pos(pmid, disp, vel, acc, conf, gpu_id)
+            pmid, disp, vel, acc, unused_index, halo_mask = cls._partition_and_shard_particle_fields(
+                conf, pmid_host, disp_host, vel, acc
+            )
+            return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
 
-            pmid, disp, vel, acc, unused_index, halo_mask, indices = sharded_slicing(pmid, disp, vel, acc, conf)
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask, idx=indices)
+        pmid = jnp.asarray(pmid_host, dtype=conf.pmid_dtype)
+        disp = jnp.asarray(disp_host, dtype=conf.float_dtype)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=None, halo_mask=None)
 
     @classmethod
     def from_pmid(cls, conf, pmid, disp, vel=None, acc=None):
@@ -425,41 +491,15 @@ class Particles:
             Whether to wrap around the periodic boundaries.
 
         """
+        if conf.use_mGPU:
+            pmid, disp, vel, acc, unused_index, halo_mask = cls._partition_and_shard_particle_fields(
+                conf, pmid, disp, vel, acc
+            )
+            return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
+
         pmid = jnp.asarray(pmid)
         disp = jnp.asarray(disp)
-
-        unused_index, halo_mask, indices = None, None, None
-        if conf.use_mGPU:
-            def stack_and_shard(array: ArrayLike, dtype=jnp.float32):
-                return distribute_array_on_gpus(jnp.concatenate(array, axis=0, dtype=dtype), conf.compute_mesh,
-                                                P(AXIS_NAME))
-
-            pmid_sliced_list, disp_sliced_list, vel_sliced_list, acc_sliced_list, unused_index_list, halo_mask_list, indices_list = [], [], [], [], [], [], []
-            for i in range(conf.num_devices):
-                gpu_id = conf.devices_index[i]  # jax.lax.axis_index('gpus')
-                pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask, indices = cls.distribute_ptcl_pos(
-                    pmid, disp, vel, acc, conf, gpu_id)
-
-                pmid_sliced_list.append(pmid_sliced)
-                disp_sliced_list.append(disp_sliced)
-                vel_sliced_list.append(vel_sliced)
-                acc_sliced_list.append(acc_sliced)
-                unused_index_list.append(unused_index)
-                halo_mask_list.append(halo_mask)
-                indices_list.append(indices)
-
-            pmid = stack_and_shard(pmid_sliced_list, conf.pmid_dtype)
-            disp = stack_and_shard(disp_sliced_list, conf.float_dtype)
-            unused_index = stack_and_shard(unused_index_list, jnp.bool)
-            halo_mask = stack_and_shard(halo_mask_list, jnp.bool)
-            indices = stack_and_shard(indices_list, jnp.int32)
-
-            if vel is not None:
-                vel = stack_and_shard(vel_sliced_list, conf.float_dtype)
-            if acc is not None:
-                acc = stack_and_shard(acc_sliced_list, conf.float_dtype)
-
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask, idx=indices)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=None, halo_mask=None)
 
     @classmethod
     def from_ptcl(cls, ptcl, conf=None, wrap=True):
@@ -481,7 +521,17 @@ class Particles:
         pmid = ptcl.pmid
         disp = ptcl.disp
         vel = ptcl.vel
-        acc = ptcl.vel
+        acc = ptcl.acc
+
+        if conf.use_mGPU:
+            pmid = np.asarray(jax.device_get(pmid), dtype=np.dtype(conf.pmid_dtype))
+            disp = np.asarray(jax.device_get(disp), dtype=np.dtype(conf.float_dtype))
+            if wrap:
+                pmid = np.mod(pmid, np.asarray(conf.mesh_shape, dtype=pmid.dtype))
+            pmid, disp, vel, acc, unused_index, halo_mask = cls._partition_and_shard_particle_fields(
+                conf, pmid, disp, vel, acc
+            )
+            return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
 
         pmid = pmid.astype(conf.pmid_dtype)
         disp = disp.astype(conf.float_dtype)
@@ -489,38 +539,7 @@ class Particles:
         if wrap:
             pmid %= jnp.array(conf.mesh_shape, dtype=conf.pmid_dtype)
 
-        unused_index, halo_mask, indices = None, None, None
-        if conf.use_mGPU:
-            def stack_and_shard(array: ArrayLike, dtype=jnp.float32):
-                return distribute_array_on_gpus(jnp.concatenate(array, axis=0, dtype=dtype), conf.compute_mesh,
-                                                P(AXIS_NAME))
-
-            pmid_sliced_list, disp_sliced_list, vel_sliced_list, acc_sliced_list, unused_index_list, halo_mask_list, indices_list = [], [], [], [], [], [], []
-            for i in range(conf.num_devices):
-                gpu_id = conf.devices_index[i]  # jax.lax.axis_index('gpus')
-                pmid_sliced, disp_sliced, vel_sliced, acc_sliced, unused_index, halo_mask, indices = cls.distribute_ptcl_pos(
-                    pmid, disp, vel, acc, conf, gpu_id)
-
-                pmid_sliced_list.append(pmid_sliced)
-                disp_sliced_list.append(disp_sliced)
-                vel_sliced_list.append(vel_sliced)
-                acc_sliced_list.append(acc_sliced)
-                unused_index_list.append(unused_index)
-                halo_mask_list.append(halo_mask)
-                indices_list.append(indices)
-
-            pmid = stack_and_shard(pmid_sliced_list, conf.pmid_dtype)
-            disp = stack_and_shard(disp_sliced_list, conf.float_dtype)
-            unused_index = stack_and_shard(unused_index_list, jnp.bool)
-            halo_mask = stack_and_shard(halo_mask_list, jnp.bool)
-            indices = stack_and_shard(indices_list, jnp.int32)
-
-            if vel is not None:
-                vel = stack_and_shard(vel_sliced_list, conf.float_dtype)
-            if acc is not None:
-                acc = stack_and_shard(acc_sliced_list, conf.float_dtype)
-
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask, idx=indices)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=None, halo_mask=None)
 
     @classmethod
     def gen_grid(cls, conf, vel=False, acc=False):
@@ -540,9 +559,17 @@ class Particles:
             pmid, disp = [], []
 
             sp = conf.ptcl_grid_shape[0]
-            sm = conf.local_mesh_shape[0] + conf.mesh_shape[0] / sp
+            runtime = conf.multigpu
+            store_particle_halos = runtime is not None and runtime.store_particle_halos
             n_devices = conf.num_devices
-            n_ptcl = sp // n_devices + 1
+            if store_particle_halos:
+                sm = conf.local_mesh_shape[0] + conf.ptcl_halo_width
+                n_ptcl = sp // n_devices + (1 if n_devices > 1 else 0)
+                pmid_shift = -conf.ptcl_halo_width
+            else:
+                sm = conf.local_mesh_shape[0]
+                n_ptcl = sp // n_devices
+                pmid_shift = 0
             pmid_x = jnp.linspace(0, sm, num=n_ptcl, endpoint=False)
             offset = conf.offsets[gpu_id]
             pmid_x = jnp.rint(pmid_x)
@@ -552,7 +579,7 @@ class Particles:
             disp_x *= conf.cell_size / sp
             disp_x = disp_x.astype(conf.float_dtype)
 
-            pmid_x = pmid_x + offset - 1
+            pmid_x = pmid_x + offset + pmid_shift
             pmid_x = jnp.mod(pmid_x, conf.mesh_shape[0])
 
             pmid.append(pmid_x)
@@ -581,12 +608,12 @@ class Particles:
                                           device=NamedSharding(conf.compute_mesh, P(AXIS_NAME))).at[
                            n_ptcl * sp * sp:].set(True)
 
-            x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % conf.nMesh
-            temp = [conf.halo_start[gpu_id, 0], (conf.halo_start[gpu_id, 1] - 1) % conf.nMesh]
-
-            halo_mask = Particles.compute_halo_mask(x_mod, temp,
-                                                    conf.halo_end[gpu_id], unused_index)
-            # print(pmid[halo_mask])
+            if runtime is not None and not store_particle_halos:
+                halo_mask = jnp.zeros_like(unused_index)
+            else:
+                x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % conf.nMesh
+                halo_mask = Particles.compute_halo_mask(x_mod, conf.halo_start[gpu_id],
+                                                        conf.halo_end[gpu_id], unused_index)
 
             return pmid, disp, unused_index, halo_mask
 
@@ -598,22 +625,10 @@ class Particles:
 
         pmid, disp, unused_index, halo_mask = build_all()
 
-        vel = jnp.zeros_like(disp, device=NamedSharding(conf.compute_mesh, P(AXIS_NAME))) if vel else None
-        acc = jnp.zeros_like(disp, device=NamedSharding(conf.compute_mesh, P(AXIS_NAME))) if acc else None
+        vel = jnp.zeros_like(disp) if vel else None
+        acc = jnp.zeros_like(disp) if acc else None
 
-        idx_dtype = jnp.int32
-        mesh_shape = jnp.array(conf.mesh_shape, dtype=idx_dtype)  # (3,)
-        ix = (pmid[:, 0].astype(idx_dtype)) % mesh_shape[0]
-        iy = (pmid[:, 1].astype(idx_dtype)) % mesh_shape[1]
-        iz = (pmid[:, 2].astype(idx_dtype)) % mesh_shape[2]
-
-        # Flatten to a unique global ID in C-order: ((x * Ny) + y) * Nz + z
-        idx = (ix * mesh_shape[1] + iy) * mesh_shape[2] + iz  # shape (N,)
-
-        # Mask out padded entries so they don't collide with real IDs
-        idx = jnp.where(unused_index, idx_dtype(-1), idx)
-
-        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask, idx=idx)
+        return cls(conf, pmid, disp, vel=vel, acc=acc, unused_index=unused_index, halo_mask=halo_mask)
 
     def raveled_id(self, dtype=jnp.uint64, wrap=False):
         """Particle raveled IDs, flattened from ``pmid``.
@@ -699,13 +714,11 @@ class Particles:
         # mGPU attributes
         unused_index = self.unused_index[start_id:end_id] if self.unused_index is not None else None
         halo_mask = self.halo_mask[start_id:end_id] if self.halo_mask is not None else None
-        idx = self.idx[start_id:end_id] if self.idx is not None else None
-
-        return pmid, disp, vel, acc, unused_index, halo_mask, idx
+        return pmid, disp, vel, acc, unused_index, halo_mask
 
     @staticmethod
     @jax.jit
-    def remove_particles(pmid, disp, vel, acc, particle_indices, mask, unused_index):
+    def remove_particles(pmid, disp, vel, acc, mask, unused_index):
         """
         Removes particles from the given data arrays based on a boolean mask. This function
         operates on position vectors, velocity vectors, particle indices, and unused indices.
@@ -716,31 +729,38 @@ class Particles:
             the expected broadcast dimension for operations.
         :param vel: Array of particle velocities. Should match the shape and type specifications
             of `pos`.
-        :param particle_indices: Array representing the unique indices assigned to each particle.
-            Portions of the array will be modified for particles identified by the mask.
         :param mask: Boolean array indicating which particles should be removed. `True` values
-            flag particles for removal at corresponding positions in `pos`, `vel`, and `particle_indices`.
+            flag particles for removal at corresponding positions in `pmid`, `disp`, `vel`, and `acc`.
         :param unused_index: Array of unused indices, which will also be updated when particles are
             removed as per the mask.
         :return: A tuple containing the updated position array (`pos`), velocity array (`vel`),
-            particle indices array (`particle_indices`), and unused index array (`unused_index`)
-            after particles are removed based on the mask.
+            acceleration array (`acc`), and unused index array (`unused_index`) after particles are
+            removed based on the mask.
         """
-        broadcasted_mask = jnp.broadcast_to(jnp.expand_dims(mask, axis=-1), pmid.shape)
-        zeros = jnp.zeros_like(disp)
-        pmid = jax.lax.select(broadcasted_mask, jnp.zeros_like(pmid), pmid)
-        disp = jax.lax.select(broadcasted_mask, zeros, disp)
-        vel = jax.lax.select(broadcasted_mask, zeros, vel)
-        acc = jax.lax.select(broadcasted_mask, zeros, acc)
-        particle_indices = jax.lax.select(mask, -jnp.ones_like(particle_indices), particle_indices)
+        mask_2d = jnp.expand_dims(mask, axis=-1)
+        pmid = jax.lax.select(jnp.broadcast_to(mask_2d, pmid.shape), jnp.zeros_like(pmid), pmid)
+        disp = jax.lax.select(jnp.broadcast_to(mask_2d, disp.shape), jnp.zeros_like(disp), disp)
+        vel = jax.lax.select(jnp.broadcast_to(mask_2d, vel.shape), jnp.zeros_like(vel), vel)
+        acc = jax.lax.select(jnp.broadcast_to(mask_2d, acc.shape), jnp.zeros_like(acc), acc)
         unused_index = jax.lax.select(mask, jnp.ones_like(unused_index), unused_index)
-        return pmid, disp, vel, acc, particle_indices, unused_index
+        return pmid, disp, vel, acc, unused_index
 
     @staticmethod
     @partial(jax.jit, static_argnames=["max_values_to_add"])
-    def add_particles(pmid, disp, vel, acc, particle_indices, unused_indexes, new_pmid, new_disp, new_vel, new_acc,
-                      new_particle_indices,
-                      max_values_to_add):
+    def add_particles(
+        pmid,
+        disp,
+        vel,
+        acc,
+        unused_indexes,
+        new_pmid,
+        new_disp,
+        new_vel,
+        new_acc,
+        new_valid,
+        max_values_to_add,
+    ):
+        max_values_to_add = min(max_values_to_add, pmid.shape[0])
         """
         Add a specified number of new particle positions, velocities, and indices to the existing particle
         system, while ensuring that the number of added particles does not exceed the maximum limit. The
@@ -750,303 +770,1003 @@ class Particles:
                     a particle, and each column corresponds to a coordinate.
         :param vel: A 2D array representing the velocities of existing particles. Each row corresponds to
                     a particle, and each column corresponds to a speed component.
-        :param particle_indices: A 1D array representing the indices of particles currently in use
-                                 within the system.
         :param unused_indexes: A 1D Boolean array where True indicates the presence of available slots
                                for new particles and False indicates occupied slots.
         :param new_pos: A 2D array representing the positions of the new particles to be added. Each row
                         corresponds to a particle, and each column corresponds to a coordinate.
         :param new_vel: A 2D array representing the velocities of the new particles to be added. Each row
                         corresponds to a particle, and each column corresponds to a speed component.
-        :param new_particle_indices: A 1D array representing the indices of the new particles to be added.
         :param max_values_to_add: An integer representing the maximum number of new particles to add
                                   to the system.
         :return: A tuple containing the updated positions, velocities, indices of the particles, and the
                  updated array of unused indices.
         """
+        num_values_to_add = jnp.sum(new_valid)
+
         _ = jax.lax.cond(
-            jnp.sum(unused_indexes) < max_values_to_add,
+            jnp.sum(unused_indexes) < num_values_to_add,
             lambda _: raise_error(
                 "[ERROR] Exceeded max_amount_particles_per_slice. Available slots: {x}, values_to_add: {y}. Consider making 'max_amount_particles_per_slice' bigger.",
-                x=jnp.sum(unused_indexes), y=max_values_to_add),
+                x=jnp.sum(unused_indexes), y=num_values_to_add),
             lambda _: None,
             operand=None
         )
 
-        all_indices = jnp.nonzero(unused_indexes, size=pmid.shape[0], fill_value=-1)[0]
+        # Pad with a stable sentinel slot instead of 0. Using 0 here can produce repeated
+        # destination indices after the real unused slots, and those padded `.at[...].set`
+        # writes can overwrite an earlier successful insertion on slot 0.
+        real_indices = jnp.nonzero(
+            unused_indexes,
+            size=max_values_to_add,
+            fill_value=pmid.shape[0] - 1,
+        )[0]
 
-        real_indices = jax.lax.dynamic_slice_in_dim(
-            all_indices,
-            start_index=0,
-            slice_size=max_values_to_add,
-            axis=0
-        )
+        valid_new_indices = jnp.nonzero(new_valid, size=max_values_to_add, fill_value=0)[0]
 
         chosen_new_pmid = jax.lax.dynamic_slice_in_dim(
-            new_pmid,
+            new_pmid[valid_new_indices],
             start_index=0,
             slice_size=max_values_to_add,
             axis=0
         )
         chosen_new_disp = jax.lax.dynamic_slice_in_dim(
-            new_disp,
+            new_disp[valid_new_indices],
             start_index=0,
             slice_size=max_values_to_add,
             axis=0
         )
         chosen_new_vel = jax.lax.dynamic_slice_in_dim(
-            new_vel,
+            new_vel[valid_new_indices],
             start_index=0,
             slice_size=max_values_to_add,
             axis=0
         )
         chosen_new_acc = jax.lax.dynamic_slice_in_dim(
-            new_acc,
+            new_acc[valid_new_indices],
             start_index=0,
             slice_size=max_values_to_add,
             axis=0
         )
-        chosen_new_indices = jax.lax.dynamic_slice_in_dim(
-            new_particle_indices,
-            start_index=0,
-            slice_size=max_values_to_add,
-            axis=0
-        )
+        update_mask = jnp.arange(max_values_to_add) < num_values_to_add
+        current_pmid = pmid[real_indices]
+        current_disp = disp[real_indices]
+        current_vel = vel[real_indices]
+        current_acc = acc[real_indices]
 
-        pmid = pmid.at[real_indices].set(chosen_new_pmid)
-        disp = disp.at[real_indices].set(chosen_new_disp)
-        vel = vel.at[real_indices].set(chosen_new_vel)
-        acc = acc.at[real_indices].set(chosen_new_acc)
-        particle_indices = particle_indices.at[real_indices].set(chosen_new_indices)
-
-        # unused_indexes = particle_indices == -1
+        pmid = pmid.at[real_indices].set(jnp.where(update_mask[:, None], chosen_new_pmid, current_pmid))
+        disp = disp.at[real_indices].set(jnp.where(update_mask[:, None], chosen_new_disp, current_disp))
+        vel = vel.at[real_indices].set(jnp.where(update_mask[:, None], chosen_new_vel, current_vel))
+        acc = acc.at[real_indices].set(jnp.where(update_mask[:, None], chosen_new_acc, current_acc))
         unused_indexes = jnp.all(pmid == 0, axis=1) & jnp.all(disp == 0, axis=1)
 
-        return pmid, disp, vel, acc, particle_indices, unused_indexes
+        return pmid, disp, vel, acc, unused_indexes
 
     @staticmethod
-    def move_particles_shard_map(pmid, disp, vel, acc, particle_indices, halo_start, halo_end, previous_halo_mask,
-                                 unused_indexes, share_only_right, global_nMesh, max_values_to_share, left_perm,
-                                 right_perm, num_gpus,
-                                 disp_size):
-        """
-        Finds and processes particles that need to move between GPUs based on their position relative to halo regions.
-        This function handles particle sharing and removal to ensure a consistent distribution of particles across GPUs.
+    def _key_fill_value(conf):
+        return jnp.asarray(conf.mesh_size, dtype=jnp.int32)
 
-        :param pos: Current positions of particles.
-        :param vel: Current velocities of particles.
-        :param particle_indices: Indices associated with each particle.
-        :param halo_start: Start boundaries of the halo regions.
-        :param halo_end: End boundaries of the halo regions.
-        :param previous_halo_mask: Mask indicating particles previously present in the halo region.
-        :param global_nMesh: The global mesh size used for calculations.
-        :param unused_indexes: Indices that can be reused for new particles.
-        :param max_values_to_share: Maximum number of particles to share between neighboring GPUs.
-        :param left_perm: The permutation mapping for particle exchange with the left neighboring GPU.
-        :param right_perm: The permutation mapping for particle exchange with the right neighboring GPU.
-        :param num_gpus: The number of GPUs that are used in the computation.
-        :return: Updated positions, velocities, indices, previous halo mask, and unused indexes after processing.
-        """
-        halo_start = halo_start.squeeze()
-        halo_end = halo_end.squeeze()
+    @staticmethod
+    def _owned_slice_bounds(global_nMesh, num_gpus, offsets):
+        owned_start = offsets[jax.lax.axis_index(AXIS_NAME)]
+        owned_end = (owned_start + global_nMesh // num_gpus) % global_nMesh
+        return owned_start, owned_end
 
-        halo_start_fix = [halo_start[0], (halo_start[1] - 1) % global_nMesh]
+    @staticmethod
+    def _x_mod_from_disp(pmid, disp, global_nMesh, disp_size):
+        return (pmid[:, 0] + disp[:, 0] * disp_size) % global_nMesh
 
-        offset = global_nMesh // num_gpus
-        # dummy_mask = jnp.all(pmid == 0, axis=1) & jnp.all(disp == 0, axis=1)  # [n_particles], bool
-        dummy_mask = unused_indexes
-
-        x_mod = (pmid[:, 0] + disp[:, 0] * disp_size) % global_nMesh
-
-        particles_in_halo = Particles.compute_halo_mask(x_mod, halo_start_fix, halo_end, unused_indexes)
-        """diff = particles_in_halo.astype(int) - previous_halo_mask.astype(
-            int)  # 1 if entered the halo and should be shared to the other gpus, -1 if particle exited the halo slice
-        """
-        in_gpu_slice = Particles.particles_in_slice_mask(x_mod, halo_start_fix[1],
-                                                         halo_end[0])  # in the gpu slice, but not in the halo
-
-        exited_halo = previous_halo_mask & ~particles_in_halo  # Particles that exited the halo_slice
-        entered_halo = particles_in_halo & ~previous_halo_mask  # Particles that entered the halo_slice
-        stayed_in_halo = ~(particles_in_halo ^ previous_halo_mask)  # Particles that stayed in the halo_slice
-        # to_keep = (diff == -1) & in_gpu_slice  # do nothing with this
-        to_share_and_remove = stayed_in_halo & (~in_gpu_slice) & ~dummy_mask & ~particles_in_halo
-        to_remove = (
-                            exited_halo & ~in_gpu_slice) | to_share_and_remove  # remove since this is the to_keep of another GPU
-        to_share = entered_halo | to_share_and_remove
-
-        to_share_left = to_share & Particles.particles_in_slice_mask(x_mod,
-                                                                     (halo_start_fix[0] - offset) % global_nMesh,
-                                                                     halo_start_fix[1])
-        # jax.debug.print("{x}", x=((halo_start_fix[0] - offset) % global_nMesh, halo_start_fix[1]))
-        to_share_right = to_share & Particles.particles_in_slice_mask(x_mod, halo_end[0],
-                                                                      (halo_end[
-                                                                           1] + offset) % global_nMesh) & ~share_only_right
-
-        """jax.debug.print("[GPU {a}] Halo_start: {x}, Halo_end: {y}.", a=jax.lax.axis_index("gpus"),
-                        x=halo_start_fix, y=halo_end)
-
-        def plotting():
-            p = (pmid + disp * disp_size) % global_nMesh
-
-            plot_particle_bins_callback(p, None, global_nMesh, title_idx=0)  # "All particles"
-            plot_particle_bins_callback(p, particles_in_halo, global_nMesh, title_idx=1)  # "Particles in halo"
-            plot_particle_bins_callback(p, exited_halo, global_nMesh, title_idx=2)  # "Particles that exited halo_slice"
-            plot_particle_bins_callback(p, entered_halo, global_nMesh, title_idx=3)  # "Particles that entered halo_slice"
-            plot_particle_bins_callback(p, stayed_in_halo, global_nMesh,
-                                        title_idx=4)  # "Particles that stayed in halo_slice"
-            plot_particle_bins_callback(p, in_gpu_slice, global_nMesh, title_idx=5)  # "In GPU slice"
-            plot_particle_bins_callback(p, ~in_gpu_slice & stayed_in_halo, global_nMesh,
-                                        title_idx=6)  # "Out of GPU slice and not in halo"
-            plot_particle_bins_callback(p, to_remove, global_nMesh, title_idx=7)  # "Particles that need to be removed"
-            plot_particle_bins_callback(p, to_share, global_nMesh, title_idx=8)  # "Particles that need to be shared"
-            plot_particle_bins_callback(p, to_share_left, global_nMesh,
-                                        title_idx=9)  # "Particles that need to be shared to the left slice"
-            plot_particle_bins_callback(p, to_share_right, global_nMesh,
-                                        title_idx=10)  # "Particles that need to be shared to the right slice"
-
-        jax.lax.cond(
-            jax.lax.axis_index(AXIS_NAME) == 1,
-            lambda: plotting(),
-            lambda: None
-        )"""
-
-        check_fraction_and_share = (
-                (jnp.sum(to_share_right) > max_values_to_share) |
-                (jnp.sum(to_share_left) > max_values_to_share)
+    @staticmethod
+    def _capacity_check(count, capacity, message):
+        _ = jax.lax.cond(
+            count > capacity,
+            lambda _: raise_error(message, x=count, y=capacity),
+            lambda _: None,
+            operand=None,
         )
+
+    @staticmethod
+    def _compact_sorted_particles(keys, pmid, disp, vel, acc, mask, capacity, key_fill, error_message):
+        count = jnp.sum(mask)
+        Particles._capacity_check(count, capacity, error_message)
+        # Canonical callers preserve packed-key order already: they compact from
+        # a globally sorted authoritative sequence or from masks applied to that
+        # same sorted sequence. Mask-compaction therefore preserves the order and
+        # does not need an additional argsort.
+        keys_compact = jnp.compress(mask, keys, axis=0, size=capacity, fill_value=key_fill)
+        pmid_compact = jnp.compress(mask, pmid, axis=0, size=capacity, fill_value=0)
+        disp_compact = jnp.compress(mask, disp, axis=0, size=capacity, fill_value=0)
+        vel_compact = jnp.compress(mask, vel, axis=0, size=capacity, fill_value=0)
+        acc_compact = jnp.compress(mask, acc, axis=0, size=capacity, fill_value=0)
+        valid = jnp.arange(capacity) < count
+        return keys_compact, pmid_compact, disp_compact, vel_compact, acc_compact, valid
+
+    @staticmethod
+    def _sorted_merge_two(
+        keys_a,
+        pmid_a,
+        disp_a,
+        vel_a,
+        acc_a,
+        valid_a,
+        keys_b,
+        pmid_b,
+        disp_b,
+        vel_b,
+        acc_b,
+        valid_b,
+        capacity,
+        key_fill,
+        error_message,
+    ):
+        count_a = jnp.sum(valid_a)
+        count_b = jnp.sum(valid_b)
+        total = count_a + count_b
+        Particles._capacity_check(total, capacity, error_message)
+        keys_cat = jnp.concatenate((jnp.where(valid_a, keys_a, key_fill), jnp.where(valid_b, keys_b, key_fill)), axis=0)
+        pmid_cat = jnp.concatenate((pmid_a, pmid_b), axis=0)
+        disp_cat = jnp.concatenate((disp_a, disp_b), axis=0)
+        vel_cat = jnp.concatenate((vel_a, vel_b), axis=0)
+        acc_cat = jnp.concatenate((acc_a, acc_b), axis=0)
+        order = jnp.argsort(keys_cat, stable=True)[:capacity]
+        out_keys = keys_cat[order]
+        out_pmid = pmid_cat[order]
+        out_disp = disp_cat[order]
+        out_vel = vel_cat[order]
+        out_acc = acc_cat[order]
+        out_valid = jnp.arange(capacity) < total
+        out_keys = jnp.where(out_valid, out_keys, key_fill)
+        return out_keys, out_pmid, out_disp, out_vel, out_acc, out_valid
+
+    @staticmethod
+    def _sorted_merge_three(
+        keys_a,
+        pmid_a,
+        disp_a,
+        vel_a,
+        acc_a,
+        valid_a,
+        keys_b,
+        pmid_b,
+        disp_b,
+        vel_b,
+        acc_b,
+        valid_b,
+        keys_c,
+        pmid_c,
+        disp_c,
+        vel_c,
+        acc_c,
+        valid_c,
+        capacity,
+        key_fill,
+        error_message,
+    ):
+        merged_ab = Particles._sorted_merge_two(
+            keys_a, pmid_a, disp_a, vel_a, acc_a, valid_a,
+            keys_b, pmid_b, disp_b, vel_b, acc_b, valid_b,
+            capacity, key_fill, error_message,
+        )
+        return Particles._sorted_merge_two(
+            *merged_ab,
+            keys_c, pmid_c, disp_c, vel_c, acc_c, valid_c,
+            capacity, key_fill, error_message,
+        )
+
+    @staticmethod
+    def _pack_left_halo_and_authoritative(
+        left_keys,
+        left_pmid,
+        left_disp,
+        left_vel,
+        left_acc,
+        left_valid,
+        auth_keys,
+        auth_pmid,
+        auth_disp,
+        auth_vel,
+        auth_acc,
+        auth_valid,
+        max_ptcl_per_slice,
+        halo_start,
+        halo_end,
+        global_nMesh,
+        disp_size,
+    ):
+        left_count = jnp.sum(left_valid)
+        auth_count = jnp.sum(auth_valid)
+        total = left_count + auth_count
+        Particles._capacity_check(
+            total,
+            max_ptcl_per_slice,
+            "[ERROR] Exceeded canonical particle storage capacity. "
+            "required_slots={x}, max_ptcl_per_slice={y}.",
+        )
+
+        pmid = jnp.zeros((max_ptcl_per_slice, left_pmid.shape[1]), dtype=left_pmid.dtype)
+        disp = jnp.zeros((max_ptcl_per_slice, left_disp.shape[1]), dtype=left_disp.dtype)
+        vel = jnp.zeros((max_ptcl_per_slice, left_vel.shape[1]), dtype=left_vel.dtype)
+        acc = jnp.zeros((max_ptcl_per_slice, left_acc.shape[1]), dtype=left_acc.dtype)
+        slots = jnp.arange(max_ptcl_per_slice, dtype=jnp.int32)
+        left_mask = slots < left_count
+        auth_mask = (slots >= left_count) & (slots < total)
+        left_idx = jnp.minimum(slots, left_pmid.shape[0] - 1)
+        auth_idx = jnp.maximum(slots - left_count.astype(jnp.int32), 0)
+        auth_idx = jnp.minimum(auth_idx, auth_pmid.shape[0] - 1)
+
+        pmid = jnp.where(left_mask[:, None], left_pmid[left_idx], pmid)
+        disp = jnp.where(left_mask[:, None], left_disp[left_idx], disp)
+        vel = jnp.where(left_mask[:, None], left_vel[left_idx], vel)
+        acc = jnp.where(left_mask[:, None], left_acc[left_idx], acc)
+
+        pmid = jnp.where(auth_mask[:, None], auth_pmid[auth_idx], pmid)
+        disp = jnp.where(auth_mask[:, None], auth_disp[auth_idx], disp)
+        vel = jnp.where(auth_mask[:, None], auth_vel[auth_idx], vel)
+        acc = jnp.where(auth_mask[:, None], auth_acc[auth_idx], acc)
+
+        unused_index = jnp.arange(max_ptcl_per_slice) >= total
+        x_mod = Particles._x_mod_from_disp(pmid, disp, global_nMesh, disp_size)
+        halo_mask = Particles.compute_halo_mask(x_mod, halo_start.squeeze(), halo_end.squeeze(), unused_index)
+        return pmid, disp, vel, acc, halo_mask, unused_index
+
+    @staticmethod
+    def _canonical_authoritative_from_full(
+        pmid,
+        source_disp,
+        carried_disp,
+        vel,
+        acc,
+        unused_index,
+        global_nMesh,
+        disp_size,
+        num_gpus,
+        offsets,
+        conf,
+    ):
+        owned_start, owned_end = Particles._owned_slice_bounds(global_nMesh, num_gpus, offsets)
+        x_mod = Particles._x_mod_from_disp(pmid, source_disp, global_nMesh, disp_size)
+        owned_mask = Particles.particles_in_slice_mask(x_mod, owned_start, owned_end) & ~unused_index
+        keys = pmid_to_idx(pmid, conf)
+        return Particles._compact_sorted_particles(
+            keys,
+            pmid,
+            carried_disp,
+            vel,
+            acc,
+            owned_mask,
+            pmid.shape[0],
+            Particles._key_fill_value(conf),
+            "[ERROR] Exceeded authoritative compact capacity. "
+            "authoritative_particles={x}, compact_capacity={y}.",
+        )
+
+    @staticmethod
+    def _canonical_authoritative_from_full_with_slots(
+        pmid,
+        source_disp,
+        carried_disp,
+        vel,
+        acc,
+        unused_index,
+        global_nMesh,
+        disp_size,
+        num_gpus,
+        offsets,
+        conf,
+    ):
+        owned_start, owned_end = Particles._owned_slice_bounds(global_nMesh, num_gpus, offsets)
+        x_mod = Particles._x_mod_from_disp(pmid, source_disp, global_nMesh, disp_size)
+        owned_mask = Particles.particles_in_slice_mask(x_mod, owned_start, owned_end) & ~unused_index
+        keys = pmid_to_idx(pmid, conf)
+        auth = Particles._compact_sorted_particles(
+            keys,
+            pmid,
+            carried_disp,
+            vel,
+            acc,
+            owned_mask,
+            pmid.shape[0],
+            Particles._key_fill_value(conf),
+            "[ERROR] Exceeded authoritative compact capacity. "
+            "authoritative_particles={x}, compact_capacity={y}.",
+        )
+        slot_index = jnp.arange(pmid.shape[0], dtype=jnp.int32)
+        auth_slots = jnp.compress(
+            owned_mask,
+            slot_index,
+            axis=0,
+            size=pmid.shape[0],
+            fill_value=jnp.asarray(-1, slot_index.dtype),
+        )
+        return (*auth, auth_slots)
+
+    @staticmethod
+    def _scatter_compact_to_dense(compact_values, compact_slots, compact_valid, out_size):
+        out = jnp.zeros((out_size,) + compact_values.shape[1:], dtype=compact_values.dtype)
+        slots = jnp.where(compact_valid, compact_slots, 0)
+        mask = compact_valid.reshape((compact_valid.shape[0],) + (1,) * (compact_values.ndim - 1))
+        values = compact_values * mask.astype(compact_values.dtype)
+        return out.at[slots].add(values)
+
+    @staticmethod
+    def _sorted_merge_three_with_provenance(
+        keys_a,
+        pmid_a,
+        disp_a,
+        vel_a,
+        acc_a,
+        valid_a,
+        keys_b,
+        pmid_b,
+        disp_b,
+        vel_b,
+        acc_b,
+        valid_b,
+        keys_c,
+        pmid_c,
+        disp_c,
+        vel_c,
+        acc_c,
+        valid_c,
+        capacity,
+        key_fill,
+        error_message,
+    ):
+        count_a = jnp.sum(valid_a)
+        count_b = jnp.sum(valid_b)
+        count_c = jnp.sum(valid_c)
+        total = count_a + count_b + count_c
+        Particles._capacity_check(total, capacity, error_message)
+
+        keys_cat = jnp.concatenate((
+            jnp.where(valid_a, keys_a, key_fill),
+            jnp.where(valid_b, keys_b, key_fill),
+            jnp.where(valid_c, keys_c, key_fill),
+        ), axis=0)
+        pmid_cat = jnp.concatenate((pmid_a, pmid_b, pmid_c), axis=0)
+        disp_cat = jnp.concatenate((disp_a, disp_b, disp_c), axis=0)
+        vel_cat = jnp.concatenate((vel_a, vel_b, vel_c), axis=0)
+        acc_cat = jnp.concatenate((acc_a, acc_b, acc_c), axis=0)
+
+        src_a = jnp.arange(keys_a.shape[0], dtype=jnp.int32)
+        src_b = jnp.arange(keys_b.shape[0], dtype=jnp.int32)
+        src_c = jnp.arange(keys_c.shape[0], dtype=jnp.int32)
+        src_idx = jnp.concatenate((src_a, src_b, src_c), axis=0)
+        src_tag = jnp.concatenate((
+            jnp.where(valid_a, jnp.int32(0), jnp.int32(3)),
+            jnp.where(valid_b, jnp.int32(1), jnp.int32(3)),
+            jnp.where(valid_c, jnp.int32(2), jnp.int32(3)),
+        ), axis=0)
+
+        order = jnp.argsort(keys_cat, stable=True)[:capacity]
+        out_valid = jnp.arange(capacity) < total
+        out_keys = keys_cat[order]
+        out_pmid = pmid_cat[order]
+        out_disp = disp_cat[order]
+        out_vel = vel_cat[order]
+        out_acc = acc_cat[order]
+        out_src_idx = jnp.where(out_valid, src_idx[order], -1)
+        out_src_tag = jnp.where(out_valid, src_tag[order], 3)
+        out_keys = jnp.where(out_valid, out_keys, key_fill)
+        return (
+            out_keys,
+            out_pmid,
+            out_disp,
+            out_vel,
+            out_acc,
+            out_valid,
+            out_src_tag,
+            out_src_idx,
+        )
+
+    @staticmethod
+    def _canonical_route_authoritative(
+        keys,
+        pmid,
+        disp,
+        vel,
+        acc,
+        valid,
+        global_nMesh,
+        max_values_to_share,
+        left_perm,
+        right_perm,
+        num_gpus,
+        disp_size,
+        offsets,
+        conf,
+    ):
+        # Start from the authoritative owned-particle block only. Those particles
+        # are already sorted by packed key, so each routing branch below stays
+        # sorted after mask-compaction.
+        owned_start, owned_end = Particles._owned_slice_bounds(global_nMesh, num_gpus, offsets)
+        slice_width = global_nMesh // num_gpus
+        left_start = (owned_start - slice_width) % global_nMesh
+        right_end = (owned_end + slice_width) % global_nMesh
+
+        x_mod = Particles._x_mod_from_disp(pmid, disp, global_nMesh, disp_size)
+        stay_mask = valid & Particles.particles_in_slice_mask(x_mod, owned_start, owned_end)
+        send_left_mask = valid & Particles.particles_in_slice_mask(x_mod, left_start, owned_start)
+        send_right_mask = valid & Particles.particles_in_slice_mask(x_mod, owned_end, right_end)
+        if num_gpus == 2:
+            send_right_mask = jnp.zeros_like(send_right_mask)
+        dropped_mask = valid & ~(stay_mask | send_left_mask | send_right_mask)
 
         _ = jax.lax.cond(
-            check_fraction_and_share,
+            jnp.any(dropped_mask),
             lambda _: raise_error(
-                "[ERROR] [GPU {a}] Exceeded max_values_to_share: "
-                "to_share_right={x}, to_share_left={y}, max_values_to_share={z}. Some particles may have "
-                f"disappeared during the simulation. Consider making 'max_values_to_share' bigger so that this does not happen again.",
-                a=jax.lax.axis_index('gpus'), x=jnp.sum(to_share_right), y=jnp.sum(to_share_left),
-                z=max_values_to_share),
+                "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
+                "particles_outside_neighbor_range={x}.",
+                x=jnp.sum(dropped_mask),
+            ),
             lambda _: None,
-            operand=None
+            operand=None,
         )
 
-        to_share_right_pmid = jnp.compress(to_share_right, pmid, axis=0, size=max_values_to_share, fill_value=0)
-        to_share_right_disp = jnp.compress(to_share_right, disp, axis=0, size=max_values_to_share, fill_value=0)
-        to_share_right_vel = jnp.compress(to_share_right, vel, axis=0, size=max_values_to_share, fill_value=0)
-        to_share_right_acc = jnp.compress(to_share_right, acc, axis=0, size=max_values_to_share, fill_value=0)
-        to_share_right_idx = jnp.compress(to_share_right, particle_indices, axis=0, size=max_values_to_share,
-                                          fill_value=-1)
+        key_fill = Particles._key_fill_value(conf)
+        # Split the authoritative sequence into particles that stay local and
+        # particles that migrate one slab to the left or right. Each compacted
+        # output keeps the original packed-key order.
+        stay = Particles._compact_sorted_particles(
+            keys, pmid, disp, vel, acc, stay_mask, pmid.shape[0], key_fill,
+            "[ERROR] Exceeded stay-particle compact capacity. stay_particles={x}, capacity={y}.",
+        )
+        send_left = Particles._compact_sorted_particles(
+            keys, pmid, disp, vel, acc, send_left_mask, max_values_to_share, key_fill,
+            "[ERROR] Exceeded left-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
+        )
+        send_right = Particles._compact_sorted_particles(
+            keys, pmid, disp, vel, acc, send_right_mask, max_values_to_share, key_fill,
+            "[ERROR] Exceeded right-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
+        )
 
-        to_share_left_pmid = jnp.compress(to_share_left, pmid, axis=0, size=max_values_to_share, fill_value=0)
-        to_share_left_disp = jnp.compress(to_share_left, disp, axis=0, size=max_values_to_share, fill_value=0)
-        to_share_left_vel = jnp.compress(to_share_left, vel, axis=0, size=max_values_to_share, fill_value=0)
-        to_share_left_acc = jnp.compress(to_share_left, acc, axis=0, size=max_values_to_share, fill_value=0)
-        to_share_left_idx = jnp.compress(to_share_left, particle_indices, axis=0, size=max_values_to_share,
-                                         fill_value=-1)
+        # Neighbor exports arrive already sorted, so only the stay/local-authority
+        # merge needs to restore the canonical packed-key order.
+        incoming_from_left = jax.lax.ppermute(send_right, axis_name=AXIS_NAME, perm=right_perm)
+        incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
 
-        incoming_from_left_pmid, incoming_from_left_disp, incoming_from_left_vel, incoming_from_left_acc, incoming_from_left_idx = jax.lax.ppermute(
-            (to_share_right_pmid, to_share_right_disp, to_share_right_vel, to_share_right_acc, to_share_right_idx),
-            axis_name=AXIS_NAME, perm=right_perm)
-        incoming_from_right_pmid, incoming_from_right_disp, incoming_from_right_vel, incoming_from_right_acc, incoming_from_right_idx = jax.lax.ppermute(
-            (to_share_left_pmid, to_share_left_disp, to_share_left_vel, to_share_left_acc, to_share_left_idx),
-            axis_name=AXIS_NAME, perm=left_perm)
-
-        """jax.debug.print("[GPU {a}] to_share_left: {z}, to_share_left_pmid: {x}, to_share_left_disp: {y}.",
-                        a=jax.lax.axis_index("gpus"), x=to_share_left_pmid, y=to_share_left_disp,
-                        z=jnp.sum(to_share_left))
-
-        jax.debug.print("[GPU {a}] incoming_from_right_pmid: {x}, incoming_from_right_disp: {y}.",
-                        a=jax.lax.axis_index("gpus"), x=incoming_from_right_pmid, y=incoming_from_right_disp)"""
-
-        incoming_pmid = jnp.concatenate((incoming_from_right_pmid, incoming_from_left_pmid), axis=0)
-        incoming_disp = jnp.concatenate((incoming_from_right_disp, incoming_from_left_disp), axis=0)
-        incoming_vel = jnp.concatenate((incoming_from_right_vel, incoming_from_left_vel), axis=0)
-        incoming_acc = jnp.concatenate((incoming_from_right_acc, incoming_from_left_acc), axis=0)
-        incoming_idx = jnp.concatenate((incoming_from_right_idx, incoming_from_left_idx), axis=0)
-
-        pmid, disp, vel, acc, particle_indices, unused_index = Particles.remove_particles(pmid, disp, vel, acc,
-                                                                                          particle_indices, to_remove,
-                                                                                          unused_indexes)
-
-        pmid, disp, vel, acc, particle_indices, unused_indexes = Particles.add_particles(pmid, disp, vel, acc,
-                                                                                         particle_indices,
-                                                                                         unused_indexes,
-                                                                                         incoming_pmid,
-                                                                                         incoming_disp,
-                                                                                         incoming_vel,
-                                                                                         incoming_acc,
-                                                                                         incoming_idx,
-                                                                                         max_values_to_share * 2)
-
-        x_mod = (pmid[:, 0] + disp[:, 0] * disp_size) % global_nMesh
-        previous_halo_mask = Particles.compute_halo_mask(x_mod, halo_start_fix, halo_end, unused_indexes)
-
-        return pmid, disp, vel, acc, particle_indices, previous_halo_mask, unused_indexes, check_fraction_and_share, jnp.maximum(
-            jnp.sum(to_share_right), jnp.sum(to_share_left))
+        merged = Particles._sorted_merge_three(
+            *stay,
+            *incoming_from_left,
+            *incoming_from_right,
+            pmid.shape[0],
+            key_fill,
+            "[ERROR] Exceeded canonical authoritative capacity after migration. "
+            "required_particles={x}, max_ptcl_per_slice={y}.",
+        )
+        max_particles_moved = jnp.maximum(jnp.sum(send_left[-1]), jnp.sum(send_right[-1]))
+        return merged, max_particles_moved
 
     @staticmethod
-    def initialize_mGPU_halo_movement(conf):
-        """return shard_map(
-            Particles.move_particles_shard_map,
-            mesh=conf.compute_mesh,
-            in_specs=(
-                P(AXIS_NAME, None),  # pmid
-                P(AXIS_NAME, None),  # disp
-                P(AXIS_NAME, None),  # vel
-                P(AXIS_NAME, None),  # acc
-                P(AXIS_NAME),  # particle_indices
-                P(AXIS_NAME),  # halo_start
-                P(AXIS_NAME),  # halo_end
-                P(AXIS_NAME),  # previous_halo_mask
-                P(AXIS_NAME),  # unused_indexes
-                None,  # nMesh (not a tracer)
-                None,  # max_values_to_share (not a tracer)
-                None,  # left_perm (not a tracer)
-                None,  # right_perm (not a tracer)
-                None,  # num_gpus
-            ),
-            out_specs=(
-                P(AXIS_NAME, None),  # pmid
-                P(AXIS_NAME, None),  # disp
-                P(AXIS_NAME, None),  # vel
-                P(AXIS_NAME, None),  # acc
-                P(AXIS_NAME),  # particle_indices
-                P(AXIS_NAME),  # previous_halo_mask
-                P(AXIS_NAME),  # unused_indexes
-                P(),  # has_failed
-                P()  # max_particles_moved
-            ),
-            check_rep=False
-        )"""
-        func = partial(Particles.move_particles_shard_map,
-                       global_nMesh=conf.nMesh,
-                       max_values_to_share=conf.max_share_ptcl,
-                       left_perm=conf.left_perm,
-                       right_perm=conf.right_perm,
-                       num_gpus=conf.num_devices,
-                       disp_size=conf.disp_size)
-        return shard_map(
-            func,
-            mesh=conf.compute_mesh,
-            in_specs=(
-                P(AXIS_NAME, None),  # pmid
-                P(AXIS_NAME, None),  # disp
-                P(AXIS_NAME, None),  # vel
-                P(AXIS_NAME, None),  # acc
-                P(AXIS_NAME),  # particle_indices
-                P(AXIS_NAME),  # halo_start
-                P(AXIS_NAME),  # halo_end
-                P(AXIS_NAME),  # previous_halo_mask
-                P(AXIS_NAME),  # unused_indexes
-                P()
-            ),
-            out_specs=(
-                P(AXIS_NAME, None),  # pmid
-                P(AXIS_NAME, None),  # disp
-                P(AXIS_NAME, None),  # vel
-                P(AXIS_NAME, None),  # acc
-                P(AXIS_NAME),  # particle_indices
-                P(AXIS_NAME),  # previous_halo_mask
-                P(AXIS_NAME),  # unused_indexes
-                P(),  # has_failed
-                P()  # max_particles_moved
-            ),
-            check_rep=False
+    def _canonical_route_authoritative_with_aux(
+        keys,
+        pmid,
+        disp,
+        vel,
+        acc,
+        valid,
+        global_nMesh,
+        max_values_to_share,
+        left_perm,
+        right_perm,
+        num_gpus,
+        disp_size,
+        offsets,
+        conf,
+    ):
+        owned_start, owned_end = Particles._owned_slice_bounds(global_nMesh, num_gpus, offsets)
+        slice_width = global_nMesh // num_gpus
+        left_start = (owned_start - slice_width) % global_nMesh
+        right_end = (owned_end + slice_width) % global_nMesh
+
+        x_mod = Particles._x_mod_from_disp(pmid, disp, global_nMesh, disp_size)
+        stay_mask = valid & Particles.particles_in_slice_mask(x_mod, owned_start, owned_end)
+        send_left_mask = valid & Particles.particles_in_slice_mask(x_mod, left_start, owned_start)
+        send_right_mask = valid & Particles.particles_in_slice_mask(x_mod, owned_end, right_end)
+        if num_gpus == 2:
+            send_right_mask = jnp.zeros_like(send_right_mask)
+
+        auth_pos = jnp.arange(pmid.shape[0], dtype=jnp.int32)
+        key_fill = Particles._key_fill_value(conf)
+
+        stay = Particles._compact_sorted_particles(
+            keys, pmid, disp, vel, acc, stay_mask, pmid.shape[0], key_fill,
+            "[ERROR] Exceeded stay-particle compact capacity. stay_particles={x}, capacity={y}.",
         )
+        send_left = Particles._compact_sorted_particles(
+            keys, pmid, disp, vel, acc, send_left_mask, max_values_to_share, key_fill,
+            "[ERROR] Exceeded left-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
+        )
+        send_right = Particles._compact_sorted_particles(
+            keys, pmid, disp, vel, acc, send_right_mask, max_values_to_share, key_fill,
+            "[ERROR] Exceeded right-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
+        )
+
+        stay_pos = jnp.compress(
+            stay_mask, auth_pos, axis=0, size=pmid.shape[0], fill_value=jnp.asarray(-1, auth_pos.dtype)
+        )
+        send_left_pos = jnp.compress(
+            send_left_mask, auth_pos, axis=0, size=max_values_to_share, fill_value=jnp.asarray(-1, auth_pos.dtype)
+        )
+        send_right_pos = jnp.compress(
+            send_right_mask, auth_pos, axis=0, size=max_values_to_share, fill_value=jnp.asarray(-1, auth_pos.dtype)
+        )
+
+        incoming_from_left = jax.lax.ppermute(send_right, axis_name=AXIS_NAME, perm=right_perm)
+        incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
+
+        merged = Particles._sorted_merge_three_with_provenance(
+            *stay,
+            *incoming_from_left,
+            *incoming_from_right,
+            pmid.shape[0],
+            key_fill,
+            "[ERROR] Exceeded canonical authoritative capacity after migration. "
+            "required_particles={x}, max_ptcl_per_slice={y}.",
+        )
+        route_aux = (
+            stay_pos,
+            stay[-1],
+            send_left_pos,
+            send_left[-1],
+            send_right_pos,
+            send_right[-1],
+            merged[-2],
+            merged[-1],
+        )
+        return merged[:6], route_aux
+
+    @staticmethod
+    def _reverse_build_full_cot(
+        full_cot,
+        auth_pmid,
+        auth_disp,
+        auth_valid,
+        halo_end,
+        max_ptcl_per_slice,
+        max_halo_values_to_share,
+        global_nMesh,
+        left_perm,
+        right_perm,
+        disp_size,
+    ):
+        auth_pos = jnp.arange(auth_pmid.shape[0], dtype=jnp.int32)
+        x_mod = Particles._x_mod_from_disp(auth_pmid, auth_disp, global_nMesh, disp_size)
+        right_halo_mask = auth_valid & Particles.particles_in_slice_mask(
+            x_mod, halo_end.squeeze()[0], halo_end.squeeze()[1]
+        )
+        right_halo_pos = jnp.compress(
+            right_halo_mask,
+            auth_pos,
+            axis=0,
+            size=max_halo_values_to_share,
+            fill_value=jnp.asarray(-1, auth_pos.dtype),
+        )
+        right_halo_valid = jnp.arange(max_halo_values_to_share) < jnp.sum(right_halo_mask)
+        left_halo_valid = jax.lax.ppermute(right_halo_valid, axis_name=AXIS_NAME, perm=right_perm)
+
+        left_count = jnp.sum(left_halo_valid)
+        auth_count = jnp.sum(auth_valid)
+        slots = jnp.arange(max_ptcl_per_slice, dtype=jnp.int32)
+        left_mask = slots < left_count
+        auth_mask = (slots >= left_count) & (slots < (left_count + auth_count))
+
+        left_cot = jnp.compress(
+            left_mask,
+            full_cot,
+            axis=0,
+            size=max_halo_values_to_share,
+            fill_value=jnp.asarray(0, full_cot.dtype),
+        )
+        auth_cot = jnp.compress(
+            auth_mask,
+            full_cot,
+            axis=0,
+            size=auth_pmid.shape[0],
+            fill_value=jnp.asarray(0, full_cot.dtype),
+        )
+
+        outbound_right_cot = jax.lax.ppermute(left_cot, axis_name=AXIS_NAME, perm=left_perm)
+        valid_mask = right_halo_valid.reshape((right_halo_valid.shape[0],) + (1,) * (full_cot.ndim - 1))
+        auth_cot = auth_cot.at[jnp.where(right_halo_valid, right_halo_pos, 0)].add(
+            outbound_right_cot * valid_mask.astype(full_cot.dtype)
+        )
+        return auth_cot
+
+    @staticmethod
+    def _reverse_route_cot(
+        merged_cot,
+        stay_pos,
+        stay_valid,
+        send_left_pos,
+        send_left_valid,
+        send_right_pos,
+        send_right_valid,
+        merge_src_tag,
+        merge_src_idx,
+        auth_size,
+        max_values_to_share,
+        left_perm,
+        right_perm,
+    ):
+        dtype = merged_cot.dtype
+        cot_shape = merged_cot.shape[1:]
+        stay_cot = jnp.zeros((stay_pos.shape[0],) + cot_shape, dtype=dtype)
+        incoming_from_left_cot = jnp.zeros((max_values_to_share,) + cot_shape, dtype=dtype)
+        incoming_from_right_cot = jnp.zeros((max_values_to_share,) + cot_shape, dtype=dtype)
+
+        stay_mask = (merge_src_tag == 0)
+        incoming_left_mask = (merge_src_tag == 1)
+        incoming_right_mask = (merge_src_tag == 2)
+        broadcast_shape = (merged_cot.shape[0],) + (1,) * (merged_cot.ndim - 1)
+        stay_scale = stay_mask.reshape(broadcast_shape).astype(dtype)
+        incoming_left_scale = incoming_left_mask.reshape(broadcast_shape).astype(dtype)
+        incoming_right_scale = incoming_right_mask.reshape(broadcast_shape).astype(dtype)
+
+        stay_cot = stay_cot.at[jnp.where(stay_mask, merge_src_idx, 0)].add(
+            merged_cot * stay_scale
+        )
+        incoming_from_left_cot = incoming_from_left_cot.at[jnp.where(incoming_left_mask, merge_src_idx, 0)].add(
+            merged_cot * incoming_left_scale
+        )
+        incoming_from_right_cot = incoming_from_right_cot.at[jnp.where(incoming_right_mask, merge_src_idx, 0)].add(
+            merged_cot * incoming_right_scale
+        )
+
+        send_right_cot = jax.lax.ppermute(incoming_from_left_cot, axis_name=AXIS_NAME, perm=left_perm)
+        send_left_cot = jax.lax.ppermute(incoming_from_right_cot, axis_name=AXIS_NAME, perm=right_perm)
+
+        auth_cot = jnp.zeros((auth_size,) + cot_shape, dtype=dtype)
+        stay_valid_scale = stay_valid.reshape((stay_valid.shape[0],) + (1,) * (merged_cot.ndim - 1)).astype(dtype)
+        send_left_valid_scale = send_left_valid.reshape((send_left_valid.shape[0],) + (1,) * (merged_cot.ndim - 1)).astype(dtype)
+        send_right_valid_scale = send_right_valid.reshape((send_right_valid.shape[0],) + (1,) * (merged_cot.ndim - 1)).astype(dtype)
+        auth_cot = auth_cot.at[jnp.where(stay_valid, stay_pos, 0)].add(
+            stay_cot * stay_valid_scale
+        )
+        auth_cot = auth_cot.at[jnp.where(send_left_valid, send_left_pos, 0)].add(
+            send_left_cot * send_left_valid_scale
+        )
+        auth_cot = auth_cot.at[jnp.where(send_right_valid, send_right_pos, 0)].add(
+            send_right_cot * send_right_valid_scale
+        )
+        return auth_cot
+
+    @staticmethod
+    def halo_move_pullback_from_prestate_shard_map(
+        pmid,
+        source_disp,
+        carried_disp,
+        vel,
+        acc,
+        halo_end,
+        unused_indexes,
+        disp_cot,
+        vel_cot,
+        acc_cot,
+        global_nMesh,
+        max_values_to_share,
+        max_halo_values_to_share,
+        max_ptcl_per_slice,
+        left_perm,
+        right_perm,
+        num_gpus,
+        disp_size,
+        offsets,
+        conf,
+    ):
+        # Reverse of the canonical halo move for the float payloads only.
+        # The slot layout is deterministic, so we can:
+        # 1. rebuild the authoritative pre-move sequence,
+        # 2. replay the routing metadata in packed-key order,
+        # 3. transpose the build+route operations with direct scatters/permutations.
+        (
+            auth_keys,
+            auth_pmid,
+            auth_disp,
+            auth_vel,
+            auth_acc,
+            auth_valid,
+            auth_slots,
+        ) = Particles._canonical_authoritative_from_full_with_slots(
+            pmid,
+            source_disp,
+            carried_disp,
+            vel,
+            acc,
+            unused_indexes,
+            global_nMesh,
+            disp_size,
+            num_gpus,
+            offsets,
+            conf,
+        )
+        (
+            merged_keys,
+            merged_pmid,
+            merged_disp,
+            merged_vel,
+            merged_acc,
+            merged_valid,
+        ), route_aux = Particles._canonical_route_authoritative_with_aux(
+            auth_keys,
+            auth_pmid,
+            auth_disp,
+            auth_vel,
+            auth_acc,
+            auth_valid,
+            global_nMesh,
+            max_values_to_share,
+            left_perm,
+            right_perm,
+            num_gpus,
+            disp_size,
+            offsets,
+            conf,
+        )
+        (
+            stay_pos,
+            stay_valid,
+            send_left_pos,
+            send_left_valid,
+            send_right_pos,
+            send_right_valid,
+            merge_src_tag,
+            merge_src_idx,
+        ) = route_aux
+        # Reverse the canonical build+route once for the whole float payload
+        # stack instead of replaying the same metadata three times for disp,
+        # vel, and acc independently.
+        payload_cot = jnp.stack((disp_cot, vel_cot, acc_cot), axis=-1)
+        merged_payload_cot = Particles._reverse_build_full_cot(
+            payload_cot,
+            merged_pmid,
+            merged_disp,
+            merged_valid,
+            halo_end,
+            max_ptcl_per_slice,
+            max_halo_values_to_share,
+            global_nMesh,
+            left_perm,
+            right_perm,
+            disp_size,
+        )
+
+        auth_payload_cot = Particles._reverse_route_cot(
+            merged_payload_cot,
+            stay_pos,
+            stay_valid,
+            send_left_pos,
+            send_left_valid,
+            send_right_pos,
+            send_right_valid,
+            merge_src_tag,
+            merge_src_idx,
+            auth_pmid.shape[0],
+            max_values_to_share,
+            left_perm,
+            right_perm,
+        )
+
+        input_payload_cot = Particles._scatter_compact_to_dense(
+            auth_payload_cot,
+            auth_slots,
+            auth_valid,
+            pmid.shape[0],
+        )
+        return input_payload_cot[..., 0], input_payload_cot[..., 1], input_payload_cot[..., 2]
+
+    @staticmethod
+    def _canonical_build_full_from_authoritative(
+        auth_keys,
+        auth_pmid,
+        auth_disp,
+        auth_vel,
+        auth_acc,
+        auth_valid,
+        halo_start,
+        halo_end,
+        max_ptcl_per_slice,
+        max_halo_values_to_share,
+        global_nMesh,
+        right_perm,
+        disp_size,
+        conf,
+    ):
+        # Rebuild the full duplicated storage from the canonical authoritative
+        # block: export the local right boundary, receive the neighbor's right
+        # boundary as our left halo, then pack left halo + authoritative slots.
+        x_mod = Particles._x_mod_from_disp(auth_pmid, auth_disp, global_nMesh, disp_size)
+        right_halo_mask = auth_valid & Particles.particles_in_slice_mask(
+            x_mod, halo_end.squeeze()[0], halo_end.squeeze()[1]
+        )
+        key_fill = Particles._key_fill_value(conf)
+        outbound_right_halo = Particles._compact_sorted_particles(
+            auth_keys,
+            auth_pmid,
+            auth_disp,
+            auth_vel,
+            auth_acc,
+            right_halo_mask,
+            max_halo_values_to_share,
+            key_fill,
+            "[ERROR] Exceeded halo-share capacity while rebuilding canonical storage. "
+            "particles_to_share={x}, max_halo_share_ptcl={y}.",
+        )
+        incoming_left_halo = jax.lax.ppermute(outbound_right_halo, axis_name=AXIS_NAME, perm=right_perm)
+        return Particles._pack_left_halo_and_authoritative(
+            *incoming_left_halo,
+            auth_keys,
+            auth_pmid,
+            auth_disp,
+            auth_vel,
+            auth_acc,
+            auth_valid,
+            max_ptcl_per_slice,
+            halo_start,
+            halo_end,
+            global_nMesh,
+            disp_size,
+        )
+
+    @staticmethod
+    def move_particles_canonical_shard_map(
+        pmid,
+        disp_before,
+        disp_after,
+        vel,
+        acc,
+        halo_start,
+        halo_end,
+        unused_indexes,
+        global_nMesh,
+        max_values_to_share,
+        max_halo_values_to_share,
+        max_ptcl_per_slice,
+        left_perm,
+        right_perm,
+        num_gpus,
+        disp_size,
+        offsets,
+        conf,
+    ):
+        # Forward drift halo move:
+        # 1. Keep only authoritative owned particles from the previous full state.
+        # 2. Re-route those particles according to the post-drift positions.
+        # 3. Rebuild the duplicated left-halo + authoritative storage layout.
+        auth = Particles._canonical_authoritative_from_full(
+            pmid,
+            disp_before,
+            disp_after,
+            vel,
+            acc,
+            unused_indexes,
+            global_nMesh,
+            disp_size,
+            num_gpus,
+            offsets,
+            conf,
+        )
+        (auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid), max_particles_moved = (
+            Particles._canonical_route_authoritative(
+                *auth,
+                global_nMesh,
+                max_values_to_share,
+                left_perm,
+                right_perm,
+                num_gpus,
+                disp_size,
+                offsets,
+                conf,
+            )
+        )
+        pmid, disp, vel, acc, halo_mask, unused_indexes = Particles._canonical_build_full_from_authoritative(
+            auth_keys,
+            auth_pmid,
+            auth_disp,
+            auth_vel,
+            auth_acc,
+            auth_valid,
+            halo_start,
+            halo_end,
+            max_ptcl_per_slice,
+            max_halo_values_to_share,
+            global_nMesh,
+            right_perm,
+            disp_size,
+            conf,
+        )
+        return pmid, disp, vel, acc, halo_mask, unused_indexes, jnp.bool_(False), max_particles_moved
+
+    @staticmethod
+    def reconstruct_pre_drift_canonical_shard_map(
+        pmid,
+        disp,
+        vel,
+        acc,
+        halo_start,
+        halo_end,
+        unused_indexes,
+        drift_factor,
+        global_nMesh,
+        max_values_to_share,
+        max_halo_values_to_share,
+        max_ptcl_per_slice,
+        left_perm,
+        right_perm,
+        num_gpus,
+        disp_size,
+        offsets,
+        conf,
+    ):
+        # Reverse drift reconstruction uses the same canonical routing contract as
+        # the forward move, but starts from the post-drift authoritative block and
+        # shifts displacements back before rerouting/repacking.
+        auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid = Particles._canonical_authoritative_from_full(
+            pmid,
+            disp,
+            disp,
+            vel,
+            acc,
+            unused_indexes,
+            global_nMesh,
+            disp_size,
+            num_gpus,
+            offsets,
+            conf,
+        )
+        auth_disp = auth_disp - auth_vel * drift_factor.astype(auth_disp.dtype)
+        (auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid), _ = Particles._canonical_route_authoritative(
+            auth_keys,
+            auth_pmid,
+            auth_disp,
+            auth_vel,
+            auth_acc,
+            auth_valid,
+            global_nMesh,
+            max_values_to_share,
+            left_perm,
+            right_perm,
+            num_gpus,
+            disp_size,
+            offsets,
+            conf,
+        )
+        pmid, disp, vel, acc, halo_mask, unused_index = Particles._canonical_build_full_from_authoritative(
+            auth_keys,
+            auth_pmid,
+            auth_disp,
+            auth_vel,
+            auth_acc,
+            auth_valid,
+            halo_start,
+            halo_end,
+            max_ptcl_per_slice,
+            max_halo_values_to_share,
+            global_nMesh,
+            right_perm,
+            disp_size,
+            conf,
+        )
+        return pmid, disp, vel, acc, unused_index, halo_mask
+
+    @staticmethod
+    @partial(jax.jit, static_argnames=["global_nMesh", "disp_size"])
+    def compute_halo_mask_shard_map(pmid, disp, unused_indexes, halo_start, halo_end, global_nMesh, disp_size):
+        return halo_compute_halo_mask_shard_map(
+            pmid, disp, unused_indexes, halo_start, halo_end, global_nMesh, disp_size
+        )
+
+    @staticmethod
+    def initialize_mGPU_halo_movement_canonical(conf):
+        return halo_initialize_mGPU_halo_movement_canonical(conf)
+
+    @staticmethod
+    def initialize_mGPU_reconstruct_pre_drift(conf):
+        return halo_initialize_mGPU_reconstruct_pre_drift(conf)
+
+    @staticmethod
+    def initialize_mGPU_halo_move_pullback(conf):
+        return halo_initialize_mGPU_halo_move_pullback(conf)
+
+    @staticmethod
+    def initialize_mGPU_compute_halo_mask(conf):
+        return halo_initialize_mGPU_compute_halo_mask(conf)

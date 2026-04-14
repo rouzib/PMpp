@@ -1,156 +1,196 @@
-# PM++: Multi-GPU Particle Mesh Cosmological Simulations
+# PM++: Multi-GPU Particle-Mesh Cosmology
 
-PM++ is an enhanced, multi-GPU version of the PMWD framework, designed for large-scale cosmological N-body simulations. This project extends the capabilities of PMWD to efficiently utilize multiple GPUs for simulating the evolution of dark matter structures in the universe.
+PM++ is a JAX-based, differentiable particle-mesh cosmology code built on top
+of PMWD ideas and extended for multi-GPU simulations. The active implementation
+lives in `src/`; the `pmwd/` directory is kept as a reference implementation for
+validation.
 
-## Key Features
+## Current Scope
 
-- **Multi-GPU Support**: Efficiently distributes particle simulations across multiple GPUs using JAX
-- **Memory Optimization**: Smart particle distribution and memory management for large-scale simulations
-- **Lagrangian Perturbation Theory**: Includes LPT for generating realistic initial conditions
-- **JIT Compilation**: Leverages JAX's just-in-time compilation for optimal performance
+- Multi-GPU PM N-body simulation with JAX.
+- Preferred `mesh_halo` multi-GPU mode.
+- PMWD comparison tests for forward and gradient correctness.
+- Distributed FFT support for sharded meshes.
+- LPT, Boltzmann/growth utilities, scatter/gather, and power-spectrum tools.
+- Potential-correction models under `src/corrections/`.
 
-## Performance
+## Repository Layout
 
-PM++ can handle simulations with:
-- **640³ particles** on 4 H100 GPUs (~27 GB memory per GPU)
-- **1024³ particles** and beyond with appropriate hardware
-- Significant per-device memory savings compared to single-GPU PMWD (4×27GB vs 70GB for equivalent simulations) enabling scaling of PM simulations.
-
-## Project Structure
-
-```
+```text
 PM++_v2/
-├── pmwd/                   # Original PMWD framework
-│   ├── __init__.py         # Core PMWD imports
-│   ├── particles.py        # Particle management
-│   ├── nbody.py            # N-body simulation engine
-│   ├── cosmology.py        # Cosmological models
-│   └── ...                 # Other PMWD modules
-├── src/                    # PM++ multi-GPU implementation
-│   ├── particles.py        # Multi-GPU particle handling
-│   ├── nbody.py            # Multi-GPU N-body simulations
-│   ├── configuration.py    # PM++ configuration
-│   └── ...                 # Enhanced PM++ modules
-├── notebooks/              # Example notebooks
-│   ├── pmpp_showcase.ipynb # Comprehensive usage examples
-│   └── mGPU_pmwd_local.ipynb
-├── CAMELS/                 # CAMELS simulation data
-├── rewuirements.txt        # PM++ requirements (excludes notebook requirements)
-└── README.md               # This file
+|-- src/                         # Active PM++ implementation
+|   |-- configuration.py         # Simulation configuration
+|   |-- multigpu_configuration.py# Multi-GPU mode/configuration object
+|   |-- particles.py             # Particle state and ownership
+|   |-- scatter.py               # Particle-to-mesh assignment
+|   |-- gather.py                # Mesh-to-particle interpolation
+|   |-- gravity.py               # PM force solve
+|   |-- steps.py                 # Drift, kick, force, adjoint pieces
+|   |-- nbody.py                 # Full N-body integration and VJP
+|   |-- FFT_distributed.py       # Distributed FFT construction
+|   |-- mesh_halo.py             # Mesh halo exchange helpers
+|   |-- modes.py                 # White noise and linear modes
+|   |-- lpt.py                   # LPT initialization
+|   |-- power_spectrum.py        # Density and particle P(k)
+|   |-- corrections/             # Potential corrections
+|   `-- potential_correction.py  # Backward-compatible correction facade
+|-- pmwd/                        # Reference PMWD implementation
+|-- tests/                       # Regression and gradient tests
+|-- scripts/                     # Benchmarks and diagnostics
+|-- notebooks/                   # Examples and exploratory notebooks
+`-- docs/                        # Project documentation
 ```
 
-## Installation
+## Minimal Multi-GPU Setup
 
-### Requirements
-
-- Python 3.8+
-- JAX with GPU support
-- mcfit>=0.0.18 (with JAX support)
-- Nvidia GPUs for NVCC backend
-
-For the notebooks:
-- NumPy
-- Matplotlib
-- h5py and hdf5plugin (for CAMELS data)
-- readgadget (optional, for reading Gadget snapshots)
-
-### Setup
-
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd PM++_v2
-```
-
-2. Install dependencies:
-```bash
-pip install jax[cuda] numpy matplotlib h5py hdf5plugin
-```
-
-3. For CAMELS data support, install readgadget:
-```bash
-pip install readgadget
-```
-
-## Quick Start
-
-### Basic Multi-GPU Simulation
+New code should use the nested `MultiGPUConfiguration` object. The older
+top-level `compute_mesh=` compatibility path still exists, but is not preferred.
 
 ```python
 import jax
+import jax.numpy as jnp
+
 from src.configuration import Configuration
-from src.particles import Particles
-from src.nbody import nbody
-from src.cosmo import SimpleLCDM
+from src.multigpu_configuration import MultiGPUConfiguration
 from src.utils import create_compute_mesh
 
-# Setup simulation parameters
-num_ptcl = 256
-box_size = 25.0  # Mpc/h
-ptcl_grid_shape = (num_ptcl,) * 3
-ptcl_spacing = box_size / num_ptcl
+res = 256
+box_size = 1000.0  # Mpc/h
+ptcl_grid_shape = (res, res, res)
+ptcl_spacing = box_size / res
 
-# Configure multi-GPU setup
-num_devices = jax.device_count()
-compute_mesh = create_compute_mesh(jax.devices()[:num_devices])
+gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
+if len(gpu_devices) < 2:
+    raise RuntimeError("This multi-GPU example requires at least 2 GPUs.")
+compute_mesh = create_compute_mesh(gpu_devices)
+num_devices = len(gpu_devices)
 
-# Create configuration
 conf = Configuration(
-    ptcl_spacing=ptcl_spacing,
-    ptcl_grid_shape=ptcl_grid_shape,
-    compute_mesh=compute_mesh,
-    max_ptcl_per_slice=int(num_ptcl**3 / num_devices * 1.8),
-    max_share_ptcl=50000,
-    max_share_gather_ptcl=120000
+    ptcl_spacing,
+    ptcl_grid_shape,
+    mesh_shape=1,
+    multigpu=MultiGPUConfiguration(
+        compute_mesh=compute_mesh,
+        mode="mesh_halo",
+    ),
+    max_ptcl_per_slice=int((res**3 / num_devices) * 1.8),
+    max_share_ptcl=50_000,
+    max_halo_share_ptcl=50_000,
+    max_share_gather_ptcl=200_000,
+    float_dtype=jnp.float32,
 )
-
-# Setup cosmology
-cosmo = SimpleLCDM(conf)
-
-# Initialize particles and run simulation
-ptcl = Particles.from_pos_sharded(conf, positions, velocities)
-nbody_jitted = jax.jit(nbody, static_argnames=("conf", "reverse"))
-ptcl_final = nbody_jitted(ptcl, cosmo, conf)
 ```
 
-### Working with CAMELS Data
+Capacity overflows are correctness failures. If a run reports overflow in
+particle migration, halo rebuild, or gather exchange buffers, increase the
+corresponding capacity and rerun.
+
+## Minimal Forward Run
 
 ```python
-import readgadget
-from pmwd import Particles, Configuration, SimpleLCDM, nbody
+import jax
+import jax.numpy as jnp
 
-# Load CAMELS initial conditions
-snapshot_filename = "CAMELS/ICs/ics"
-header = readgadget.header(snapshot_filename)
-pos = readgadget.read_block(snapshot_filename, "POS ", [1]) / 1e3  # Convert to Mpc/h
-vel = readgadget.read_block(snapshot_filename, "VEL ", [1])
+from src.boltzmann import boltzmann
+from src.configuration import Configuration
+from src.cosmo import SimpleLCDM
+from src.lpt import lpt
+from src.modes import linear_modes, white_noise
+from src.nbody import nbody
+from src.scatter import scatter
 
-...see previous code
+res = 32
+box_size = 100.0
+conf = Configuration(
+    box_size / res,
+    (res, res, res),
+    mesh_shape=1,
+    float_dtype=jnp.float32,
+)
 
-ptcl = Particles.from_pos_sharded(conf, pos, vel)
+cosmo = boltzmann(SimpleLCDM(conf), conf)
+modes = white_noise(0, conf)
+modes = linear_modes(modes, cosmo, conf)
+ptcl = lpt(modes, cosmo, conf)
+
+nbody_jit = jax.jit(nbody, static_argnames=("conf", "reverse"))
+ptcl_final = nbody_jit(ptcl, cosmo, conf)
+density = scatter(ptcl_final, conf)
+
+print(density.shape)
+print(float(density.mean()))
 ```
 
-## Configuration Parameters
+Expected sanity checks:
 
-PM++ requires several key parameters for multi-GPU operation:
+- density shape matches the mesh;
+- density mean is close to `1.0`;
+- no capacity warnings appear.
 
-- **`max_ptcl_per_slice`**: Maximum particles per GPU device
-- **`max_share_ptcl`**: Maximum particles shared between GPUs per step
-- **`max_share_gather_ptcl`**: Maximum particles exchanged during gravity computation
+## Potential Corrections
 
-These parameters should be tuned based on your simulation size and available GPU memory.
+Correction implementations now live in `src/corrections/`.
 
-## Examples
+```python
+from src.corrections import (
+    apply_potential_correction,
+    evaluate_potential_transfer,
+    init_potential_correction,
+)
+```
 
-See the `notebooks/` directory for comprehensive examples:
+`src/potential_correction.py` remains as a compatibility facade for old scripts,
+but new code and tests should import from `src.corrections`.
 
-- **`pmpp_showcase.ipynb`**: Complete tutorial showing PM++ vs PMWD comparisons, CAMELS data loading, and large-scale simulation examples
-- **`mGPU_pmwd_local.ipynb`**: Additional multi-GPU examples and benchmarks
+Supported correction families:
 
-## Credits and Acknowledgments
+- `radial`, `radial_spline`, `neural_spline`
+- `mesh_cnn`, `cnn`
+- `combined`, `hybrid`, `spline_cnn`
+- `pm_window`, `cic_compensation`, `cic_window_compensation`
 
-This project is based on **PMWD**. PM++ extends PMWD's capabilities to multi-GPU environments while maintaining the accuracy and reliability of the original framework.
+## Multi-GPU Modes
 
-## License
+Prefer `mesh_halo` for current serious multi-GPU work:
 
-See **PMWD** license. 
+- particles are stored authoritatively on their owning slab;
+- particles migrate between slabs when needed;
+- mesh halos are exchanged for local stencil operations;
+- it is generally faster than the older particle-halo path in current
+  `256^3`, 2-GPU testing.
+
+`particle_halo` remains useful for comparison and legacy validation.
+
+## Testing
+
+Focused correction and gravity checks:
+
+```bash
+/home/rouzib/.virtualenvs/PMPP/bin/python -m pytest \
+  tests/test_potential_correction.py \
+  tests/test_grad_gravity.py \
+  tests/test_gravity_particle_nyquist_filter.py \
+  -q
+```
+
+Mesh-halo scatter/gather:
+
+```bash
+/home/rouzib/.virtualenvs/PMPP/bin/python -m pytest tests/test_mesh_halo_scatter_gather.py -q
+```
+
+End-to-end gradient:
+
+```bash
+/home/rouzib/.virtualenvs/PMPP/bin/python -m pytest tests/test_grad_nbody.py -q
+```
+
+## Notebooks
+
+The primary example notebooks are:
+
+- `notebooks/pmpp_showcase.ipynb`
+- `notebooks/mGPU_pmwd_local.ipynb`
+
+Restart notebook kernels after code changes. Stale kernels can keep old module
+objects, especially around `src.corrections` and multi-GPU configuration.

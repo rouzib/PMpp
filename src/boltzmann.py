@@ -2,6 +2,7 @@ from jax import jit, custom_vjp, ensure_compile_time_eval
 import jax.numpy as jnp
 
 from .cosmo import H_deriv, Omega_m_a
+from .growth import _linear_interp
 from .ode_util import odeint
 
 
@@ -57,6 +58,8 @@ def transfer_fit(k, cosmo, conf):
     h2 = cosmo.h**2
     w_m = cosmo.Omega_m * h2
     w_b = cosmo.Omega_b * h2
+    zero_baryon = w_b <= 0
+    w_b_safe = jnp.where(zero_baryon, jnp.asarray(1e-8, dtype=float_dtype), w_b)
     f_b = cosmo.Omega_b / cosmo.Omega_m
     f_c = cosmo.Omega_c / cosmo.Omega_m  # TODO neutrinos?
 
@@ -67,8 +70,8 @@ def transfer_fit(k, cosmo, conf):
     b2 = 0.238 * w_m**0.223
     z_d = 1291 * w_m**0.251 / (1 + 0.659 * w_m**0.828) * (1 + b1 * w_b**b2)
 
-    R_d = 31.5 * w_b / T2_cmb_norm**2 * (1e3 / z_d)
-    R_eq = 31.5 * w_b / T2_cmb_norm**2 * (1e3 / z_eq)
+    R_d = 31.5 * w_b_safe / T2_cmb_norm**2 * (1e3 / z_d)
+    R_eq = 31.5 * w_b_safe / T2_cmb_norm**2 * (1e3 / z_eq)
     s = (
         2 / (3 * k_eq) * jnp.sqrt(6 / R_eq)
         * jnp.log((jnp.sqrt(1 + R_d) + jnp.sqrt(R_eq + R_d)) / (1 + jnp.sqrt(R_eq)))
@@ -102,6 +105,8 @@ def transfer_fit(k, cosmo, conf):
         T0 = L / (L + C * q**2)
         return T0
 
+    T_no_baryon = T0_tilde(k, 1, 1)
+
     f = 1 / (1 + (k * s / 5.4)**4)
     T_c = f * T0_tilde(k, 1, beta_c) + (1 - f) * T0_tilde(k, alpha_c, beta_c)
 
@@ -118,7 +123,7 @@ def transfer_fit(k, cosmo, conf):
         + alpha_b * (k * s)**3 / (beta_b**3 + (k * s)**3) * jnp.exp(-(k / k_silk)**1.4)
     ) * jnp.sinc((k * s)**2 / (jnp.pi * jnp.cbrt(beta_node**3 + (k * s)**3)))
 
-    T = f_c * T_c + f_b * T_b
+    T = jnp.where(zero_baryon, T_no_baryon, f_c * T_c + f_b * T_b)
 
     return T.astype(float_dtype)
 
@@ -264,7 +269,7 @@ def growth(a, cosmo, conf, order=1, deriv=0):
     a = jnp.asarray(a)
     float_dtype = jnp.promote_types(a.dtype, float)
 
-    D = a**order * jnp.interp(a, conf.growth_a, cosmo.growth[order-1][deriv])
+    D = a**order * _linear_interp(a, conf.growth_a, cosmo.growth[order - 1][deriv])
 
     return D.astype(float_dtype)
 
@@ -380,10 +385,12 @@ def _safe_power(x1, x2):
     return x1 ** x2
 
 def _safe_power_fwd(x1, x2):
+    """Forward rule for ``_safe_power``."""
     y = _safe_power(x1, x2)
     return y, (x1, x2, y)
 
 def _safe_power_bwd(res, y_cot):
+    """Backward rule that avoids ``log(0)`` and ``x1 ** (x2 - 1)`` at zero."""
     x1, x2, y = res
 
     x1_cot = jnp.where(x1 != 0, x2 * y / x1 * y_cot, 0)
