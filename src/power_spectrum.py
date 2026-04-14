@@ -164,6 +164,40 @@ def _shell_reduce_local(spectral, mode_x, mode_y, mode_z, conf, mas_power: int, 
     return p_sum
 
 
+def _shell_reduce_cross_local(spectral_a, spectral_b, mode_x, mode_y, mode_z, conf, mas_power: int, num_shells: int):
+    """Accumulate auto and cross power into integer-radius shells on one shard."""
+    mode_sq = (
+        mode_x[:, None, None].astype(jnp.int64) ** 2
+        + mode_y[None, :, None].astype(jnp.int64) ** 2
+        + mode_z[None, None, :].astype(jnp.int64) ** 2
+    )
+    shell = jnp.floor(jnp.sqrt(mode_sq.astype(jnp.float64)) + 1e-9).astype(jnp.int32)
+    shell = jnp.clip(shell, 0, num_shells - 1)
+
+    multiplicity = jnp.full(spectral_a.shape, 2, dtype=jnp.int32)
+    multiplicity = multiplicity.at[..., 0].set(1)
+    if conf.mesh_shape[-1] % 2 == 0:
+        multiplicity = multiplicity.at[..., -1].set(1)
+
+    power_a = (spectral_a.real ** 2 + spectral_a.imag ** 2).astype(conf.float_dtype)
+    power_b = (spectral_b.real ** 2 + spectral_b.imag ** 2).astype(conf.float_dtype)
+    power_cross = (spectral_a * jnp.conj(spectral_b)).real.astype(conf.float_dtype)
+    deconv = _mas_power_deconvolution(mode_x, mode_y, mode_z, conf, mas_power)
+    if deconv is not None:
+        deconv = deconv.astype(conf.float_dtype)
+        power_a = power_a * deconv
+        power_b = power_b * deconv
+        power_cross = power_cross * deconv
+
+    mult_f = multiplicity.astype(conf.float_dtype)
+    shell_flat = shell.reshape(-1)
+    weights = mult_f.reshape(-1)
+    p_a_sum = jnp.bincount(shell_flat, weights=(power_a.reshape(-1) * weights), length=num_shells)
+    p_b_sum = jnp.bincount(shell_flat, weights=(power_b.reshape(-1) * weights), length=num_shells)
+    p_cross_sum = jnp.bincount(shell_flat, weights=(power_cross.reshape(-1) * weights), length=num_shells)
+    return p_a_sum, p_b_sum, p_cross_sum
+
+
 def _shell_reduce_transposed(spectral, conf, mas_power: int, num_shells: int):
     """Reduce shell power on single-GPU or distributed transposed spectra."""
     mode_x, mode_y, mode_z = _mode_numbers_transposed(conf)
@@ -200,12 +234,66 @@ def _shell_reduce_transposed(spectral, conf, mas_power: int, num_shells: int):
     return p_sum
 
 
+def _shell_reduce_cross_transposed(spectral_a, spectral_b, conf, mas_power: int, num_shells: int):
+    """Reduce shell auto/cross power on single-GPU or distributed spectra."""
+    mode_x, mode_y, mode_z = _mode_numbers_transposed(conf)
+    if conf.compute_mesh is None or conf.num_devices == 1:
+        return _shell_reduce_cross_local(spectral_a, spectral_b, mode_x, mode_y, mode_z, conf, mas_power, num_shells)
+
+    @partial(
+        shard_map,
+        mesh=conf.compute_mesh,
+        in_specs=(
+            P(None, AXIS_NAME, None),
+            P(None, AXIS_NAME, None),
+            P(None),
+            P(AXIS_NAME),
+            P(None),
+        ),
+        out_specs=(
+            P(None),
+            P(None),
+            P(None),
+        ),
+        check_rep=False,
+    )
+    def local_reduce(spectral_a_local, spectral_b_local, mode_x_rep, mode_y_local, mode_z_rep):
+        p_a_sum_local, p_b_sum_local, p_cross_sum_local = _shell_reduce_cross_local(
+            spectral_a_local,
+            spectral_b_local,
+            mode_x_rep,
+            mode_y_local,
+            mode_z_rep,
+            conf,
+            mas_power,
+            num_shells,
+        )
+        return (
+            lax.psum(p_a_sum_local, AXIS_NAME),
+            lax.psum(p_b_sum_local, AXIS_NAME),
+            lax.psum(p_cross_sum_local, AXIS_NAME),
+        )
+
+    return local_reduce(spectral_a, spectral_b, mode_x, mode_y, mode_z)
+
+
 def _finalize_shell_averages(p_sum, conf):
     """Convert shell power sums into physical ``P(k)`` normalization."""
     k, nmodes = _shell_vectors(conf)
     pk = p_sum[1:] / nmodes.astype(conf.float_dtype)
     pk = pk * (conf.cell_size ** 3 / conf.mesh_size)
     return k, pk.astype(conf.float_dtype), nmodes
+
+
+def _finalize_cross_shell_averages(p_a_sum, p_b_sum, p_cross_sum, conf, eps):
+    """Convert shell sums into auto spectra, cross spectrum, and correlation."""
+    k, pk_a, nmodes = _finalize_shell_averages(p_a_sum, conf)
+    _, pk_b, _ = _finalize_shell_averages(p_b_sum, conf)
+    _, pk_cross, _ = _finalize_shell_averages(p_cross_sum, conf)
+    eps = jnp.asarray(eps, dtype=conf.float_dtype)
+    denom = jnp.sqrt(jnp.maximum(pk_a * pk_b, eps))
+    r = pk_cross / denom
+    return k, r.astype(conf.float_dtype), pk_cross.astype(conf.float_dtype), pk_a, pk_b, nmodes
 
 
 def _spectral_delta(delta, conf):
@@ -247,6 +335,50 @@ def delta_to_pk(delta, conf, mas: str | None = "CIC"):
 
 
 @partial(jax.jit, static_argnames=("conf", "mas"))
+def delta_to_cross_correlation(delta_a, delta_b, conf, mas: str | None = "CIC", eps: float = 1e-30):
+    """Compute the isotropic cross-correlation coefficient of two fields.
+
+    Parameters
+    ----------
+    delta_a, delta_b : jax.Array
+        Overdensity fields on the PM mesh.
+    conf : Configuration
+        Active PM++ configuration.
+    mas : str or None, optional
+        Mass-assignment scheme used to create the fields. This controls the
+        same Fourier-space deconvolution used by :func:`delta_to_pk`. Use
+        ``None`` to disable deconvolution.
+    eps : float, optional
+        Positive floor for ``P_aa(k) P_bb(k)`` in the correlation denominator.
+
+    Returns
+    -------
+    k : jax.Array
+        Shell-averaged physical wavenumbers.
+    r : jax.Array
+        Cross-correlation coefficient, ``P_ab / sqrt(P_aa P_bb)``.
+    pk_cross : jax.Array
+        Shell-averaged real cross spectrum.
+    pk_a, pk_b : jax.Array
+        Shell-averaged auto spectra for ``delta_a`` and ``delta_b``.
+    nmodes : jax.Array
+        Number of contributing Fourier modes per shell.
+    """
+    mas = _normalize_mas(mas)
+    spectral_a = _spectral_delta(jnp.asarray(delta_a, dtype=conf.float_dtype), conf)
+    spectral_b = _spectral_delta(jnp.asarray(delta_b, dtype=conf.float_dtype), conf)
+    num_shells = _max_shell_index(conf) + 1
+    p_a_sum, p_b_sum, p_cross_sum = _shell_reduce_cross_transposed(
+        spectral_a,
+        spectral_b,
+        conf,
+        _MAS_POWER[mas],
+        num_shells,
+    )
+    return _finalize_cross_shell_averages(p_a_sum, p_b_sum, p_cross_sum, conf, eps)
+
+
+@partial(jax.jit, static_argnames=("conf", "mas"))
 def density_to_pk(density, conf, mas: str | None = "CIC"):
     """Compute a differentiable power spectrum from a density field."""
     density = jnp.asarray(density, dtype=conf.float_dtype)
@@ -256,13 +388,39 @@ def density_to_pk(density, conf, mas: str | None = "CIC"):
 
 
 @partial(jax.jit, static_argnames=("conf", "mas"))
+def density_to_cross_correlation(density_a, density_b, conf, mas: str | None = "CIC", eps: float = 1e-30):
+    """Compute the cross-correlation coefficient from two density fields."""
+    density_a = jnp.asarray(density_a, dtype=conf.float_dtype)
+    density_b = jnp.asarray(density_b, dtype=conf.float_dtype)
+    delta_a = density_a / jnp.mean(density_a, dtype=conf.float_dtype) - 1
+    delta_b = density_b / jnp.mean(density_b, dtype=conf.float_dtype) - 1
+    return delta_to_cross_correlation(delta_a, delta_b, conf, mas=mas, eps=eps)
+
+
+@partial(jax.jit, static_argnames=("conf", "mas"))
 def particles_to_pk(ptcl, conf, mas: str | None = "CIC"):
     """Scatter particles to the PM mesh and return the differentiable P(k)."""
     density = scatter(ptcl, conf)
     return density_to_pk(density, conf, mas=mas)
 
 
+@partial(jax.jit, static_argnames=("conf", "mas"))
+def particles_to_cross_correlation(ptcl_a, ptcl_b, conf, mas: str | None = "CIC", eps: float = 1e-30):
+    """Scatter two particle sets and return their cross-correlation coefficient."""
+    density_a = scatter(ptcl_a, conf)
+    density_b = scatter(ptcl_b, conf)
+    return density_to_cross_correlation(density_a, density_b, conf, mas=mas, eps=eps)
+
+
+def cross_correlation(delta_a, delta_b, conf, mas: str | None = "CIC", eps: float = 1e-30):
+    """Alias for :func:`delta_to_cross_correlation` on overdensity fields."""
+    return delta_to_cross_correlation(delta_a, delta_b, conf, mas=mas, eps=eps)
+
+
 # Backward-compatible aliases for the earlier public naming.
 delta_to_quijote_pk = delta_to_pk
 density_to_quijote_pk = density_to_pk
 particles_to_quijote_pk = particles_to_pk
+delta_to_quijote_cross_correlation = delta_to_cross_correlation
+density_to_quijote_cross_correlation = density_to_cross_correlation
+particles_to_quijote_cross_correlation = particles_to_cross_correlation

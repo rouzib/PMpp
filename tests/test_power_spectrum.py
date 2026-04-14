@@ -6,7 +6,7 @@ import MAS_library as MASL
 
 from src.configuration import Configuration
 from src.particles import Particles
-from src.power_spectrum import delta_to_pk, particles_to_pk
+from src.power_spectrum import delta_to_cross_correlation, delta_to_pk, particles_to_pk
 
 
 def _reference_pk(delta, box_size, mas="CIC"):
@@ -63,6 +63,41 @@ def test_delta_to_pk_matches_pkl_on_small_random_field():
     k_ref, pk_ref, nmodes_ref = _reference_pk(delta, box_size, mas="CIC")
 
     _assert_matches_reference(k, pk, k_ref, pk_ref, nmodes_ref)
+
+
+def test_delta_to_cross_correlation_identity_and_sign():
+    box_size = 25.0
+    nmesh = 16
+    conf = Configuration(
+        ptcl_spacing=box_size / nmesh,
+        ptcl_grid_shape=(nmesh, nmesh, nmesh),
+        mesh_shape=1,
+        float_dtype=jnp.float32,
+    )
+
+    rng = np.random.default_rng(4)
+    delta = rng.normal(size=(nmesh, nmesh, nmesh)).astype(np.float32)
+    delta -= delta.mean(dtype=np.float64)
+
+    _, r_same, pk_cross_same, pk_a_same, pk_b_same, _ = delta_to_cross_correlation(
+        jnp.asarray(delta),
+        jnp.asarray(delta),
+        conf,
+        mas="CIC",
+    )
+    _, r_opposite, pk_cross_opposite, pk_a_opposite, pk_b_opposite, _ = delta_to_cross_correlation(
+        jnp.asarray(delta),
+        -jnp.asarray(delta),
+        conf,
+        mas="CIC",
+    )
+
+    np.testing.assert_allclose(np.asarray(r_same), 1.0, atol=2e-6, rtol=2e-6)
+    np.testing.assert_allclose(np.asarray(pk_cross_same), np.asarray(pk_a_same), atol=1e-5, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(pk_a_same), np.asarray(pk_b_same), atol=1e-5, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(r_opposite), -1.0, atol=2e-6, rtol=2e-6)
+    np.testing.assert_allclose(np.asarray(pk_cross_opposite), -np.asarray(pk_a_opposite), atol=1e-5, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(pk_a_opposite), np.asarray(pk_b_opposite), atol=1e-5, rtol=1e-6)
 
 
 def test_particles_to_pk_matches_scatter_plus_pkl():
