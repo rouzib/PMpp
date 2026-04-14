@@ -45,6 +45,22 @@ def init_potential_correction(key, model="neural_spline", **kwargs):
             mesh_cnn=mesh_cnn,
             dtype=dtype,
         )
+    if model in {
+        "windowed_radial",
+        "windowed_spline",
+        "pm_window+radial",
+        "pm_window+neural_spline",
+        "cic_compensation+neural_spline",
+    }:
+        radial = init_radial_potential_correction(key, **kwargs)
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", getattr(radial, "dtype", jnp.float32))
+        window = init_pm_window_compensation_correction(dtype=dtype, **correction_kwargs)
+        return CombinedPotentialCorrection(
+            radial=radial,
+            window=window,
+            dtype=dtype,
+        )
     if model in {"pm_window", "cic_compensation", "cic_window_compensation"}:
         correction_kwargs = dict(kwargs)
         dtype = correction_kwargs.pop("dtype", jnp.float32)
@@ -55,6 +71,8 @@ def init_potential_correction(key, model="neural_spline", **kwargs):
 def sample_potential_transfer(correction, radius_fraction, a, cosmo, conf):
     """Sample the radial Fourier transfer curve for plotting or diagnostics."""
     if isinstance(correction, CombinedPotentialCorrection):
+        if correction.radial is None:
+            raise TypeError("This combined correction does not define a radial transfer curve.")
         correction = correction.radial
     if isinstance(correction, MeshCNNPotentialCorrection):
         raise TypeError("Mesh CNN corrections do not define a radial transfer curve.")
@@ -68,7 +86,14 @@ def sample_potential_transfer(correction, radius_fraction, a, cosmo, conf):
 def evaluate_radial_potential_transfer(correction, a, cosmo, conf):
     """Evaluate the multiplicative Fourier transfer field for radial corrections."""
     if isinstance(correction, CombinedPotentialCorrection):
-        correction = correction.radial
+        transfer = jnp.asarray(1.0, dtype=conf.float_dtype)
+        if correction.window is not None:
+            transfer = transfer * evaluate_pm_window_compensation(correction.window, conf).astype(conf.float_dtype)
+        if correction.radial is not None:
+            transfer = transfer * _evaluate_radial_potential_transfer(correction.radial, a, cosmo, conf).astype(conf.float_dtype)
+        if correction.window is None and correction.radial is None and correction.mesh_cnn is not None:
+            raise TypeError("Mesh CNN corrections do not define a radial transfer field.")
+        return transfer
     if isinstance(correction, MeshCNNPotentialCorrection):
         raise TypeError("Mesh CNN corrections do not define a radial transfer field.")
     if isinstance(correction, PMWindowCompensationCorrection):
@@ -109,6 +134,7 @@ def apply_potential_correction(pot, a, cosmo, conf, correction, source_real=None
     if correction is None:
         return pot
     if isinstance(correction, CombinedPotentialCorrection):
+        pot = apply_potential_correction(pot, a, cosmo, conf, correction.window, source_real=source_real)
         pot = apply_potential_correction(pot, a, cosmo, conf, correction.radial, source_real=source_real)
         return apply_potential_correction(pot, a, cosmo, conf, correction.mesh_cnn, source_real=source_real)
     if isinstance(correction, MeshCNNPotentialCorrection):
@@ -169,9 +195,20 @@ def add_potential_correction_cotangents(lhs, rhs):
 
 def force_uses_interlacing(correction):
     """Return whether gravity should use interlaced CIC assignment."""
+    if isinstance(correction, CombinedPotentialCorrection):
+        return any(
+            force_uses_interlacing(child)
+            for child in (correction.window, correction.radial, correction.mesh_cnn)
+        )
     return bool(getattr(correction, "interlacing", False))
 
 
 def force_green_kernel(correction):
     """Return the Poisson Green's-function selector requested by a correction."""
+    if isinstance(correction, CombinedPotentialCorrection):
+        for child in (correction.window, correction.radial, correction.mesh_cnn):
+            kernel = force_green_kernel(child)
+            if kernel != "continuum":
+                return kernel
+        return "continuum"
     return getattr(correction, "green_kernel", "continuum")

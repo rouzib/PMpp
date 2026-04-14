@@ -33,11 +33,12 @@ def _deBoorVectorized(x, t, c, p):
 class NeuralSplineFourierFilter(HaikuModuleBase):
     """Rotationally invariant filter parameterized by a small Haiku network."""
 
-    def __init__(self, n_knots=8, latent_size=16, name=None):
+    def __init__(self, n_knots=8, latent_size=16, output_init_scale=None, name=None):
         require_haiku("radial potential corrections")
         super().__init__(name=name)
         self.n_knots = n_knots
         self.latent_size = latent_size
+        self.output_init_scale = output_init_scale
 
     def __call__(self, x, a, cosmo):
         del cosmo
@@ -50,7 +51,21 @@ class NeuralSplineFourierFilter(HaikuModuleBase):
         w = hk.Linear(self.latent_size)(net)
         k = hk.Linear(self.latent_size)(net)
 
-        w = hk.Linear(self.n_knots + 1)(w)
+        output_init_kwargs = {}
+        if self.output_init_scale is not None:
+            scale = float(self.output_init_scale)
+            if scale == 0.0:
+                output_init_kwargs = {
+                    "w_init": hk.initializers.Constant(0.0),
+                    "b_init": hk.initializers.Constant(0.0),
+                }
+            else:
+                output_init_kwargs = {
+                    "w_init": hk.initializers.RandomNormal(stddev=scale),
+                    "b_init": hk.initializers.Constant(0.0),
+                }
+
+        w = hk.Linear(self.n_knots + 1, **output_init_kwargs)(w)
         k = hk.Linear(self.n_knots - 1)(k)
 
         k = jnp.concatenate([jnp.zeros((1,)), jnp.cumsum(jax.nn.softmax(k))])
@@ -61,7 +76,7 @@ class NeuralSplineFourierFilter(HaikuModuleBase):
 
 
 @lru_cache(maxsize=None)
-def radial_transform(n_knots, latent_size):
+def radial_transform(n_knots, latent_size, output_init_scale):
     """Return the cached Haiku transform for the radial spline filter."""
     require_haiku("radial potential corrections")
     return hk.without_apply_rng(
@@ -69,6 +84,7 @@ def radial_transform(n_knots, latent_size):
             lambda x, a, c: NeuralSplineFourierFilter(
                 n_knots=n_knots,
                 latent_size=latent_size,
+                output_init_scale=output_init_scale,
             )(x, a, c)
         )
     )
@@ -76,7 +92,7 @@ def radial_transform(n_knots, latent_size):
 
 @partial(
     pytree_dataclass,
-    aux_fields=("n_knots", "latent_size", "allow_missing_sigma8", "sigma8_value", "dtype"),
+    aux_fields=("n_knots", "latent_size", "output_init_scale", "allow_missing_sigma8", "sigma8_value", "dtype"),
     frozen=True,
     eq=False,
 )
@@ -86,6 +102,7 @@ class RadialPotentialCorrection:
     params: dict
     n_knots: int = 8
     latent_size: int = 16
+    output_init_scale: float | None = None
     allow_missing_sigma8: bool = False
     sigma8_value: float = 0.8
     dtype: jnp.dtype = field(default=jnp.float32, repr=False)
@@ -106,6 +123,7 @@ def init_radial_potential_correction(
     key,
     latent_size=16,
     n_knots=16,
+    output_init_scale=None,
     allow_missing_sigma8=False,
     sigma8_value=0.8,
     dtype=jnp.float32,
@@ -115,7 +133,7 @@ def init_radial_potential_correction(
     """Initialize radial correction parameters for a representative k grid."""
     del unused_kwargs
     dtype = jnp.dtype(dtype)
-    transform = radial_transform(n_knots, latent_size)
+    transform = radial_transform(n_knots, latent_size, output_init_scale)
     if conf is None:
         x = jnp.linspace(0.0, jnp.sqrt(3.0), 16, dtype=dtype)
     else:
@@ -130,6 +148,7 @@ def init_radial_potential_correction(
         params=params,
         n_knots=n_knots,
         latent_size=latent_size,
+        output_init_scale=output_init_scale,
         allow_missing_sigma8=allow_missing_sigma8,
         sigma8_value=float(sigma8_value),
         dtype=dtype,
@@ -142,7 +161,7 @@ def sample_radial_potential_transfer(correction, radius_fraction, a, cosmo, conf
         return jnp.ones_like(radius_fraction, dtype=conf.float_dtype)
     radius_fraction = jnp.asarray(radius_fraction, dtype=correction.dtype)
     x = radius_fraction * jnp.asarray(jnp.sqrt(3.0), dtype=correction.dtype)
-    transform = radial_transform(correction.n_knots, correction.latent_size)
+    transform = radial_transform(correction.n_knots, correction.latent_size, correction.output_init_scale)
     residual = transform.apply(
         correction.params,
         x,
@@ -158,7 +177,7 @@ def evaluate_radial_potential_transfer(correction, a, cosmo, conf):
     if correction is None:
         return jnp.ones(tuple(conf.mesh_shape[:-1]) + (conf.mesh_shape[-1] // 2 + 1,), dtype=conf.float_dtype)
     k_norm = normalized_k_magnitude_transposed(conf)
-    transform = radial_transform(correction.n_knots, correction.latent_size)
+    transform = radial_transform(correction.n_knots, correction.latent_size, correction.output_init_scale)
     residual = transform.apply(
         correction.params,
         k_norm.astype(correction.dtype),

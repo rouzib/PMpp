@@ -2,12 +2,14 @@
 
 from dataclasses import field
 from functools import partial
+from typing import Optional
 
 import jax.numpy as jnp
 
 from ..utils import pytree_dataclass
 from .mesh_cnn import MeshCNNPotentialCorrection
 from .radial import RadialPotentialCorrection
+from .window import PMWindowCompensationCorrection
 
 
 @partial(
@@ -17,10 +19,16 @@ from .radial import RadialPotentialCorrection
     eq=False,
 )
 class CombinedPotentialCorrection:
-    """Correction that applies a radial transfer followed by a mesh-CNN residual."""
+    """Composite correction made from independent correction blocks.
 
-    radial: RadialPotentialCorrection
-    mesh_cnn: MeshCNNPotentialCorrection
+    The Fourier-space blocks, ``window`` and ``radial``, are multiplicative and
+    commute. The optional mesh CNN is applied after those transfers because it
+    predicts an additive real-space potential residual.
+    """
+
+    radial: Optional[RadialPotentialCorrection] = None
+    mesh_cnn: Optional[MeshCNNPotentialCorrection] = None
+    window: Optional[PMWindowCompensationCorrection] = None
     dtype: jnp.dtype = field(default=jnp.float32, repr=False)
 
     def __post_init__(self):

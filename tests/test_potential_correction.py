@@ -12,7 +12,10 @@ from src.corrections import (
     build_correction_optimizer,
     evaluate_mesh_potential_residual,
     evaluate_mesh_source_residual,
+    evaluate_pm_window_compensation,
     evaluate_radial_potential_transfer,
+    force_green_kernel,
+    force_uses_interlacing,
     init_potential_correction,
     init_mesh_cnn_potential_correction,
     init_radial_potential_correction,
@@ -191,6 +194,41 @@ def test_combined_correction_matches_radial_when_cnn_is_identity():
     combined_out = apply_potential_correction(pot, 1.0, cosmo, conf, combined, source_real=source)
 
     np.testing.assert_allclose(np.asarray(combined_out), np.asarray(radial_only), atol=1e-6, rtol=1e-6)
+
+
+def test_windowed_spline_combined_applies_window_and_radial_transfer():
+    conf = Configuration(1.0, (4, 4, 4), mesh_shape=1, float_dtype=jnp.float32)
+    cosmo = SimpleLCDM(conf)
+    correction = init_potential_correction(
+        jax.random.PRNGKey(0),
+        model="windowed_spline",
+        latent_size=8,
+        n_knots=8,
+        window_alpha=0.25,
+        window_max_gain=2.0,
+        window_taper_start=0.5,
+        window_taper_stop=1.0,
+        interlacing=True,
+        green_kernel="discrete_laplacian",
+        allow_missing_sigma8=True,
+        dtype=jnp.float32,
+        conf=conf,
+    )
+
+    pot = jnp.ones((4, 4, 3), dtype=jnp.complex64)
+    combined_out = apply_potential_correction(pot, 1.0, cosmo, conf, correction)
+    manual = apply_potential_correction(pot, 1.0, cosmo, conf, correction.window)
+    manual = apply_potential_correction(manual, 1.0, cosmo, conf, correction.radial)
+    transfer = evaluate_radial_potential_transfer(correction, 1.0, cosmo, conf)
+    expected_transfer = (
+        evaluate_pm_window_compensation(correction.window, conf)
+        * evaluate_radial_potential_transfer(correction.radial, 1.0, cosmo, conf)
+    )
+
+    np.testing.assert_allclose(np.asarray(combined_out), np.asarray(manual), atol=1e-6, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(transfer), np.asarray(expected_transfer), atol=1e-6, rtol=1e-6)
+    assert force_uses_interlacing(correction)
+    assert force_green_kernel(correction) == "discrete_laplacian"
 
 
 @pytest.mark.skipif(GPU_COUNT < 2, reason="requires 2 GPUs")
