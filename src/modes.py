@@ -85,13 +85,17 @@ def _rfft_mode_numbers(size):
 
 
 def _mix_uint32(x):
-    """Avalanche-mix uint32 values for mode-local deterministic randomness.
+    """Avalanche-mix uint32 values with the lowbias32 integer finalizer.
 
-    This is not a cryptographic hash, but a cheap integer finalizer used by
-    ``white_noise_nested`` so each Fourier mode can be sampled as a pure
-    function of ``(seed, kx, ky, kz)``. This avoids drawing from an
-    array-shaped PRNG stream, where changing the resolution would change the
-    random numbers assigned to already-shared low-k modes.
+    The constants ``0x7FEB352D`` and ``0x846CA68B`` and the shift pattern
+    ``16, 15, 16`` come from Chris Wellons' ``lowbias32`` mixer, which was
+    found by automated search and tuned for good avalanche behavior. The middle
+    shift is ``15`` rather than ``16`` because that specific combination tested
+    better; the shifts and multipliers should be viewed as one optimized set,
+    not chosen independently. (see https://nullprogram.com/blog/2018/07/31/)
+
+    This is not a cryptographic hash. Here it is just used to deterministically
+    scramble integer mode coordinates into pseudo-random-looking uint32 values.
     """
     x = jnp.asarray(x, dtype=jnp.uint32)
     x = jnp.bitwise_xor(x, x >> 16)
@@ -103,11 +107,15 @@ def _mix_uint32(x):
 
 
 def _hash_mode_u32(seed, kx, ky, kz, salt):
-    """Hash a seed and integer Fourier coordinate into one uint32 stream.
+    """Hash ``(seed, kx, ky, kz, salt)`` into one deterministic uint32 value.
 
-    ``salt`` gives independent streams for the real and imaginary Gaussian
-    variates of the same mode while keeping both streams tied to the same
-    physical mode coordinate.
+    This builds a mode-local random stream by repeatedly applying
+    ``_mix_uint32``. The per-axis constants ``0x9E3779B9``, ``0x85EBCA6B``,
+    and ``0xC2B2AE35`` are standard large odd hash constants, used here as
+    simple offsets so that ``kx``, ``ky``, and ``kz`` do not enter the mixer
+    in overly similar forms. ``salt`` is an extra stream identifier, letting
+    us derive independent values for the same Fourier mode, such as separate
+    real and imaginary Gaussian variates.
     """
     h = _mix_uint32(jnp.uint32(seed) ^ jnp.uint32(salt))
     h = _mix_uint32(h ^ _mix_uint32(jnp.asarray(kx, dtype=jnp.uint32) + jnp.uint32(0x9E3779B9)))
@@ -117,7 +125,14 @@ def _hash_mode_u32(seed, kx, ky, kz, salt):
 
 
 def _hash_to_uniform(hash_value, dtype):
-    """Map a uint32 hash to an open-bin uniform variate in ``(0, 1)``."""
+    """Map a uint32 hash to a uniform variate in ``(0, 1)``.
+
+    The scale factor ``2.3283064365386963e-10`` is exactly ``1 / 2**32`` in
+    float form, since a uint32 hash spans ``2**32`` possible values. The
+    added ``0.5`` maps each integer to the center of its bin, so the result
+    stays strictly inside ``(0, 1)`` rather than ever landing exactly on 0
+    or 1.
+    """
     dtype = jnp.dtype(dtype)
     return (hash_value.astype(dtype) + jnp.asarray(0.5, dtype=dtype)) * jnp.asarray(2.3283064365386963e-10, dtype=dtype)
 
@@ -305,9 +320,9 @@ def get_k_magnitude_transposed(kvec, conf):
     @partial(
         jax.jit,
         in_shardings=(
-            NamedSharding(conf.compute_mesh, P(None)),
-            NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
-            NamedSharding(conf.compute_mesh, P(None)),
+                NamedSharding(conf.compute_mesh, P(None)),
+                NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
+                NamedSharding(conf.compute_mesh, P(None)),
         ),
         out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
     )
