@@ -20,6 +20,16 @@ from .mesh_cnn import (
     MeshResidualPotentialCorrection,
     init_mesh_cnn_potential_correction,
 )
+from .pgd import (
+    PGDPotentialCorrection,
+    TrainablePGDPotentialCorrection,
+    evaluate_pgd_bandpass,
+    evaluate_pgd_potential_transfer,
+    init_pgd_potential_correction,
+    init_trainable_pgd_potential_correction,
+    pgd_parameters,
+    pgd_alpha,
+)
 from .radial import (
     NeuralSplineFourierFilter,
     RadialPotentialCorrection,
@@ -27,8 +37,16 @@ from .radial import (
 )
 from .window import (
     PMWindowCompensationCorrection,
+    TrainablePMWindowCompensationCorrection,
     evaluate_pm_window_compensation,
     init_pm_window_compensation_correction,
+    init_trainable_pm_window_compensation_correction,
+    pm_window_parameters,
+)
+from .softening import (
+    HighKSofteningCorrection,
+    evaluate_high_k_softening,
+    init_high_k_softening_correction,
 )
 
 __all__ = [
@@ -36,8 +54,12 @@ __all__ = [
     "MeshCNNPotentialCorrection",
     "MeshResidualPotentialCorrection",
     "NeuralSplineFourierFilter",
+    "PGDPotentialCorrection",
     "PMWindowCompensationCorrection",
     "RadialPotentialCorrection",
+    "HighKSofteningCorrection",
+    "TrainablePGDPotentialCorrection",
+    "TrainablePMWindowCompensationCorrection",
     "add_potential_correction_cotangents",
     "apply_potential_correction",
     "build_correction_optimizer",
@@ -45,13 +67,23 @@ __all__ = [
     "evaluate_mesh_source_residual",
     "evaluate_pm_window_compensation",
     "evaluate_potential_transfer",
+    "evaluate_high_k_softening",
+    "evaluate_pgd_bandpass",
+    "evaluate_pgd_potential_transfer",
     "evaluate_radial_potential_transfer",
     "force_green_kernel",
     "force_uses_interlacing",
     "init_mesh_cnn_potential_correction",
     "init_pm_window_compensation_correction",
     "init_potential_correction",
+    "init_pgd_potential_correction",
     "init_radial_potential_correction",
+    "init_high_k_softening_correction",
+    "init_trainable_pgd_potential_correction",
+    "init_trainable_pm_window_compensation_correction",
+    "pgd_parameters",
+    "pgd_alpha",
+    "pm_window_parameters",
     "resolve_sigma8",
     "sample_potential_transfer",
     "zero_potential_correction_cotangent",

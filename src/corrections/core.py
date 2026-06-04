@@ -12,6 +12,13 @@ from .mesh_cnn import (
     evaluate_mesh_source_residual as _evaluate_mesh_source_residual,
     init_mesh_cnn_potential_correction,
 )
+from .pgd import (
+    PGDPotentialCorrection,
+    TrainablePGDPotentialCorrection,
+    evaluate_pgd_potential_transfer,
+    init_pgd_potential_correction,
+    init_trainable_pgd_potential_correction,
+)
 from .radial import (
     RadialPotentialCorrection,
     evaluate_radial_potential_transfer as _evaluate_radial_potential_transfer,
@@ -20,8 +27,15 @@ from .radial import (
 )
 from .window import (
     PMWindowCompensationCorrection,
+    TrainablePMWindowCompensationCorrection,
     evaluate_pm_window_compensation,
     init_pm_window_compensation_correction,
+    init_trainable_pm_window_compensation_correction,
+)
+from .softening import (
+    HighKSofteningCorrection,
+    evaluate_high_k_softening,
+    init_high_k_softening_correction,
 )
 
 
@@ -61,6 +75,53 @@ def init_potential_correction(key, model="neural_spline", **kwargs):
             window=window,
             dtype=dtype,
         )
+    if model in {"trainable_windowed_spline", "trainable_pm_window+neural_spline"}:
+        radial = init_radial_potential_correction(key, **kwargs)
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", getattr(radial, "dtype", jnp.float32))
+        window = init_trainable_pm_window_compensation_correction(dtype=dtype, **correction_kwargs)
+        return CombinedPotentialCorrection(radial=radial, window=window, dtype=dtype)
+    if model in {"pgd", "fastpm_pgd"}:
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", jnp.float32)
+        return init_pgd_potential_correction(dtype=dtype, **correction_kwargs)
+    if model in {"trainable_pgd", "trainable_fastpm_pgd"}:
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", jnp.float32)
+        return init_trainable_pgd_potential_correction(dtype=dtype, **correction_kwargs)
+    if model in {"windowed_pgd", "pm_window+pgd", "pgd_window"}:
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", jnp.float32)
+        window = init_pm_window_compensation_correction(dtype=dtype, **correction_kwargs)
+        pgd = init_pgd_potential_correction(dtype=dtype, **correction_kwargs)
+        return CombinedPotentialCorrection(
+            window=window,
+            pgd=pgd,
+            dtype=dtype,
+        )
+    if model in {"trainable_windowed_pgd", "trainable_pm_window+pgd"}:
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", jnp.float32)
+        window = init_trainable_pm_window_compensation_correction(dtype=dtype, **correction_kwargs)
+        pgd = init_trainable_pgd_potential_correction(dtype=dtype, **correction_kwargs)
+        return CombinedPotentialCorrection(window=window, pgd=pgd, dtype=dtype)
+    if model in {"trainable_windowed_spline_pgd", "trainable_pm_window+neural_spline+pgd"}:
+        radial = init_radial_potential_correction(key, **kwargs)
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", getattr(radial, "dtype", jnp.float32))
+        window = init_trainable_pm_window_compensation_correction(dtype=dtype, **correction_kwargs)
+        pgd = init_trainable_pgd_potential_correction(dtype=dtype, **correction_kwargs)
+        return CombinedPotentialCorrection(radial=radial, window=window, pgd=pgd, dtype=dtype)
+    if model in {"high_k_softening", "softening", "fastpm_softening"}:
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", jnp.float32)
+        return init_high_k_softening_correction(dtype=dtype, **correction_kwargs)
+    if model in {"windowed_softening", "pm_window+softening"}:
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", jnp.float32)
+        window = init_pm_window_compensation_correction(dtype=dtype, **correction_kwargs)
+        softening = init_high_k_softening_correction(dtype=dtype, **correction_kwargs)
+        return CombinedPotentialCorrection(window=window, softening=softening, dtype=dtype)
     if model in {"pm_window", "cic_compensation", "cic_window_compensation"}:
         correction_kwargs = dict(kwargs)
         dtype = correction_kwargs.pop("dtype", jnp.float32)
@@ -76,8 +137,10 @@ def sample_potential_transfer(correction, radius_fraction, a, cosmo, conf):
         correction = correction.radial
     if isinstance(correction, MeshCNNPotentialCorrection):
         raise TypeError("Mesh CNN corrections do not define a radial transfer curve.")
-    if isinstance(correction, PMWindowCompensationCorrection):
+    if isinstance(correction, (PMWindowCompensationCorrection, TrainablePMWindowCompensationCorrection)):
         raise TypeError("PM window compensation is anisotropic; use evaluate_pm_window_compensation instead.")
+    if isinstance(correction, (PGDPotentialCorrection, TrainablePGDPotentialCorrection, HighKSofteningCorrection)):
+        raise TypeError("PGD transfer sampling is not implemented; evaluate the full transfer field instead.")
     if correction is not None and not isinstance(correction, RadialPotentialCorrection):
         raise TypeError(f"Unsupported correction type {type(correction).__name__!s}.")
     return sample_radial_potential_transfer(correction, radius_fraction, a, cosmo, conf)
@@ -89,15 +152,29 @@ def evaluate_radial_potential_transfer(correction, a, cosmo, conf):
         transfer = jnp.asarray(1.0, dtype=conf.float_dtype)
         if correction.window is not None:
             transfer = transfer * evaluate_pm_window_compensation(correction.window, conf).astype(conf.float_dtype)
+        if correction.pgd is not None:
+            transfer = transfer * evaluate_pgd_potential_transfer(correction.pgd, a, conf).astype(conf.float_dtype)
+        if correction.softening is not None:
+            transfer = transfer * evaluate_high_k_softening(correction.softening, conf).astype(conf.float_dtype)
         if correction.radial is not None:
             transfer = transfer * _evaluate_radial_potential_transfer(correction.radial, a, cosmo, conf).astype(conf.float_dtype)
-        if correction.window is None and correction.radial is None and correction.mesh_cnn is not None:
+        if (
+            correction.window is None
+            and correction.radial is None
+            and correction.pgd is None
+            and correction.softening is None
+            and correction.mesh_cnn is not None
+        ):
             raise TypeError("Mesh CNN corrections do not define a radial transfer field.")
         return transfer
     if isinstance(correction, MeshCNNPotentialCorrection):
         raise TypeError("Mesh CNN corrections do not define a radial transfer field.")
-    if isinstance(correction, PMWindowCompensationCorrection):
+    if isinstance(correction, (PMWindowCompensationCorrection, TrainablePMWindowCompensationCorrection)):
         return evaluate_pm_window_compensation(correction, conf)
+    if isinstance(correction, (PGDPotentialCorrection, TrainablePGDPotentialCorrection)):
+        return evaluate_pgd_potential_transfer(correction, a, conf)
+    if isinstance(correction, HighKSofteningCorrection):
+        return evaluate_high_k_softening(correction, conf)
     if correction is not None and not isinstance(correction, RadialPotentialCorrection):
         raise TypeError(f"Unsupported correction type {type(correction).__name__!s}.")
     return _evaluate_radial_potential_transfer(correction, a, cosmo, conf)
@@ -135,6 +212,8 @@ def apply_potential_correction(pot, a, cosmo, conf, correction, source_real=None
         return pot
     if isinstance(correction, CombinedPotentialCorrection):
         pot = apply_potential_correction(pot, a, cosmo, conf, correction.window, source_real=source_real)
+        pot = apply_potential_correction(pot, a, cosmo, conf, correction.pgd, source_real=source_real)
+        pot = apply_potential_correction(pot, a, cosmo, conf, correction.softening, source_real=source_real)
         pot = apply_potential_correction(pot, a, cosmo, conf, correction.radial, source_real=source_real)
         return apply_potential_correction(pot, a, cosmo, conf, correction.mesh_cnn, source_real=source_real)
     if isinstance(correction, MeshCNNPotentialCorrection):
@@ -198,7 +277,7 @@ def force_uses_interlacing(correction):
     if isinstance(correction, CombinedPotentialCorrection):
         return any(
             force_uses_interlacing(child)
-            for child in (correction.window, correction.radial, correction.mesh_cnn)
+            for child in (correction.window, correction.pgd, correction.softening, correction.radial, correction.mesh_cnn)
         )
     return bool(getattr(correction, "interlacing", False))
 
@@ -206,7 +285,7 @@ def force_uses_interlacing(correction):
 def force_green_kernel(correction):
     """Return the Poisson Green's-function selector requested by a correction."""
     if isinstance(correction, CombinedPotentialCorrection):
-        for child in (correction.window, correction.radial, correction.mesh_cnn):
+        for child in (correction.window, correction.pgd, correction.softening, correction.radial, correction.mesh_cnn):
             kernel = force_green_kernel(child)
             if kernel != "continuum":
                 return kernel
