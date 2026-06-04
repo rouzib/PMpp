@@ -121,6 +121,8 @@ class Configuration:
     cosmo_dtype: DTypeLike = jnp.dtype(jnp.float64)
     pmid_dtype: DTypeLike = jnp.dtype(jnp.int16)
     float_dtype: DTypeLike = jnp.dtype(jnp.float32)
+    corrected_force_batched_fft: bool = False
+    particle_halo_gather_mesh_halo: bool = False
 
     k_pivot_Mpc: float = 0.05
 

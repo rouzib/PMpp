@@ -69,6 +69,7 @@ def test_halo_move_vjp_matches_true_vjp():
         max_ptcl_per_slice=2.5,
         max_share_ptcl=32,
         max_share_gather_ptcl=128,
+        multigpu_mode="particle_halo",
     )
     runtime = conf.multigpu
     if runtime is None:

@@ -86,6 +86,7 @@ def test_gravity_matches_pmwd_for_forward_and_gradients():
         max_ptcl_per_slice=1.8,
         max_share_ptcl=20000,
         max_share_gather_ptcl=50000,
+        multigpu_mode="particle_halo",
     )
     conf_pmwd = ConfigurationPMWD(
         ptcl_spacing=conf.ptcl_spacing,

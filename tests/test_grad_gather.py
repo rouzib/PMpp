@@ -70,7 +70,7 @@ def _sum_duplicate_slot_gradients(grad_pmpp_slots, pid_slots, valid_slots, ptcl_
     return grad
 
 
-def test_gather_gradients_match_pmwd_on_unique_particles():
+def _check_gather_gradients_match_pmwd_on_unique_particles(particle_halo_gather_mesh_halo=False):
     if GPU_COUNT < 1:
         if pytest is not None:
             pytest.skip("gather gradient test requires at least 1 GPU")
@@ -84,6 +84,8 @@ def test_gather_gradients_match_pmwd_on_unique_particles():
         max_ptcl_per_slice=1.6,
         max_share_ptcl=20000,
         max_share_gather_ptcl=50000,
+        multigpu_mode="particle_halo",
+        particle_halo_gather_mesh_halo=particle_halo_gather_mesh_halo,
     )
     conf_pmwd = ConfigurationPMWD(
         ptcl_spacing=conf.ptcl_spacing,
@@ -147,13 +149,26 @@ def test_gather_gradients_match_pmwd_on_unique_particles():
     assert np.allclose(grad_mesh_pmpp, grad_mesh_pmwd, atol=1e-6, rtol=1e-6)
 
 
+def test_gather_gradients_match_pmwd_on_unique_particles():
+    _check_gather_gradients_match_pmwd_on_unique_particles(False)
+
+
+def test_particle_halo_mesh_edge_gather_gradients_match_pmwd_on_unique_particles():
+    _check_gather_gradients_match_pmwd_on_unique_particles(True)
+
+
 if pytest is not None:
     test_gather_gradients_match_pmwd_on_unique_particles = pytest.mark.skipif(
         GPU_COUNT < 1,
         reason="gather gradient test requires at least 1 GPU",
     )(test_gather_gradients_match_pmwd_on_unique_particles)
+    test_particle_halo_mesh_edge_gather_gradients_match_pmwd_on_unique_particles = pytest.mark.skipif(
+        GPU_COUNT < 1,
+        reason="gather gradient test requires at least 1 GPU",
+    )(test_particle_halo_mesh_edge_gather_gradients_match_pmwd_on_unique_particles)
 
 
 if __name__ == "__main__":
     test_gather_gradients_match_pmwd_on_unique_particles()
+    test_particle_halo_mesh_edge_gather_gradients_match_pmwd_on_unique_particles()
     print("gather gradient regression passed")

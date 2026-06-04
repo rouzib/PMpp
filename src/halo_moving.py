@@ -1930,7 +1930,8 @@ def halo_move_pullback_from_prestate_shard_map(
         disp_size,
     )
 
-    auth_payload_cot = _reverse_route_cot(
+    _reverse_route_fn = _reverse_route_cot_two_gpu if num_gpus == 2 else _reverse_route_cot
+    auth_payload_cot = _reverse_route_fn(
         merged_payload_cot,
         stay_pos,
         stay_valid,
@@ -2199,18 +2200,13 @@ def move_particles_mesh_halo_shard_map(
     conf,
 ):
     """Move particles across slabs while storing only authoritative particles."""
-    del halo_start, halo_end, max_halo_values_to_share
-    auth = _canonical_authoritative_from_full(
+    del disp_before, halo_start, halo_end, max_halo_values_to_share
+    auth = _authoritative_prefix_from_owned_only(
         pmid,
-        disp_before,
         disp_after,
         vel,
         acc,
         unused_indexes,
-        global_nMesh,
-        disp_size,
-        num_gpus,
-        offsets,
         conf,
     )
     (_auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid), max_particles_moved = (
@@ -2445,6 +2441,89 @@ def reconstruct_pre_drift_and_pullback_mesh_halo_shard_map(
     )
 
 
+def reconstruct_pre_drift_and_pullback_canonical_shard_map(
+    pmid,
+    disp,
+    vel,
+    acc,
+    unused_indexes,
+    drift_factor,
+    disp_cot,
+    vel_cot,
+    acc_cot,
+    global_nMesh,
+    max_values_to_share,
+    max_halo_values_to_share,
+    max_ptcl_per_slice,
+    left_perm,
+    right_perm,
+    num_gpus,
+    disp_size,
+    offsets,
+    conf,
+):
+    """Fused particle-halo reconstruction plus halo-move pullback for drift adjoints."""
+    gpu_id = jax.lax.axis_index(AXIS_NAME)
+    halo_start = conf.halo_start[gpu_id]
+    halo_end = conf.halo_end[gpu_id]
+    pre_pmid, pre_disp, pre_vel, pre_acc, pre_unused_index, pre_halo_mask = (
+        reconstruct_pre_drift_canonical_shard_map(
+            pmid,
+            disp,
+            vel,
+            acc,
+            halo_start,
+            halo_end,
+            unused_indexes,
+            drift_factor,
+            global_nMesh,
+            max_values_to_share,
+            max_halo_values_to_share,
+            max_ptcl_per_slice,
+            left_perm,
+            right_perm,
+            num_gpus,
+            disp_size,
+            offsets,
+            conf,
+        )
+    )
+    disp_before_halo = pre_disp + pre_vel * drift_factor.astype(pre_disp.dtype)
+    disp_pullback, vel_pullback, acc_pullback = halo_move_pullback_from_prestate_shard_map(
+        pre_pmid,
+        pre_disp,
+        disp_before_halo,
+        pre_vel,
+        pre_acc,
+        halo_end,
+        pre_unused_index,
+        disp_cot,
+        vel_cot,
+        acc_cot,
+        global_nMesh,
+        max_values_to_share,
+        max_halo_values_to_share,
+        max_ptcl_per_slice,
+        left_perm,
+        right_perm,
+        num_gpus,
+        disp_size,
+        offsets,
+        conf,
+    )
+    return (
+        pre_pmid,
+        pre_disp,
+        pre_vel,
+        pre_acc,
+        pre_unused_index,
+        pre_halo_mask,
+        disp_pullback,
+        vel_pullback,
+        acc_pullback,
+    )
+
+
 @partial(jax.jit, static_argnames=["global_nMesh", "disp_size"])
 def compute_halo_mask_shard_map(pmid, disp, unused_indexes, halo_start, halo_end, global_nMesh, disp_size):
     """Compute halo masks from sharded particle positions."""
@@ -2576,12 +2655,16 @@ def initialize_mGPU_reconstruct_pre_drift(conf):
 
 
 def initialize_mGPU_reconstruct_pre_drift_pullback(conf):
-    """Create the fused mesh-halo reconstruction/pullback callable when available."""
-    if conf.num_devices == 1 or conf.multigpu_mode != "mesh_halo":
+    """Create the fused reconstruction/pullback callable when available."""
+    if conf.num_devices == 1:
         return None
 
+    pullback_fn = reconstruct_pre_drift_and_pullback_canonical_shard_map
+    if conf.multigpu_mode == "mesh_halo":
+        pullback_fn = reconstruct_pre_drift_and_pullback_mesh_halo_shard_map
+
     func = partial(
-        reconstruct_pre_drift_and_pullback_mesh_halo_shard_map,
+        pullback_fn,
         global_nMesh=conf.nMesh,
         max_values_to_share=conf.max_share_ptcl,
         max_halo_values_to_share=_halo_capacity(conf),

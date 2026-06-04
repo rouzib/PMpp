@@ -10,7 +10,7 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 from .enmesh import _chunk_split, enmesh, _chunk_cat
 from .halo_moving import particles_in_slice_mask
 from .mesh_halo import reduce_mesh_halo_to_owned, zero_pad_owned_mesh_halo
-from .utils import AXIS_NAME, raise_error, pmid_to_idx
+from .utils import AXIS_NAME, raise_error
 
 
 def reduce_grad_across_gpus(disp_cot, pmid, disp, valid_mask, conf):
@@ -45,65 +45,39 @@ def reduce_grad_across_gpus(disp_cot, pmid, disp, valid_mask, conf):
         operand=None,
     )
 
-    to_share_left_pmid = jnp.compress(
-        to_share_left, pmid, axis=0, size=max_values_to_share, fill_value=jnp.asarray(0, pmid.dtype)
+    fill_index = jnp.asarray(0, dtype=jnp.int32)
+    left_count = jnp.sum(to_share_left)
+    right_count = jnp.sum(to_share_right)
+    left_idx = jnp.nonzero(to_share_left, size=max_values_to_share, fill_value=fill_index)[0]
+    right_idx = jnp.nonzero(to_share_right, size=max_values_to_share, fill_value=fill_index)[0]
+    to_share_left_valid = jnp.arange(max_values_to_share) < left_count
+    to_share_right_valid = jnp.arange(max_values_to_share) < right_count
+
+    grad_valid_shape = (max_values_to_share,) + (1,) * (disp_cot.ndim - 1)
+    to_share_left_grad = jnp.where(
+        to_share_left_valid.reshape(grad_valid_shape),
+        disp_cot[left_idx],
+        jnp.zeros((max_values_to_share,) + disp_cot.shape[1:], dtype=disp_cot.dtype),
     )
-    to_share_right_pmid = jnp.compress(
-        to_share_right, pmid, axis=0, size=max_values_to_share, fill_value=jnp.asarray(0, pmid.dtype)
-    )
-    to_share_left_valid = jnp.compress(
-        to_share_left, valid_mask, axis=0, size=max_values_to_share, fill_value=jnp.asarray(False, jnp.bool_)
-    )
-    to_share_right_valid = jnp.compress(
-        to_share_right, valid_mask, axis=0, size=max_values_to_share, fill_value=jnp.asarray(False, jnp.bool_)
-    )
-    to_share_left_grad = jnp.compress(
-        to_share_left, disp_cot, axis=0, size=max_values_to_share, fill_value=jnp.asarray(0, disp_cot.dtype)
-    )
-    to_share_right_grad = jnp.compress(
-        to_share_right, disp_cot, axis=0, size=max_values_to_share, fill_value=jnp.asarray(0, disp_cot.dtype)
+    to_share_right_grad = jnp.where(
+        to_share_right_valid.reshape(grad_valid_shape),
+        disp_cot[right_idx],
+        jnp.zeros((max_values_to_share,) + disp_cot.shape[1:], dtype=disp_cot.dtype),
     )
 
-    incoming_pmid_left, incoming_grad_left, incoming_valid_left = jax.lax.ppermute(
-        (to_share_right_pmid, to_share_right_grad, to_share_right_valid),
+    incoming_grad_left, incoming_valid_left = jax.lax.ppermute(
+        (to_share_right_grad, to_share_right_valid),
         axis_name=AXIS_NAME,
         perm=conf.right_perm,
     )
-    incoming_pmid_right, incoming_grad_right, incoming_valid_right = jax.lax.ppermute(
-        (to_share_left_pmid, to_share_left_grad, to_share_left_valid),
+    incoming_grad_right, incoming_valid_right = jax.lax.ppermute(
+        (to_share_left_grad, to_share_left_valid),
         axis_name=AXIS_NAME,
         perm=conf.left_perm,
     )
 
-    slot_index = jnp.arange(pmid.shape[0], dtype=jnp.int32)
-
-    local_left_pmid = jnp.compress(
-        to_share_left, pmid, axis=0, size=max_values_to_share, fill_value=jnp.asarray(0, pmid.dtype)
-    )
-    local_right_pmid = jnp.compress(
-        to_share_right, pmid, axis=0, size=max_values_to_share, fill_value=jnp.asarray(0, pmid.dtype)
-    )
-    local_left_slot = jnp.compress(
-        to_share_left, slot_index, axis=0, size=max_values_to_share, fill_value=jnp.asarray(-1, slot_index.dtype)
-    )
-    local_right_slot = jnp.compress(
-        to_share_right, slot_index, axis=0, size=max_values_to_share, fill_value=jnp.asarray(-1, slot_index.dtype)
-    )
-
-    missing_key = jnp.asarray(conf.mesh_size, dtype=jnp.int32)
-    local_left_keys = jnp.where(
-        local_left_slot >= 0,
-        pmid_to_idx(local_left_pmid, conf),
-        missing_key,
-    )
-    local_right_keys = jnp.where(
-        local_right_slot >= 0,
-        pmid_to_idx(local_right_pmid, conf),
-        missing_key,
-    )
-
-    incoming_left_keys = jnp.where(incoming_valid_left, pmid_to_idx(incoming_pmid_left, conf), missing_key)
-    incoming_right_keys = jnp.where(incoming_valid_right, pmid_to_idx(incoming_pmid_right, conf), missing_key)
+    local_left_slot = jnp.where(to_share_left_valid, left_idx, jnp.asarray(-1, left_idx.dtype))
+    local_right_slot = jnp.where(to_share_right_valid, right_idx, jnp.asarray(-1, right_idx.dtype))
 
     # The canonical mover packs the local halo subsets and the incoming neighbor
     # exports in the same sorted packed-key order, so the compacted sequences
@@ -111,14 +85,12 @@ def reduce_grad_across_gpus(disp_cot, pmid, disp, valid_mask, conf):
     matched_left = (
         incoming_valid_left
         & (local_left_slot >= 0)
-        & (local_left_keys == incoming_left_keys)
     )
     update_indices_left = jnp.where(matched_left, local_left_slot, 0)
 
     matched_right = (
         incoming_valid_right
         & (local_right_slot >= 0)
-        & (local_right_keys == incoming_right_keys)
     )
     update_indices_right = jnp.where(matched_right, local_right_slot, 0)
 

@@ -84,6 +84,7 @@ def test_scatter_gradient_matches_pmwd_for_unique_pmid_particles():
         max_ptcl_per_slice=1.6,
         max_share_ptcl=20000,
         max_share_gather_ptcl=50000,
+        multigpu_mode="particle_halo",
     )
     conf_pmwd = ConfigurationPMWD(
         ptcl_spacing=conf.ptcl_spacing,

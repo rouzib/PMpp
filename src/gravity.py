@@ -308,12 +308,13 @@ def _acceleration_from_potential(pot, ptcl, conf: Configuration, use_batched=Tru
 def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration, a=None, correction=None):
     """Evaluate particle acceleration from a precomputed density mesh."""
     pot = _gravity_potential_from_density(dens, cosmo.Omega_m, conf, a=a, cosmo=cosmo, correction=correction)
+    use_batched = correction is None or conf.corrected_force_batched_fft
     return _acceleration_from_potential(
         pot,
         ptcl,
         conf,
-        use_batched=correction is None,
-        use_vmap_gather=correction is not None,
+        use_batched=use_batched,
+        use_vmap_gather=correction is not None and not use_batched,
     )
 
 

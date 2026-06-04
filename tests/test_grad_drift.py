@@ -45,6 +45,7 @@ def _build_crossing_state():
         max_ptcl_per_slice=1.25,
         max_share_ptcl=1024,
         max_share_gather_ptcl=2048,
+        multigpu_mode="particle_halo",
     )
     conf_pmwd = ConfigurationPMWD(
         ptcl_spacing=conf.ptcl_spacing,

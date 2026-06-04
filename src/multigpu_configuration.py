@@ -47,8 +47,8 @@ class MultiGPUConfiguration:
     local_mesh_shape: tuple[int, ...] = ()
     local_mesh_with_halo_shape: tuple[int, ...] = ()
 
-    mode: str | None = None
-    store_particle_halos: bool = True
+    mode: str | None = "mesh_halo"
+    store_particle_halos: bool = False
     ptcl_halo_width: int = 0
     mesh_halo_width: int = 0
     owned_slice_start: jax.Array = None
