@@ -10,9 +10,12 @@ from src.multigpu_configuration import MultiGPUConfiguration
 from src.corrections import (
     apply_potential_correction,
     build_correction_optimizer,
+    evaluate_high_k_softening,
     evaluate_mesh_potential_residual,
     evaluate_mesh_source_residual,
     evaluate_pm_window_compensation,
+    evaluate_pgd_bandpass,
+    evaluate_pgd_potential_transfer,
     evaluate_radial_potential_transfer,
     force_green_kernel,
     force_uses_interlacing,
@@ -229,6 +232,111 @@ def test_windowed_spline_combined_applies_window_and_radial_transfer():
     np.testing.assert_allclose(np.asarray(transfer), np.asarray(expected_transfer), atol=1e-6, rtol=1e-6)
     assert force_uses_interlacing(correction)
     assert force_green_kernel(correction) == "discrete_laplacian"
+
+
+def test_pgd_potential_correction_has_finite_band_limited_transfer():
+    conf = Configuration(1.0, (8, 8, 8), mesh_shape=1, float_dtype=jnp.float32)
+    cosmo = SimpleLCDM(conf)
+    correction = init_potential_correction(
+        jax.random.PRNGKey(0),
+        model="pgd",
+        pgd_alpha0=0.25,
+        pgd_A=0.0,
+        pgd_B=0.0,
+        pgd_kl=0.5,
+        pgd_ks=2.0,
+        dtype=jnp.float32,
+        conf=conf,
+    )
+
+    pot = jnp.ones((8, 8, 5), dtype=jnp.complex64)
+    corrected = apply_potential_correction(pot, 1.0, cosmo, conf, correction)
+    band = evaluate_pgd_bandpass(correction, 1.0, conf)
+    transfer = evaluate_pgd_potential_transfer(correction, 1.0, conf)
+
+    np.testing.assert_allclose(np.asarray(transfer[0, 0, 0]), 1.0, atol=1e-6, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(transfer), np.asarray(1.0 - 0.25 * band), atol=1e-6, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(corrected), np.asarray(pot * transfer), atol=1e-6, rtol=1e-6)
+    assert np.all(np.isfinite(np.asarray(transfer)))
+
+
+def test_windowed_pgd_combined_applies_product_transfer():
+    conf = Configuration(1.0, (4, 4, 4), mesh_shape=1, float_dtype=jnp.float32)
+    cosmo = SimpleLCDM(conf)
+    correction = init_potential_correction(
+        jax.random.PRNGKey(0),
+        model="windowed_pgd",
+        window_alpha=0.25,
+        window_max_gain=2.0,
+        pgd_alpha0=-0.1,
+        pgd_kl=0.5,
+        pgd_ks=2.0,
+        green_kernel="discrete_laplacian",
+        dtype=jnp.float32,
+        conf=conf,
+    )
+
+    pot = jnp.ones((4, 4, 3), dtype=jnp.complex64)
+    combined_out = apply_potential_correction(pot, 1.0, cosmo, conf, correction)
+    expected_transfer = (
+        evaluate_pm_window_compensation(correction.window, conf)
+        * evaluate_pgd_potential_transfer(correction.pgd, 1.0, conf)
+    )
+
+    np.testing.assert_allclose(np.asarray(combined_out), np.asarray(pot * expected_transfer), atol=1e-6, rtol=1e-6)
+    assert force_green_kernel(correction) == "discrete_laplacian"
+
+
+def test_high_k_softening_is_identity_below_taper_and_damps_high_k():
+    conf = Configuration(1.0, (8, 8, 8), mesh_shape=1, float_dtype=jnp.float32)
+    cosmo = SimpleLCDM(conf)
+    correction = init_potential_correction(
+        jax.random.PRNGKey(0),
+        model="high_k_softening",
+        softening_strength=0.2,
+        softening_start=0.5,
+        softening_stop=1.0,
+        dtype=jnp.float32,
+        conf=conf,
+    )
+
+    pot = jnp.ones((8, 8, 5), dtype=jnp.complex64)
+    transfer = evaluate_high_k_softening(correction, conf)
+    corrected = apply_potential_correction(pot, 1.0, cosmo, conf, correction)
+
+    np.testing.assert_allclose(np.asarray(transfer[0, 0, 0]), 1.0, atol=1e-6, rtol=1e-6)
+    assert float(jnp.min(transfer)) < 1.0
+    assert float(jnp.min(transfer)) >= 0.8 - 1e-6
+    np.testing.assert_allclose(np.asarray(corrected), np.asarray(pot * transfer), atol=1e-6, rtol=1e-6)
+
+
+def test_trainable_windowed_spline_pgd_has_trainable_scalar_leaves():
+    conf = Configuration(1.0, (4, 4, 4), mesh_shape=1, float_dtype=jnp.float32)
+    cosmo = SimpleLCDM(conf)
+    correction = init_potential_correction(
+        jax.random.PRNGKey(0),
+        model="trainable_windowed_spline_pgd",
+        latent_size=8,
+        n_knots=8,
+        output_init_scale=0.0,
+        window_alpha=0.48,
+        window_max_gain=4.0,
+        pgd_alpha0=0.0,
+        pgd_kl=0.08,
+        pgd_ks=0.4,
+        allow_missing_sigma8=True,
+        dtype=jnp.float32,
+        conf=conf,
+    )
+
+    pot = jnp.ones((4, 4, 3), dtype=jnp.complex64)
+    transfer = evaluate_radial_potential_transfer(correction, 1.0, cosmo, conf)
+    corrected = apply_potential_correction(pot, 1.0, cosmo, conf, correction)
+    leaves = jax.tree_util.tree_leaves(correction)
+
+    assert len([leaf for leaf in leaves if getattr(leaf, "shape", None) == ()]) >= 5
+    assert np.all(np.isfinite(np.asarray(transfer)))
+    assert np.all(np.isfinite(np.asarray(corrected)))
 
 
 @pytest.mark.skipif(GPU_COUNT < 2, reason="requires 2 GPUs")
