@@ -24,7 +24,7 @@ from typing import Callable, Tuple
 from functools import partial
 
 import jax
-from jax import lax
+from jax import lax, Array
 from jax import custom_vjp
 from jax.experimental import mesh_utils
 from jax.experimental.custom_partitioning import custom_partitioning
@@ -33,7 +33,7 @@ import jax.tree_util as tree
 import jax.numpy as jnp
 
 
-def split_array_for_gpus(array: np.ndarray, num_gpus: int, axis: int = 1) -> np.ndarray:
+def split_array_for_gpus(array: np.ndarray, num_gpus: int, axis: int = 1) -> Array:
     """Split an array into equal chunks for host-side GPU distribution.
 
     Parameters
