@@ -69,7 +69,15 @@ def plot_particle_distribution_on_gpus(particles, force_mGPU=False):
 
 
 def plot_pos_distribution(positions, config):
-    """Plot a simple x-axis histogram for particle positions."""
+    """Plot a simple x-axis histogram for particle positions.
+
+    Parameters
+    ----------
+    positions : jax.Array
+        Particle positions with the x coordinate stored in column 0.
+    config : Configuration
+        Simulation configuration providing the mesh size for binning.
+    """
     bins = jnp.linspace(0, config.mesh_shape[0], num=config.mesh_shape[0] + 1)
 
     plt.figure(figsize=(10, 6))
@@ -92,25 +100,19 @@ def plot_pos_distribution(positions, config):
 
 
 def plot_particle_bins(pos, nMesh, title=None, mask=None):
-    """
-    Plots the distribution of particles along the x-axis using histogram bins. The particle
-    positions are calculated modulo the number of mesh bins to determine their placement
-    within the defined range. Additionally, this function filters out particles with zero
-    positions, calculates their counts within specific bins, and visualizes the data using
-    a bar plot. The title of the plot can be customized or defaults to reflect the total
-    number of particles.
+    """Plot x-position occupancy counts for a particle set.
 
-    :param pos: 2D array containing the positions of the particles. Each row
-                represents a particle, with the first column corresponding to
-                the x-coordinate.
-    :type pos: jax.numpy.ndarray
-    :param nMesh: Number of global mesh bins used to define the range for the
-                  histogram plot.
-    :type nMesh: int
-    :param title: Title of the plot. If not provided, defaults to show the total
-                  number of particles in the title.
-    :type title: str or None
-    :return: None
+    Parameters
+    ----------
+    pos : jax.Array
+        Particle positions with the x coordinate stored in column 0.
+    nMesh : int
+        Global number of x-direction mesh bins.
+    title : str or ArrayLike or None, optional
+        Plot title. Integer-like values are resolved through
+        :func:`resolve_title`.
+    mask : jax.Array, optional
+        Boolean mask selecting the subset of particles to plot.
     """
     if mask is not None:
         particles = pos[mask]
@@ -158,7 +160,18 @@ def plot_particle_bins_callback(pos, mask, nMesh, title_idx=None):
 
 # Function to resolve numeric title index back into a string
 def resolve_title(title_idx):
-    """Map callback-friendly integer title IDs to plot labels."""
+    """Map callback-friendly integer title IDs to plot labels.
+
+    Parameters
+    ----------
+    title_idx : int or None
+        Integer identifier passed through JAX callbacks.
+
+    Returns
+    -------
+    str
+        Human-readable plot title corresponding to ``title_idx``.
+    """
     title_map = {
         0: "All particles",
         1: "Particles in halo",

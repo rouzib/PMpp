@@ -10,14 +10,33 @@ from .particles import Particles
 from .corrections import add_potential_correction_cotangents, zero_potential_correction_cotangent
 from .steps import (
     force,
+    force_then_kick_adj,
     integrate,
-    force_adj,
-    integrate_adj,
+    drift_adj_from_output,
 )
 
 
 def nbody_init(a, ptcl, cosmo, conf, correction=None):
-    """Initialize the leapfrog state by computing the starting acceleration."""
+    """Initialize the leapfrog state by computing the starting acceleration.
+
+    Parameters
+    ----------
+    a : float
+        Initial scale factor.
+    ptcl : Particles
+        Input particle state.
+    cosmo : Cosmology
+        Cosmology used for the gravity solve.
+    conf : Configuration
+        Active simulation configuration.
+    correction : optional
+        Potential-correction object applied in the force evaluation.
+
+    Returns
+    -------
+    Particles
+        Particle state with initialized acceleration.
+    """
     ptcl = force(a, ptcl, cosmo, conf, correction=correction)
     return ptcl
 
@@ -34,13 +53,61 @@ def _nbody_scale_factors(conf, reverse):
     return conf.a_nbody[::-1] if reverse else conf.a_nbody
 
 
+def _nbody_fused_stage_schedule(a):
+    """Return drift/force/kick stages with neighboring half-kicks combined."""
+    a_prev = a[:-1]
+    a_next = a[1:]
+    a_vel = (a_prev + a_next) / 2
+    next_midpoints = (a[1:-1] + a[2:]) / 2
+    a_kick_next = jnp.concatenate((next_midpoints, a[-1:]))
+    return a_prev, a_next, a_vel, a_kick_next
+
+
+def _nbody_fused_kick_schedule(a):
+    """Return force/kick boundary scale factors for the fused schedule."""
+    a_prev, _a_next, a_vel, _a_kick_next = _nbody_fused_stage_schedule(a)
+    del a_prev, _a_next, _a_kick_next
+    kick_prev = jnp.concatenate((a[:1], a_vel))
+    kick_next = jnp.concatenate((a_vel, a[-1:]))
+    return a, kick_prev, kick_next
+
+
 @partial(jax.jit, static_argnums=(3, 5, 6))
 def nbody_collect(ptcl, cosmo, conf, collector, collector_state, reverse=False, return_final=False, correction=None):
-    """Run forward N-body integration while updating a caller-defined collector state.
+    """Run forward N-body integration while updating caller-managed state.
 
-    The default `nbody(...)` path stays unchanged. This helper is for forward-only uses
-    such as saving projections, maps, or other diagnostics without baking those
-    concerns into the adjoint solver itself.
+    Parameters
+    ----------
+    ptcl : Particles
+        Initial particle state.
+    cosmo : Cosmology
+        Cosmology used for force and time-step factors.
+    conf : Configuration
+        Active runtime configuration.
+    collector : callable
+        Pure JAX function with signature
+        ``collector(state, a_prev, a_next, ptcl, cosmo, conf) -> new_state``.
+    collector_state : PyTree
+        Initial collector state carried through the integration.
+    reverse : bool, optional
+        Whether to traverse ``conf.a_nbody`` in reverse.
+    return_final : bool, optional
+        If True, also return the final particle state.
+    correction : optional
+        Potential-correction object passed through to force evaluation.
+
+    Returns
+    -------
+    collector_state : PyTree
+        Final collector state after all N-body steps.
+    tuple[Particles, PyTree]
+        Returned instead when ``return_final=True``.
+
+    Notes
+    -----
+    This helper is forward-only. It is intended for diagnostics, saved maps,
+    and other side-car computations that should stay outside the custom N-body
+    adjoint.
     """
     a = _nbody_scale_factors(conf, reverse)
     ptcl = nbody_init(a[0], ptcl, cosmo, conf, correction=correction)
@@ -60,10 +127,39 @@ def nbody_collect(ptcl, cosmo, conf, collector, collector_state, reverse=False, 
 
 @partial(jax.jit, static_argnums=(3, 4, 5, 6))
 def nbody_observe(ptcl, cosmo, conf, observer, reverse=False, include_start=False, return_final=False, correction=None):
-    """Run forward N-body integration and stack one observation per saved step.
+    """Run forward N-body integration and stack one observation per step.
 
-    `observer` must be a pure JAX function with signature
-    `(a, ptcl, cosmo, conf) -> observation_pytree`.
+    Parameters
+    ----------
+    ptcl : Particles
+        Initial particle state.
+    cosmo : Cosmology
+        Cosmology used for the integration.
+    conf : Configuration
+        Active runtime configuration.
+    observer : callable
+        Pure JAX function with signature
+        ``observer(a, ptcl, cosmo, conf) -> observation_pytree``.
+    reverse : bool, optional
+        Whether to traverse ``conf.a_nbody`` in reverse.
+    include_start : bool, optional
+        Whether to prepend the observation at the initial scale factor.
+    return_final : bool, optional
+        If True, also return the final particle state.
+    correction : optional
+        Potential-correction object passed through to force evaluation.
+
+    Returns
+    -------
+    observations : PyTree
+        Observation tree stacked along a leading time axis.
+    tuple[Particles, PyTree]
+        Returned instead when ``return_final=True``.
+
+    Notes
+    -----
+    This helper materializes one observation tree per saved step and is meant
+    for forward diagnostics such as projections or summary statistics.
     """
     a = _nbody_scale_factors(conf, reverse)
     ptcl = nbody_init(a[0], ptcl, cosmo, conf, correction=correction)
@@ -88,7 +184,24 @@ def nbody_observe(ptcl, cosmo, conf, observer, reverse=False, include_start=Fals
 
 
 def nbody_kappa(ptcl, cosmo, conf, reverse=False):
-    """Compatibility wrapper for the legacy saved-map N-body path."""
+    """Compatibility wrapper for the legacy saved-map N-body path.
+
+    Parameters
+    ----------
+    ptcl : Particles
+        Initial particle state.
+    cosmo : Cosmology
+        Cosmology used for the forward solve.
+    conf : Configuration
+        Active simulation configuration.
+    reverse : bool, optional
+        Whether to integrate in reverse scale-factor order.
+
+    Returns
+    -------
+    object
+        Same return value as :func:`src.nbody_observers.nbody_kappa`.
+    """
     from .nbody_observers import nbody_kappa as _nbody_kappa
 
     return _nbody_kappa(ptcl, cosmo, conf, reverse=reverse)
@@ -199,18 +312,69 @@ def _nbody_flat_impl(conf, reverse, pmid, unused_index, halo_mask, attr, disp, v
 
 
 def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False, correction=None):
-    """Run the hand-written adjoint sweep from the final nbody state."""
+    """Sweep the hand-written N-body adjoint from the final particle state.
+
+    Parameters
+    ----------
+    ptcl : Particles
+        Final particle state from the forward N-body solve.
+    ptcl_cot : Particles
+        Cotangent with respect to that final state.
+    cosmo : Cosmology
+        Cosmology used in the forward solve.
+    conf : Configuration
+        Active runtime configuration.
+    reverse : bool, optional
+        Whether the paired forward solve integrated in reverse time order.
+    correction : optional
+        Potential-correction object used in the forward solve.
+
+    Returns
+    -------
+    ptcl : Particles
+        Reconstructed initial particle state.
+    ptcl_cot : Particles
+        Cotangent with respect to the reconstructed initial state.
+    cosmo_cot : Cosmology
+        Accumulated cosmology parameter cotangent.
+    correction_cot : optional
+        Cotangent for the correction object, if one is active.
+    """
     a_nbody = conf.a_nbody[::-1] if reverse else conf.a_nbody
 
     cosmo_cot = zero_cosmology_param_cotangent(cosmo)
     correction_cot = zero_potential_correction_cotangent(correction)
+    boundary_a, boundary_prev, boundary_next = _nbody_fused_kick_schedule(a_nbody)
+    ptcl, ptcl_cot, cosmo_cot, correction_cot = force_then_kick_adj(
+        boundary_a[-1],
+        boundary_prev[-1],
+        boundary_next[-1],
+        ptcl,
+        ptcl_cot,
+        cosmo,
+        cosmo_cot,
+        conf,
+        correction=correction,
+        correction_cot=correction_cot,
+    )
 
-    def body(carry, ab):
+    def body(carry, stage):
         ptcl, ptcl_cot, cosmo_cot, correction_cot = carry
-        a_prev, a_next = ab
-        carry = integrate_adj(
+        a_prev, a_next, a_vel, a_acc, a_kick_prev, a_kick_next = stage
+        ptcl, ptcl_cot, cosmo_cot = drift_adj_from_output(
+            a_vel,
             a_prev,
             a_next,
+            ptcl,
+            ptcl_cot,
+            cosmo,
+            cosmo_cot,
+            conf,
+        )
+        carry = force_then_kick_adj(
+            a_acc,
+            a_kick_prev,
+            a_kick_next,
             ptcl,
             ptcl_cot,
             cosmo,
@@ -221,21 +385,20 @@ def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False, correction=None):
         )
         return carry, None
 
+    step_a_prev, step_a_next, step_a_vel, _ = _nbody_fused_stage_schedule(a_nbody)
+    stages = tuple(stage[::-1] for stage in (
+        step_a_prev,
+        step_a_next,
+        step_a_vel,
+        boundary_a[:-1],
+        boundary_prev[:-1],
+        boundary_next[:-1],
+    ))
     (ptcl, ptcl_cot, cosmo_cot, correction_cot), _ = lax.scan(
         body,
         (ptcl, ptcl_cot, cosmo_cot, correction_cot),
-        (a_nbody[-2::-1], a_nbody[:0:-1]),
+        stages,
     )
-    ptcl, ptcl_cot, cosmo_cot_force, correction_cot_force = force_adj(
-        a_nbody[0],
-        ptcl,
-        ptcl_cot,
-        cosmo,
-        conf,
-        correction=correction,
-    )
-    cosmo_cot = add_cosmology_cotangents(cosmo_cot, cosmo_cot_force)
-    correction_cot = add_potential_correction_cotangents(correction_cot, correction_cot_force)
     return ptcl, ptcl_cot, cosmo_cot, correction_cot
 
 
@@ -262,6 +425,24 @@ def _nbody_state(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, 
 def nbody_adjoint_fwd(conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state, correction=None):
     """Forward rule for the N-body custom VJP.
 
+    Parameters
+    ----------
+    conf : Configuration
+        Active simulation configuration.
+    reverse : bool
+        Whether the paired forward solve runs in reverse time order.
+    pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state
+        Flattened particle and cosmology state used by the custom VJP bridge.
+    correction : optional
+        Potential-correction object used in the forward solve.
+
+    Returns
+    -------
+    tuple
+        Primal output state plus residuals needed by the backward rule.
+
+    Notes
+    -----
     Only the final state and static option flags are saved. The backward rule
     reconstructs the adjoint trajectory by sweeping the symplectic steps in
     reverse, avoiding a full tape of every intermediate particle state.
@@ -281,7 +462,24 @@ def nbody_adjoint_fwd(conf, reverse, pmid, unused_index, halo_mask, attr, disp, 
 
 
 def nbody_adjoint_bwd(conf, reverse, res, cotangents):
-    """Backward rule for the N-body custom VJP."""
+    """Backward rule for the N-body custom VJP.
+
+    Parameters
+    ----------
+    conf : Configuration
+        Active simulation configuration.
+    reverse : bool
+        Whether the paired forward solve ran in reverse time order.
+    res : tuple
+        Residuals produced by :func:`nbody_adjoint_fwd`.
+    cotangents : tuple
+        Cotangents with respect to the flat custom-VJP output state.
+
+    Returns
+    -------
+    tuple
+        Cotangents with respect to the flat custom-VJP inputs.
+    """
     state_out, cosmo_state, input_optionals, correction = res
     vel_is_none, acc_is_none, _, _, _ = input_optionals
 
@@ -316,7 +514,31 @@ _nbody_state.defvjp(nbody_adjoint_fwd, nbody_adjoint_bwd)
 
 
 def nbody(ptcl, cosmo, conf, reverse=False, correction=None):
-    """N-body time integration with the hand-written adjoint backward."""
+    """Advance particles through the configured N-body schedule.
+
+    Parameters
+    ----------
+    ptcl : Particles
+        Input particle state, typically produced by LPT or a prior segment.
+    cosmo : Cosmology
+        Cosmology with precomputed transfer and growth tables.
+    conf : Configuration
+        Active runtime configuration.
+    reverse : bool, optional
+        Whether to integrate over ``conf.a_nbody`` in reverse order.
+    correction : optional
+        Potential-correction object applied inside each force evaluation.
+
+    Returns
+    -------
+    Particles
+        Final particle state after the N-body integration.
+
+    Notes
+    -----
+    The backward pass is provided by a custom VJP that reconstructs the adjoint
+    sweep from the final state instead of replaying the full forward history.
+    """
     cosmo_state = _cosmo_state(cosmo)
     state_out = _nbody_state(
         conf,
@@ -332,3 +554,38 @@ def nbody(ptcl, cosmo, conf, reverse=False, correction=None):
         correction,
     )
     return _state_to_ptcl(conf, state_out)
+
+
+def nbody_static_halo_scheduled(ptcl, cosmo, confs, reverse=False, correction=None):
+    """Run N-body through multiple configuration segments.
+
+    Parameters
+    ----------
+    ptcl : Particles
+        Input particle state for the first segment.
+    cosmo : Cosmology
+        Cosmology shared by all segments.
+    confs : sequence of Configuration
+        Segment configurations, each with its own time schedule and static-halo
+        settings.
+    reverse : bool, optional
+        Whether to execute the segment list and each internal N-body schedule in
+        reverse order.
+    correction : optional
+        Potential-correction object applied in every segment.
+
+    Returns
+    -------
+    Particles
+        Final particle state after all segments complete.
+
+    Notes
+    -----
+    This experimental helper is mainly for the static-owner mesh-halo path.
+    Differentiation still happens segment-by-segment through the public
+    ``nbody`` custom VJP.
+    """
+    ordered_confs = confs[::-1] if reverse else confs
+    for segment_conf in ordered_confs:
+        ptcl = nbody(ptcl, cosmo, segment_conf, reverse=reverse, correction=correction)
+    return ptcl

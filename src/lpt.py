@@ -165,19 +165,30 @@ def lpt(modes, cosmo, conf):
     Parameters
     ----------
     modes : jax.Array
-        Linear matter overdensity Fourier modes in [L^3].
+        Linear matter overdensity modes on the particle grid, usually in Fourier
+        space as returned by :func:`src.modes.linear_modes`.
     cosmo : Cosmology
+        Cosmology with precomputed growth tables.
     conf : Configuration
+        Active simulation configuration.
 
     Returns
     -------
-    ptcl : Particles
-    obsvbl : Observables
+    Particles
+        Particle state initialized at ``conf.a_start`` with displacements and
+        canonical velocities from LPT.
 
     Raises
     ------
     ValueError
         If ``conf.dim`` or ``conf.lpt_order`` is not supported.
+
+    Notes
+    -----
+    After building the LPT displacement and velocity fields on the canonical
+    grid, this function routes them through the same multi-GPU ownership logic
+    used by the N-body drift so the output particle layout already matches the
+    active runtime mode.
 
     """
     if conf.dim not in (1, 2, 3):

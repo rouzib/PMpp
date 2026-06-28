@@ -220,8 +220,27 @@ def _nested_fourier_modes_from_numbers(seed, conf, kx_modes, ky_modes, kz_modes,
 def white_noise_nested(seed, conf, real=False, unit_abs=False):
     """Nested white noise Fourier or real modes.
 
-    This path is resolution-consistent for fixed box size: the shared non-Nyquist low-k
-    Fourier modes are identical across resolutions for the same ``seed``.
+    Parameters
+    ----------
+    seed : int
+        Seed for the mode-local deterministic hash stream.
+    conf : Configuration
+        Active simulation configuration.
+    real : bool, optional
+        Whether to return a real-space field instead of Fourier coefficients.
+    unit_abs : bool, optional
+        Whether to normalize Fourier coefficients to unit modulus.
+
+    Returns
+    -------
+    jax.Array
+        White-noise field in Fourier or real space.
+
+    Notes
+    -----
+    This path is resolution-consistent for fixed box size: the shared
+    non-Nyquist low-k Fourier modes are identical across resolutions for the
+    same ``seed``.
     """
     kx_modes = _fft_mode_numbers(conf.ptcl_grid_shape[0])
     ky_modes = _fft_mode_numbers(conf.ptcl_grid_shape[1])
@@ -277,7 +296,20 @@ def _to_transposed_spectral_layout(modes, conf):
 
 
 def get_k_magnitude(kvec, conf):
-    """Return ``|k|`` on the standard spectral layout without dense all-gather."""
+    """Return ``|k|`` on the standard spectral layout without dense all-gather.
+
+    Parameters
+    ----------
+    kvec : sequence of jax.Array
+        Sparse broadcastable Fourier wavevector components.
+    conf : Configuration
+        Active simulation configuration.
+
+    Returns
+    -------
+    jax.Array
+        Magnitude of the wavevector on the standard spectral layout.
+    """
     kx, ky, kz = [jnp.squeeze(a) for a in kvec]
     if conf.compute_mesh is None:
         return jnp.sqrt(kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(
@@ -310,7 +342,20 @@ def get_k_magnitude(kvec, conf):
 
 
 def get_k_magnitude_transposed(kvec, conf):
-    """Return ``|k|`` on the transposed spectral layout used by distributed FFTs."""
+    """Return ``|k|`` on the transposed spectral layout used by distributed FFTs.
+
+    Parameters
+    ----------
+    kvec : sequence of jax.Array
+        Sparse broadcastable Fourier wavevector components.
+    conf : Configuration
+        Active simulation configuration.
+
+    Returns
+    -------
+    jax.Array
+        Magnitude of the wavevector on the transposed spectral layout.
+    """
     kx, ky, kz = [jnp.squeeze(a) for a in kvec]
     if conf.compute_mesh is None:
         return jnp.sqrt(kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(

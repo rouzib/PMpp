@@ -46,9 +46,10 @@ def enmesh(i1, d1, a1, s1, b12, a2, s2, grad):
     s1 : dim-tuple of int, or None
         Periodic boundary shape of grid 1. If None, no wrapping.
     b12 : ArrayLike
-        Offset of origin of grid 2 to that of grid 1.
+        Offset from the origin of grid 1 to the origin of grid 2.
     a2 : float or None
-        Cell size of grid 2. If None, ``a2`` is the same as ``a1``.
+        Cell size of grid 2. If None, grid 2 uses the same cell size as grid
+        1.
     s2 : dim-tuple of int, or None
         Shape of grid 2. If not None, negative out-of-bounds indices of ``i2`` are set
         to ``s2``, avoiding some of them being treated as in bounds, thus allowing them

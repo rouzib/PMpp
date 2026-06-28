@@ -103,7 +103,26 @@ def build_correction_optimizer(
     optimizer_name="adamax",
     apply_if_finite_steps=100,
 ):
-    """Build the standard optimizer chain used by correction-training scripts."""
+    """Build the default Optax optimizer chain for correction training.
+
+    Parameters
+    ----------
+    learning_rate : float
+        Base optimizer learning rate.
+    gradient_clip_norm : float or None, optional
+        Global-norm clip applied before the optimizer step. Disable by passing
+        ``None`` or a non-positive value.
+    optimizer_name : {"adamax", "adam"}, optional
+        Underlying Optax optimizer.
+    apply_if_finite_steps : int, optional
+        Wrap the optimizer with ``optax.apply_if_finite`` for this many
+        tolerated consecutive non-finite updates. Set to ``0`` to disable it.
+
+    Returns
+    -------
+    optax.GradientTransformation
+        Optimizer chain ready for training correction parameters.
+    """
     require_optax("potential correction optimizer construction")
     transforms = []
     if gradient_clip_norm is not None and gradient_clip_norm > 0:

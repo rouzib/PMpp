@@ -93,7 +93,11 @@ def _bounded_sigmoid(raw, lo, hi, dtype):
 
 
 def init_pgd_potential_correction(dtype=jnp.float32, **kwargs):
-    """Initialize a FastPM-style PGD potential correction."""
+    """Initialize a fixed FastPM-style PGD potential correction.
+
+    Keyword arguments accept both bare names such as ``alpha0`` and prefixed
+    names such as ``pgd_alpha0`` for compatibility with experiment scripts.
+    """
     return PGDPotentialCorrection(
         alpha0=kwargs.get("alpha0", kwargs.get("pgd_alpha0", 0.1)),
         A=kwargs.get("A", kwargs.get("pgd_A", 0.0)),
@@ -105,7 +109,12 @@ def init_pgd_potential_correction(dtype=jnp.float32, **kwargs):
 
 
 def init_trainable_pgd_potential_correction(dtype=jnp.float32, **kwargs):
-    """Initialize trainable bounded PGD parameters."""
+    """Initialize bounded trainable FastPM-style PGD parameters.
+
+    Keyword arguments accept both bare names and ``pgd_*`` aliases. Physical
+    parameters are converted into bounded unconstrained variables suitable for
+    optimization.
+    """
     dtype = jnp.dtype(dtype)
     alpha0_scale = kwargs.get("pgd_alpha0_scale", kwargs.get("alpha0_scale", 0.2))
     kl_min = kwargs.get("pgd_kl_min", kwargs.get("kl_min", 0.02))

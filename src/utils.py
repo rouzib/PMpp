@@ -13,7 +13,21 @@ from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 
 
 def build_particle_nyquist_filter(kvec, conf):
-    """Return per-axis broadcastable masks for particle-grid-resolvable modes."""
+    """Return per-axis broadcastable masks for particle-grid-resolvable modes.
+
+    Parameters
+    ----------
+    kvec : sequence of jax.Array
+        Sparse broadcastable wavevector components on the active mesh layout.
+    conf : Configuration
+        Active simulation configuration.
+
+    Returns
+    -------
+    tuple of jax.Array
+        Broadcastable masks, one per axis, that keep only modes resolvable on
+        the particle grid.
+    """
     if conf.mesh_shape == conf.ptcl_grid_shape:
         return ()
 
@@ -181,37 +195,38 @@ def raise_error(err_msg, **error_dict):
 
 
 def create_compute_mesh(devices):
-    """Creates a compute mesh from the specified devices.
+    """Create the one-dimensional device mesh used by PM++ multi-GPU paths.
 
-    This function takes a list of devices and utilizes the
-    `mesh_utils.create_device_mesh` function to create a device
-    mesh. The resulting mesh is then wrapped in a `Mesh` object
-    with specified `axis_names`.
+    Parameters
+    ----------
+    devices : sequence of jax.Device
+        Devices to arrange along the slab-decomposition axis.
 
-    Args:
-        devices (list): A list of device identifiers that will be
-            used to create the device mesh.
-
-    Returns:
-        Mesh: A `Mesh` object representing the created compute
-        mesh using the provided devices.
+    Returns
+    -------
+    jax.sharding.Mesh
+        One-dimensional mesh named by ``AXIS_NAME``.
     """
     device_mesh = mesh_utils.create_device_mesh((len(devices),), devices=devices)
     return Mesh(device_mesh, axis_names=(AXIS_NAME,))  # "gpus" is necessary for all other
 
 
 def distribute_array_on_gpus(array: Array, compute_mesh: Mesh, partition: P) -> Array:
-    """
-    Distributes the given array across multiple GPUs for computation. The distribution follows a partition configuration
-    and an axis along which the array should be split for distribution.
+    """Place an array onto a compute mesh with explicit sharding.
 
-    Args:
-        array (np.ndarray): The input array to be distributed.
-        compute_mesh (Mesh): The compute mesh that defines the layout of GPUs.
-        partition (P): The partition configuration for distributing the array.
+    Parameters
+    ----------
+    array : jax.Array
+        Input array already shaped consistently with ``partition``.
+    compute_mesh : Mesh
+        Device mesh defining the target sharding.
+    partition : PartitionSpec
+        Partition specification for the output array.
 
-    Returns:
-        jnp.ndarray: A Jax array distributed across multiple GPUs.
+    Returns
+    -------
+    jax.Array
+        Array materialized on ``compute_mesh`` with the requested sharding.
     """
     sharding = NamedSharding(compute_mesh, partition)
     array_parts_device = [jax.device_put(array[i], device=d) for d, i in
@@ -221,15 +236,44 @@ def distribute_array_on_gpus(array: Array, compute_mesh: Mesh, partition: P) -> 
 
 
 def is_float0_array(x):
-    """Return whether ``x`` is JAX's float0 cotangent sentinel."""
+    """Return whether ``x`` is JAX's ``float0`` cotangent sentinel.
+
+    Parameters
+    ----------
+    x : Any
+        Candidate object to test.
+
+    Returns
+    -------
+    bool
+        True when ``x`` is a JAX ``float0`` array.
+    """
     return hasattr(x, 'dtype') and x.dtype == float0
 
 
 def pmid_to_idx(pmid, conf, unused_index=None, dtype=jnp.int32):
     """Pack mesh-index triplets into the legacy flat particle key when required.
 
-    This intentionally defaults to ``int32`` to match the removed ``Particles.idx``
-    field exactly. Larger dtypes can still be requested explicitly by callers.
+    Parameters
+    ----------
+    pmid : ArrayLike
+        Mesh-index triplets for each particle slot.
+    conf : Configuration
+        Active simulation configuration.
+    unused_index : ArrayLike or None, optional
+        Optional boolean padding mask. Masked entries are set to ``-1``.
+    dtype : DTypeLike, optional
+        Integer dtype for the packed key.
+
+    Returns
+    -------
+    jax.Array
+        Flat particle keys matching the removed legacy ``Particles.idx``
+        convention.
+
+    Notes
+    -----
+    The default ``int32`` matches the removed ``Particles.idx`` field exactly.
     """
     mesh_shape = jnp.array(conf.mesh_shape, dtype=dtype)
     ix = (pmid[:, 0].astype(dtype)) % mesh_shape[0]
@@ -245,10 +289,17 @@ def pmid_to_idx(pmid, conf, unused_index=None, dtype=jnp.int32):
 
 
 def build_ring_permutations(num_devices):
-    """
-    Build two permutation lists for ppermute in a 1D ring topology:
-      - left_perm:  (i -> i-1 mod N)
-      - right_perm: (i -> i+1 mod N)
+    """Build left/right ring permutations for ``lax.ppermute``.
+
+    Parameters
+    ----------
+    num_devices : int
+        Number of devices in the one-dimensional slab decomposition.
+
+    Returns
+    -------
+    tuple
+        ``(left_perm, right_perm)`` permutations for neighbor exchange.
     """
     left_perm = tuple((i, (i - 1) % num_devices) for i in range(num_devices))
     right_perm = tuple((i, (i + 1) % num_devices) for i in range(num_devices))
@@ -256,16 +307,21 @@ def build_ring_permutations(num_devices):
 
 
 def measure_execution_time(func, repetitions=5, number: int = 5):
-    """
-    Measure the execution time of a function and compute the average and standard deviation.
+    """Measure wall-clock execution time for a callable.
 
-    Parameters:
-        func (callable): The JAX function to execute and block until ready.
-        repetitions (int): Number of times to repeat the measurement (default 5).
-        number (int): Number of iterations per measurement (default 5).
+    Parameters
+    ----------
+    func : callable
+        Callable to execute and block until ready.
+    repetitions : int, optional
+        Number of repeated timing groups.
+    number : int, optional
+        Calls per timing group.
 
-    Returns:
-        tuple: (average_time, std_dev_time) in seconds.
+    Returns
+    -------
+    tuple[float, float]
+        Mean and standard deviation of the per-call execution time in seconds.
     """
     # Wrap the JAX function to ensure it blocks until computations are done
     timer = timeit.Timer(lambda: jax.block_until_ready(func()))
@@ -281,22 +337,21 @@ def measure_execution_time(func, repetitions=5, number: int = 5):
 
 
 def get_a_schedule(target_z, conf):
-    """
-    Calculates a schedule of ascending scale factors based on given target redshifts and configuration parameters.
+    """Build a scale-factor schedule that includes requested output redshifts.
 
-    This function generates an optimized schedule of scale factors through interpolation
-    and inclusion of necessary intermediary values to ensure spacing thresholds are respected.
-    It also incorporates additional predefined configurations into the schedule. The resulting
-    schedule satisfies specific numerical needs for an astrophysical simulation.
+    Parameters
+    ----------
+    target_z : array-like
+        Redshifts that must appear in the schedule.
+    conf : Configuration
+        Configuration providing the default N-body schedule and step-size limit.
 
-    :param target_z: The array of target redshift values to use in the calculation.
-    :type target_z: jnp.ndarray
-    :param conf: Configuration object containing attributes that specify simulation parameters,
-        such as `a_nbody_maxstep` and `a_nbody`.
-    :type conf: Any
-    :return: An array of scale factor values in ascending order computed from given redshifts,
-        accounting for intermediary redshift values (if necessary).
-    :rtype: jnp.ndarray
+    Returns
+    -------
+    jax.Array
+        Scale-factor schedule containing the requested outputs plus any
+        interpolated intermediate steps needed to respect
+        ``conf.a_nbody_maxstep``.
     """
     spacing_threshold = conf.a_nbody_maxstep  # in scale_factor
 
@@ -365,21 +420,23 @@ def get_a_schedule(target_z, conf):
 
 @partial(jax.jit, static_argnames=['max_slice_len', 'axis'])
 def wraparound_slice(array, start, stop, max_slice_len, axis=0):
-    """
-    Performs a jittable, padded wraparound slice on a JAX array.
+    """Take a periodic slice with fixed output shape for JIT compatibility.
 
-    This function always returns an array of size `max_slice_len`.
+    Parameters
+    ----------
+    array : jax.Array
+        Input array.
+    start, stop : int
+        Slice bounds in periodic index space.
+    max_slice_len : int
+        Static maximum output length.
+    axis : int, optional
+        Axis along which to slice.
 
-    Args:
-      array: The input array.
-      start: The starting index of the slice (can be a JAX tracer).
-      stop: The stopping index of the slice (can be a JAX tracer).
-      max_slice_len: The maximum possible length of any slice.
-                     This MUST be a static, compile-time constant.
-      axis: The axis along which to slice.
-
-    Returns:
-      The sliced portion of the array, padded with zeros to `max_slice_len`.
+    Returns
+    -------
+    jax.Array
+        Wrapped slice padded with zeros to ``max_slice_len``.
     """
     # Determine the size of the dimension being sliced
     n = array.shape[axis]

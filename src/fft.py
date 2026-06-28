@@ -45,8 +45,7 @@ def fftfreq(shape, spacing, dtype=jnp.float64, sparse=True):
 
 
 def fftfwd(f, shape=None, axes=None, norm=None):
-    r"""Forward FFT from real to Hermitian complex fields, wrapping
-    ``jax.numpy.fft.rfftn``.
+    r"""Forward FFT from a real field to Hermitian Fourier coefficients.
 
     Parameters
     ----------
@@ -57,13 +56,14 @@ def fftfwd(f, shape=None, axes=None, norm=None):
     axes : sequence of int, optional
         See ``numpy.fft.rfftn``.
     norm : float or {'backward', 'ortho', 'forward'}, optional
-        Grid spacing for normalization if float, otherwise passed to
-        ``jax.numpy.fft.rfftn``.
+        If a float, interpret it as a grid spacing and apply the corresponding
+        physical-volume normalization. Otherwise pass the value through to
+        ``jax.numpy.fft.rfftn`` unchanged.
 
     Returns
     -------
     f : jax.Array
-        Output field. See ``out`` in ``numpy.fft.rfftn``.
+        Output Hermitian Fourier coefficients.
 
     Raises
     ------
@@ -79,8 +79,8 @@ def fftfwd(f, shape=None, axes=None, norm=None):
         f(\bm{k}) = \int \mathrm{d}\bm{x} f(\bm(x}) e^{-i \bm{k} \cdot \bm{x}}
                     \approx \frac{V}{N} \sum_\bm{x} f(\bm{x}) e^{-i \bm{k} \cdot \bm{x}}
 
-    where :math:`V/N` is the cell volume, :math:`V` is the box volume, :math:`N` is the
-    number of grid points/cells to be summed over.
+    where :math:`V/N` is the cell volume, :math:`V` is the box volume, and
+    :math:`N` is the number of grid points summed over.
 
     """
     f = jnp.asarray(f)
@@ -101,8 +101,7 @@ def fftfwd(f, shape=None, axes=None, norm=None):
 
 
 def fftinv(f, shape=None, axes=None, norm=None):
-    r"""Inverse FFT from Hermitian completx to real fields, wrapping
-    ``jax.numpy.fft.irfftn``.
+    r"""Inverse FFT from Hermitian Fourier coefficients to a real field.
 
     Parameters
     ----------
@@ -113,13 +112,14 @@ def fftinv(f, shape=None, axes=None, norm=None):
     axes : sequence of int, optional
         See ``numpy.fft.irfftn``.
     norm : float or {'backward', 'ortho', 'forward'}, optional
-        Grid spacing for normalization if float, otherwise passed to
-        ``jax.numpy.fft.irfftn``.
+        If a float, interpret it as a grid spacing and apply the inverse
+        physical-volume normalization. Otherwise pass the value through to
+        ``jax.numpy.fft.irfftn`` unchanged.
 
     Returns
     -------
     f : jax.Array
-        Output field. See ``out`` in ``numpy.fft.irfftn``.
+        Output real-space field.
 
     Raises
     ------

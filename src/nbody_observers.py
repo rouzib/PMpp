@@ -16,7 +16,20 @@ from .utils import wraparound_slice
 
 
 def density_projection_observer(axis: int, normalize: bool = False):
-    """Build a JAX-friendly observer that returns a projected density image per step."""
+    """Build an observer that returns a projected density image per step.
+
+    Parameters
+    ----------
+    axis : int
+        Spatial axis to sum over after scattering particles to the mesh.
+    normalize : bool, optional
+        Whether to divide each projection by its mean value.
+
+    Returns
+    -------
+    callable
+        Observer function with signature ``(a, ptcl, cosmo, conf) -> image``.
+    """
 
     def observer(a, ptcl, cosmo, conf):
         del a, cosmo
@@ -30,7 +43,26 @@ def density_projection_observer(axis: int, normalize: bool = False):
 
 
 def nbody_kappa(ptcl, cosmo, conf, reverse: bool = False):
-    """Legacy saved-map path implemented on top of the generic collector API."""
+    """Legacy saved-map path implemented on top of the generic collector API.
+
+    Parameters
+    ----------
+    ptcl : Particles
+        Initial particle state.
+    cosmo : Cosmology
+        Cosmology used for the forward solve.
+    conf : Configuration
+        Active simulation configuration. ``to_save_a`` and related save fields
+        control whether maps are recorded.
+    reverse : bool, optional
+        Whether to integrate in reverse scale-factor order.
+
+    Returns
+    -------
+    Particles or jax.Array
+        If ``conf.to_save_a`` is ``None``, returns the final particle state via
+        :func:`src.nbody.nbody`. Otherwise returns the stacked saved maps.
+    """
     if conf.to_save_a is None:
         return nbody(ptcl, cosmo, conf, reverse=reverse)
 

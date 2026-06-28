@@ -26,6 +26,14 @@ from .utils import build_particle_nyquist_filter, pytree_dataclass
 class Configuration:
     """Configuration parameters, "immutable" as a frozen dataclass.
 
+    This is the main user-facing PM++ configuration object. It combines the
+    physical box and grid definition, precision choices, transfer/growth/LPT
+    controls, N-body schedule controls, save-related settings, and the knobs
+    that seed the multi-GPU runtime. During initialization it also derives
+    cached spectral arrays and, when a compute mesh is present, builds the
+    distributed runtime that is later exposed through forwarded attributes such
+    as ``mGPU_scatter`` and ``mGPU_rfftn_transposed``.
+
     Parameters
     ----------
     ptcl_spacing : float
@@ -37,12 +45,26 @@ class Configuration:
         ratio, to determine the mesh shape from that of the particle grid. The mesh grid
         cannot be smaller than the particle grid (int or float values must not be
         smaller than 1) and the two grids must have the same aspect ratio.
+    compute_mesh : jax.sharding.Mesh, optional
+        Legacy top-level way to enable multi-GPU execution. New code should
+        prefer ``multigpu=MultiGPUConfiguration(...)`` and keep this as a
+        compatibility fallback.
+    multigpu_mode : {"mesh_halo", "particle_halo"}, optional
+        Legacy top-level multi-GPU mode selector. ``"mesh_halo"`` is the
+        preferred current path; ``"particle_halo"`` remains available for
+        legacy validation and comparison.
+    multigpu : MultiGPUConfiguration, optional
+        Nested multi-GPU runtime seed. In normal user code this is typically
+        just ``MultiGPUConfiguration(compute_mesh=..., mode="mesh_halo")``.
     cosmo_dtype : DTypeLike, optional
         Float dtype for Cosmology and Configuration.
     pmid_dtype : DTypeLike, optional
         Signed integer dtype for particle or mesh grid indices.
     float_dtype : DTypeLike, optional
         Float dtype for other particle and mesh quantities.
+    corrected_force_batched_fft : bool, optional
+        Prefer the batched distributed inverse FFT helper in corrected-force
+        gravity paths when one is available.
     k_pivot_Mpc : float, optional
         Primordial scalar power spectrum pivot scale in 1/Mpc.
     T_cmb : float, optional
@@ -83,6 +105,25 @@ class Configuration:
         ``dim - 1`` redundant 3D irfftn calls per ``_L`` evaluation at the cost of keeping
         ``dim`` extra strain arrays (each of shape ``ptcl_grid_shape``) alive simultaneously
         on the GPU. Set to False to trade compute for memory when GPU memory is tight.
+    nbody_cosmo_grad : bool, optional
+        Whether the hand-written N-body adjoint computes cosmology parameter
+        cotangents. Keep True for full scientific gradients; set False for
+        displacement-only gradients to skip unused adjoint work.
+    replicated_mesh : bool, optional
+        Experimental multi-GPU path that keeps particles on their initial
+        authoritative shard and computes force/scatter on a replicated full
+        mesh. This trades full-mesh communication and replicated FFT memory for
+        removing per-step particle migration. It can help at smaller problem
+        sizes but was not kept as the preferred ``256^3`` path.
+    static_mesh_halo_width : int, optional
+        Experimental multi-GPU path that keeps particles on their initial
+        authoritative shard and uses a wider mesh halo for scatter/gather
+        instead of migrating particles after drifts. Zero disables it. Positive
+        values must be large enough for the actual particle displacement
+        envelope and no larger than the local x-slab width.
+    particle_halo_gather_mesh_halo : bool, optional
+        Experimental gather variant for ``particle_halo`` mode that exchanges
+        mesh-edge slabs instead of gathered particle values.
     a_start : float, optional
         LPT scale factor and N-body starting time.
     a_stop : float, optional
@@ -100,6 +141,26 @@ class Configuration:
         i.e., kick and then drift. Default is the Newton-Störmer-Verlet-leapfrog method.
     chunk_size : int, optional
         Chunk size to split particles in batches in scatter and gather to save memory.
+    a_custom, growth_a_custom : sequence of float, optional
+        Explicit scale-factor grids for N-body and growth-function tabulation.
+    to_save_z, to_save_a, slice_to_save, max_slice_width : optional
+        Save-related controls used by forward observer and legacy map-output
+        utilities.
+    max_ptcl_per_slice, max_share_ptcl, max_halo_share_ptcl, max_share_gather_ptcl : optional
+        Static-capacity buffers for multi-GPU runs. These are correctness
+        constraints, not harmless performance hints.
+
+    Notes
+    -----
+    ``mesh_halo`` is the preferred current multi-GPU mode. ``particle_halo``
+    remains available for comparison and regression testing.
+
+    The most important multi-GPU capacity knobs are:
+
+    - ``max_ptcl_per_slice``: total particle storage per device.
+    - ``max_share_ptcl``: particle-migration buffer.
+    - ``max_halo_share_ptcl``: canonical halo-copy rebuild buffer.
+    - ``max_share_gather_ptcl``: gather exchange buffer.
     Raises
     ------
     ValueError
@@ -122,6 +183,9 @@ class Configuration:
     pmid_dtype: DTypeLike = jnp.dtype(jnp.int16)
     float_dtype: DTypeLike = jnp.dtype(jnp.float32)
     corrected_force_batched_fft: bool = False
+    nbody_cosmo_grad: bool = True
+    replicated_mesh: bool = False
+    static_mesh_halo_width: int = 0
     particle_halo_gather_mesh_halo: bool = False
 
     k_pivot_Mpc: float = 0.05
@@ -159,6 +223,7 @@ class Configuration:
     a_lpt_maxstep: float = 1 / 128
     a_nbody_maxstep: float = 1 / 64
     a_custom: Optional[List[float]] = None
+    growth_a_custom: Optional[List[float]] = None
 
     symp_splits: Tuple[Tuple[float, float], ...] = ((0, 0.5), (1, 0.5))
 
@@ -200,8 +265,16 @@ class Configuration:
         if not jnp.issubdtype(self.float_dtype, jnp.floating):
             raise ValueError('float_dtype must be floating point numbers')
 
-        if self.a_custom is not None:
-            object.__setattr__(self, 'a_custom', jnp.array(self.a_custom))
+        if self.a_custom is not None and not isinstance(self.a_custom, tuple):
+            with jax.ensure_compile_time_eval():
+                object.__setattr__(self, 'a_custom', tuple(float(a) for a in np.asarray(self.a_custom).tolist()))
+        if self.growth_a_custom is not None and not isinstance(self.growth_a_custom, tuple):
+            with jax.ensure_compile_time_eval():
+                object.__setattr__(
+                    self,
+                    'growth_a_custom',
+                    tuple(float(a) for a in np.asarray(self.growth_a_custom).tolist()),
+                )
 
         # ~ 1.5e-8 for float64, 3.5e-4 for float32
         growth_tol = math.sqrt(jnp.finfo(self.cosmo_dtype).eps)
@@ -258,6 +331,8 @@ class Configuration:
                 object.__setattr__(self, "max_share_gather_ptcl", runtime.max_share_gather_ptcl)
                 object.__setattr__(self, "multigpu", initialize_multigpu_runtime(self, runtime))
 
+        self._initialize_spectral_operators()
+
         # finalize
         dtype = self.cosmo_dtype
         for name, value in self.named_children():
@@ -265,6 +340,7 @@ class Configuration:
             object.__setattr__(self, name, value)
 
     def _build_multigpu_seed(self):
+        """Resolve legacy and nested multi-GPU inputs into one runtime seed."""
         runtime_seed = self.multigpu
         if runtime_seed is None:
             if self.compute_mesh is None:
@@ -280,8 +356,22 @@ class Configuration:
             runtime_seed = runtime_seed.replace(mode=self.multigpu_mode)
         return runtime_seed
 
+    def _initialize_spectral_operators(self):
+        """Cache small/static Fourier operators used by repeated force solves."""
+        neg_ik = tuple(self._build_neg_ik_component(k) for k in self.kvec)
+        object.__setattr__(self, "neg_ik", neg_ik)
+
+    def _build_neg_ik_component(self, k):
+        """Build one cached ``-i k`` factor with the Nyquist derivative zeroed."""
+        nyquist = jnp.asarray(jnp.pi / self.cell_size, dtype=self.float_dtype)
+        eps = nyquist * jnp.finfo(self.float_dtype).eps
+        zero = jnp.asarray(0, dtype=self.float_dtype)
+        neg_k = jnp.where(jnp.abs(jnp.abs(k) - nyquist) <= eps, zero, -k)
+        return (1j * neg_k).astype(jnp.result_type(self.float_dtype, jnp.complex64))
+
     @property
     def use_mGPU(self):
+        """Whether this configuration has an initialized multi-GPU runtime."""
         return self.multigpu is not None
 
     _MULTIGPU_FORWARD = {
@@ -304,6 +394,7 @@ class Configuration:
         "left_perm": "left_perm",
         "right_perm": "right_perm",
         "mGPU_halo_moving": "halo_moving",
+        "mGPU_halo_moving_no_acc": "halo_moving_no_acc",
         "mGPU_reconstruct_pre_drift": "reconstruct_pre_drift",
         "mGPU_reconstruct_pre_drift_pullback": "reconstruct_pre_drift_pullback",
         "mGPU_halo_move_pullback": "halo_move_pullback",
@@ -318,6 +409,7 @@ class Configuration:
     }
 
     def __getattr__(self, name):
+        """Forward selected distributed-runtime attributes from ``self.multigpu``."""
         runtime_name = self._MULTIGPU_FORWARD.get(name)
         if runtime_name is None:
             raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
@@ -367,7 +459,7 @@ class Configuration:
 
     @property
     def disp_size(self):
-        """Displacement size in [L]"""
+        """Inverse mesh-cell size used to convert displacements into cell units."""
         return 1 / self.cell_size
 
     @property
@@ -377,7 +469,7 @@ class Configuration:
 
     @property
     def local_mesh_size(self):
-        """Number of mesh grid points."""
+        """Number of mesh grid points owned by one device."""
         return math.prod(self.local_mesh_shape)
 
     @property
@@ -454,17 +546,20 @@ class Configuration:
     def a_nbody(self):
         """N-body time integration scale factor steps, including ``a_start``, of ``cosmo_dtype``."""
         if self.a_custom is not None:
-            return self.a_custom
+            return jnp.array(self.a_custom, dtype=self.cosmo_dtype)
         return jnp.linspace(self.a_start, self.a_stop, num=1 + self.a_nbody_num,
                             dtype=self.cosmo_dtype)
 
     @property
     def growth_a(self):
         """Growth function scale factors, for both LPT and N-body, of ``cosmo_dtype``."""
+        if self.growth_a_custom is not None:
+            return jnp.array(self.growth_a_custom, dtype=self.cosmo_dtype)
         return jnp.concatenate((self.a_lpt, self.a_nbody[1:]))
 
     @property
     def var_tophat(self):
+        """Top-hat variance helper built on the transfer-function k grid."""
         with jax.ensure_compile_time_eval():
             return TophatVar(self.transfer_k[1:], lowring=True, backend='jax')
 

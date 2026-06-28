@@ -14,7 +14,27 @@ from .utils import AXIS_NAME, raise_error
 
 
 def reduce_grad_across_gpus(disp_cot, pmid, disp, valid_mask, conf):
-    """Sum gradients for halo-duplicated particles across neighboring GPUs only."""
+    """Sum gradients for halo-duplicated particles across neighboring GPUs only.
+
+    Parameters
+    ----------
+    disp_cot : jax.Array
+        Displacement cotangent per local slot.
+    pmid : jax.Array
+        Integer particle-grid ids for the local slots.
+    disp : jax.Array
+        Particle displacements for the local slots.
+    valid_mask : jax.Array
+        Boolean mask selecting active, non-padding slots.
+    conf : Configuration
+        Active simulation configuration.
+
+    Returns
+    -------
+    jax.Array
+        Cotangent field with neighboring halo duplicates accumulated onto the
+        local authoritative slots.
+    """
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     halo_start = conf.halo_start[gpu_id]
     halo_end = conf.halo_end[gpu_id]
@@ -101,7 +121,33 @@ def reduce_grad_across_gpus(disp_cot, pmid, disp, valid_mask, conf):
 
 
 def initialize_mGPU_scatter(conf):
-    """Create the sharded scatter entry point for the configured multi-GPU mode."""
+    """Create the sharded scatter entry point for the configured multi-GPU mode.
+
+    Parameters
+    ----------
+    conf : Configuration
+        Configuration whose multi-GPU mode and mesh determine the wrapper.
+
+    Returns
+    -------
+    callable
+        Scatter callable specialized to the active multi-GPU path.
+    """
+    if conf.replicated_mesh:
+        return shard_map(
+            _scatter_mGPU_replicated,
+            mesh=conf.compute_mesh,
+            in_specs=(
+                P(AXIS_NAME, None),  # pmid
+                P(AXIS_NAME, None),  # disp
+                None,  # conf
+                None,  # mesh, ignored in replicated mode
+                P(AXIS_NAME),  # val
+                None,  # cell_size
+            ),
+            out_specs=P(None, None, None),
+            check_rep=False,
+        )
     if conf.multigpu_mode == "mesh_halo":
         return shard_map(
             _scatter_mGPU_mesh_halo,
@@ -131,6 +177,14 @@ def initialize_mGPU_scatter(conf):
         out_specs=(P(AXIS_NAME, None, None)),
         check_rep=False
     )
+
+
+def _scatter_mGPU_replicated(pmid, disp, conf, mesh, val, cell_size):
+    """Scatter local particle shards to a replicated full mesh with psum reduction."""
+    del mesh
+    local_mesh = jnp.zeros(conf.mesh_shape + val.shape[1:], dtype=conf.float_dtype)
+    local_density = _scatter(pmid, disp, conf, local_mesh, val, 0, cell_size)
+    return jax.lax.psum(local_density, AXIS_NAME)
 
 
 def _scatter_mGPU_mesh_halo(pmid, disp, conf, mesh, val, cell_size):

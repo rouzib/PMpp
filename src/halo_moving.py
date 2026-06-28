@@ -26,7 +26,20 @@ from .utils import AXIS_NAME, pmid_to_idx, raise_error
 
 @jax.jit
 def particles_in_slice_mask(x_mod, slice_start, slice_end):
-    """Return the wrapped x-slab membership mask for particle positions."""
+    """Return the wrapped x-slab membership mask for particle positions.
+
+    Parameters
+    ----------
+    x_mod : jax.Array
+        Particle x positions in wrapped mesh-cell units.
+    slice_start, slice_end : int or jax.Array
+        Inclusive/exclusive slab bounds in wrapped mesh-cell units.
+
+    Returns
+    -------
+    jax.Array
+        Boolean mask selecting particles inside the slab.
+    """
     within_slice = (x_mod >= slice_start) & (x_mod < slice_end)
     across_boundary = (x_mod >= slice_start) | (x_mod < slice_end)
     return jnp.where(slice_start > slice_end, across_boundary, within_slice)
@@ -34,7 +47,22 @@ def particles_in_slice_mask(x_mod, slice_start, slice_end):
 
 @jax.jit
 def compute_halo_mask(x_mod, halo_start, halo_end, unused_indexes):
-    """Return the mask of duplicated halo particles for the current slab."""
+    """Return the mask of duplicated halo particles for the current slab.
+
+    Parameters
+    ----------
+    x_mod : jax.Array
+        Particle x positions in wrapped mesh-cell units.
+    halo_start, halo_end : jax.Array
+        Left and right halo-band bounds for the current slab.
+    unused_indexes : jax.Array
+        Boolean padding mask.
+
+    Returns
+    -------
+    jax.Array
+        Boolean mask selecting active halo-duplicate slots.
+    """
 
     def slice_mask(start, end):
         within_range = (x_mod >= start) & (x_mod < end)
@@ -107,6 +135,16 @@ def _compact_sorted_particles(keys, pmid, disp, vel, acc, mask, capacity, key_fi
     return keys_compact, pmid_compact, disp_compact, vel_compact, acc_compact, valid
 
 
+def _compact_sorted_particles_no_acc(keys, pmid, disp, vel, mask, capacity, key_fill, error_message):
+    """Compact a sorted particle payload without carrying acceleration."""
+    compact_idx, valid = _compact_sorted_indices(mask, capacity, error_message)
+    keys_compact = _gather_compacted(keys, compact_idx, valid, key_fill)
+    pmid_compact = _gather_compacted(pmid, compact_idx, valid, 0)
+    disp_compact = _gather_compacted(disp, compact_idx, valid, 0)
+    vel_compact = _gather_compacted(vel, compact_idx, valid, 0)
+    return keys_compact, pmid_compact, disp_compact, vel_compact, valid
+
+
 def _compact_sorted_particles_with_slots(keys, pmid, disp, vel, acc, mask, capacity, key_fill, error_message):
     """Compact particles and remember their original source slots."""
     compact_idx, valid = _compact_sorted_indices(mask, capacity, error_message)
@@ -117,6 +155,59 @@ def _compact_sorted_particles_with_slots(keys, pmid, disp, vel, acc, mask, capac
     acc_compact = _gather_compacted(acc, compact_idx, valid, 0)
     slots = jnp.where(valid, compact_idx, jnp.asarray(-1, compact_idx.dtype))
     return keys_compact, pmid_compact, disp_compact, vel_compact, acc_compact, valid, slots
+
+
+def _sorted_merge_two_no_acc(
+    keys_a,
+    pmid_a,
+    disp_a,
+    vel_a,
+    valid_a,
+    keys_b,
+    pmid_b,
+    disp_b,
+    vel_b,
+    valid_b,
+    capacity,
+    key_fill,
+    error_message,
+):
+    """Merge two sorted fixed-capacity particle streams without acceleration."""
+    count_a = jnp.sum(valid_a)
+    count_b = jnp.sum(valid_b)
+    total = count_a + count_b
+    _capacity_check(total, capacity, error_message)
+    Na = keys_a.shape[0]
+    Nb = keys_b.shape[0]
+    keys_a_filled = jnp.where(valid_a, keys_a, key_fill)
+    keys_b_filled = jnp.where(valid_b, keys_b, key_fill)
+
+    pos_a = (
+        jnp.arange(Na, dtype=jnp.int32)
+        + jnp.searchsorted(keys_b_filled, keys_a_filled, side='left').astype(jnp.int32)
+    )
+    pos_b = (
+        jnp.arange(Nb, dtype=jnp.int32)
+        + jnp.searchsorted(keys_a_filled, keys_b_filled, side='right').astype(jnp.int32)
+    )
+
+    out_keys = jnp.full(capacity, key_fill, dtype=keys_a.dtype)
+    out_pmid = jnp.zeros((capacity,) + pmid_a.shape[1:], dtype=pmid_a.dtype)
+    out_disp = jnp.zeros((capacity,) + disp_a.shape[1:], dtype=disp_a.dtype)
+    out_vel = jnp.zeros((capacity,) + vel_a.shape[1:], dtype=vel_a.dtype)
+
+    out_keys = out_keys.at[pos_a].set(keys_a_filled, mode='drop').at[pos_b].set(keys_b_filled, mode='drop')
+    out_pmid = out_pmid.at[pos_a].set(pmid_a, mode='drop').at[pos_b].set(pmid_b, mode='drop')
+    out_disp = out_disp.at[pos_a].set(disp_a, mode='drop').at[pos_b].set(disp_b, mode='drop')
+    out_vel = out_vel.at[pos_a].set(vel_a, mode='drop').at[pos_b].set(vel_b, mode='drop')
+
+    out_valid = jnp.arange(capacity) < total
+    out_keys = jnp.where(out_valid, out_keys, key_fill)
+    valid_shape = (out_valid.shape[0],) + (1,) * (out_pmid.ndim - 1)
+    out_pmid = jnp.where(out_valid.reshape(valid_shape), out_pmid, jnp.zeros_like(out_pmid))
+    out_disp = jnp.where(out_valid.reshape(valid_shape), out_disp, jnp.zeros_like(out_disp))
+    out_vel = jnp.where(out_valid.reshape(valid_shape), out_vel, jnp.zeros_like(out_vel))
+    return out_keys, out_pmid, out_disp, out_vel, out_valid
 
 
 def _sorted_merge_two(
@@ -330,6 +421,79 @@ def _sorted_merge_three(
     return out_keys, out_pmid, out_disp, out_vel, out_acc, out_valid
 
 
+def _sorted_merge_three_no_acc(
+    keys_a,
+    pmid_a,
+    disp_a,
+    vel_a,
+    valid_a,
+    keys_b,
+    pmid_b,
+    disp_b,
+    vel_b,
+    valid_b,
+    keys_c,
+    pmid_c,
+    disp_c,
+    vel_c,
+    valid_c,
+    capacity,
+    key_fill,
+    error_message,
+):
+    """Merge three sorted fixed-capacity particle streams without acceleration."""
+    count_a = jnp.sum(valid_a)
+    count_b = jnp.sum(valid_b)
+    count_c = jnp.sum(valid_c)
+    total = count_a + count_b + count_c
+    _capacity_check(total, capacity, error_message)
+    Na = keys_a.shape[0]
+    Nb = keys_b.shape[0]
+    Nc = keys_c.shape[0]
+    keys_a_filled = jnp.where(valid_a, keys_a, key_fill)
+    keys_b_filled = jnp.where(valid_b, keys_b, key_fill)
+    keys_c_filled = jnp.where(valid_c, keys_c, key_fill)
+
+    pos_a = (
+        jnp.arange(Na, dtype=jnp.int32)
+        + jnp.searchsorted(keys_b_filled, keys_a_filled, side='left').astype(jnp.int32)
+        + jnp.searchsorted(keys_c_filled, keys_a_filled, side='left').astype(jnp.int32)
+    )
+    pos_b = (
+        jnp.arange(Nb, dtype=jnp.int32)
+        + jnp.searchsorted(keys_a_filled, keys_b_filled, side='right').astype(jnp.int32)
+        + jnp.searchsorted(keys_c_filled, keys_b_filled, side='left').astype(jnp.int32)
+    )
+    pos_c = (
+        jnp.arange(Nc, dtype=jnp.int32)
+        + jnp.searchsorted(keys_a_filled, keys_c_filled, side='right').astype(jnp.int32)
+        + jnp.searchsorted(keys_b_filled, keys_c_filled, side='right').astype(jnp.int32)
+    )
+
+    out_keys = jnp.full(capacity, key_fill, dtype=keys_a.dtype)
+    out_pmid = jnp.zeros((capacity,) + pmid_a.shape[1:], dtype=pmid_a.dtype)
+    out_disp = jnp.zeros((capacity,) + disp_a.shape[1:], dtype=disp_a.dtype)
+    out_vel = jnp.zeros((capacity,) + vel_a.shape[1:], dtype=vel_a.dtype)
+
+    out_keys = (
+        out_keys
+        .at[pos_a].set(keys_a_filled, mode='drop')
+        .at[pos_b].set(keys_b_filled, mode='drop')
+        .at[pos_c].set(keys_c_filled, mode='drop')
+    )
+    out_pmid = out_pmid.at[pos_a].set(pmid_a, mode='drop').at[pos_b].set(pmid_b, mode='drop').at[pos_c].set(pmid_c, mode='drop')
+    out_disp = out_disp.at[pos_a].set(disp_a, mode='drop').at[pos_b].set(disp_b, mode='drop').at[pos_c].set(disp_c, mode='drop')
+    out_vel = out_vel.at[pos_a].set(vel_a, mode='drop').at[pos_b].set(vel_b, mode='drop').at[pos_c].set(vel_c, mode='drop')
+
+    out_valid = jnp.arange(capacity) < total
+    out_keys = jnp.where(out_valid, out_keys, key_fill)
+    valid_shape = (out_valid.shape[0],) + (1,) * (out_pmid.ndim - 1)
+    out_pmid = jnp.where(out_valid.reshape(valid_shape), out_pmid, jnp.zeros_like(out_pmid))
+    out_disp = jnp.where(out_valid.reshape(valid_shape), out_disp, jnp.zeros_like(out_disp))
+    out_vel = jnp.where(out_valid.reshape(valid_shape), out_vel, jnp.zeros_like(out_vel))
+    return out_keys, out_pmid, out_disp, out_vel, out_valid
+
+
 def _pack_left_halo_and_authoritative(
     left_keys,
     left_pmid,
@@ -436,6 +600,50 @@ def _pack_authoritative_only(
     return pmid, disp, vel, acc, halo_mask, unused_index
 
 
+def _pack_authoritative_only_no_acc(
+    auth_pmid,
+    auth_disp,
+    auth_vel,
+    auth_valid,
+    max_ptcl_per_slice,
+):
+    """Pack an authoritative mesh-halo block while dropping acceleration payload."""
+    auth_count = jnp.sum(auth_valid)
+    _capacity_check(
+        auth_count,
+        max_ptcl_per_slice,
+        "[ERROR] Exceeded authoritative-only storage capacity. "
+        "required_slots={x}, max_ptcl_per_slice={y}.",
+    )
+
+    if auth_pmid.shape[0] == max_ptcl_per_slice:
+        def _mask_unused(values):
+            valid_shape = (auth_valid.shape[0],) + (1,) * (values.ndim - 1)
+            return jnp.where(auth_valid.reshape(valid_shape), values, jnp.zeros_like(values))
+
+        pmid = _mask_unused(auth_pmid)
+        disp = _mask_unused(auth_disp)
+        vel = _mask_unused(auth_vel)
+        unused_index = ~auth_valid
+        halo_mask = jnp.zeros_like(unused_index)
+        return pmid, disp, vel, halo_mask, unused_index
+
+    pmid = jnp.zeros((max_ptcl_per_slice, auth_pmid.shape[1]), dtype=auth_pmid.dtype)
+    disp = jnp.zeros((max_ptcl_per_slice, auth_disp.shape[1]), dtype=auth_disp.dtype)
+    vel = jnp.zeros((max_ptcl_per_slice, auth_vel.shape[1]), dtype=auth_vel.dtype)
+    slots = jnp.arange(max_ptcl_per_slice, dtype=jnp.int32)
+    auth_mask = slots < auth_count
+    auth_idx = jnp.minimum(slots, auth_pmid.shape[0] - 1)
+
+    pmid = jnp.where(auth_mask[:, None], auth_pmid[auth_idx], pmid)
+    disp = jnp.where(auth_mask[:, None], auth_disp[auth_idx], disp)
+    vel = jnp.where(auth_mask[:, None], auth_vel[auth_idx], vel)
+
+    unused_index = slots >= auth_count
+    halo_mask = jnp.zeros_like(unused_index)
+    return pmid, disp, vel, halo_mask, unused_index
+
+
 def _authoritative_prefix_from_owned_only(
     pmid,
     disp,
@@ -449,6 +657,20 @@ def _authoritative_prefix_from_owned_only(
     keys = pmid_to_idx(pmid, conf)
     keys = jnp.where(valid, keys, _key_fill_value(conf))
     return keys, pmid, disp, vel, acc, valid
+
+
+def _authoritative_prefix_from_owned_only_no_acc(
+    pmid,
+    disp,
+    vel,
+    unused_index,
+    conf,
+):
+    """Treat a mesh-halo packed state as an authoritative prefix without acceleration."""
+    valid = ~unused_index
+    keys = pmid_to_idx(pmid, conf)
+    keys = jnp.where(valid, keys, _key_fill_value(conf))
+    return keys, pmid, disp, vel, valid
 
 
 def _reverse_build_owned_only_cot(full_cot, auth_size, auth_valid):
@@ -1405,6 +1627,88 @@ def _canonical_route_authoritative(
     return merged, max_particles_moved
 
 
+def _canonical_route_authoritative_no_acc(
+    keys,
+    pmid,
+    disp,
+    vel,
+    valid,
+    global_nMesh,
+    max_values_to_share,
+    left_perm,
+    right_perm,
+    num_gpus,
+    disp_size,
+    offsets,
+    conf,
+):
+    """Route authoritative particles to post-drift owner slabs without acceleration."""
+    owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
+    slice_width = global_nMesh // num_gpus
+    left_start = (owned_start - slice_width) % global_nMesh
+    right_end = (owned_end + slice_width) % global_nMesh
+
+    x_mod = _x_mod_from_disp(pmid, disp, global_nMesh, disp_size)
+    stay_mask = valid & particles_in_slice_mask(x_mod, owned_start, owned_end)
+    send_left_mask = valid & particles_in_slice_mask(x_mod, left_start, owned_start)
+    send_right_mask = valid & particles_in_slice_mask(x_mod, owned_end, right_end)
+    if num_gpus == 2:
+        send_right_mask = jnp.zeros_like(send_right_mask)
+    dropped_mask = valid & ~(stay_mask | send_left_mask | send_right_mask)
+
+    _ = jax.lax.cond(
+        jnp.any(dropped_mask),
+        lambda _: raise_error(
+            "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
+            "particles_outside_neighbor_range={x}.",
+            x=jnp.sum(dropped_mask),
+        ),
+        lambda _: None,
+        operand=None,
+    )
+
+    key_fill = _key_fill_value(conf)
+    stay = _compact_sorted_particles_no_acc(
+        keys, pmid, disp, vel, stay_mask, pmid.shape[0], key_fill,
+        "[ERROR] Exceeded stay-particle compact capacity. stay_particles={x}, capacity={y}.",
+    )
+    send_left = _compact_sorted_particles_no_acc(
+        keys, pmid, disp, vel, send_left_mask, max_values_to_share, key_fill,
+        "[ERROR] Exceeded left-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
+    )
+
+    if num_gpus == 2:
+        incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
+        merged = _sorted_merge_two_no_acc(
+            *stay,
+            *incoming_from_right,
+            pmid.shape[0],
+            key_fill,
+            "[ERROR] Exceeded canonical authoritative capacity after migration. "
+            "required_particles={x}, max_ptcl_per_slice={y}.",
+        )
+        max_particles_moved = jnp.sum(send_left[-1])
+    else:
+        send_right = _compact_sorted_particles_no_acc(
+            keys, pmid, disp, vel, send_right_mask, max_values_to_share, key_fill,
+            "[ERROR] Exceeded right-migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
+        )
+        incoming_from_left = jax.lax.ppermute(send_right, axis_name=AXIS_NAME, perm=right_perm)
+        incoming_from_right = jax.lax.ppermute(send_left, axis_name=AXIS_NAME, perm=left_perm)
+        merged = _sorted_merge_three_no_acc(
+            *stay,
+            *incoming_from_left,
+            *incoming_from_right,
+            pmid.shape[0],
+            key_fill,
+            "[ERROR] Exceeded canonical authoritative capacity after migration. "
+            "required_particles={x}, max_ptcl_per_slice={y}.",
+        )
+        max_particles_moved = jnp.maximum(jnp.sum(send_left[-1]), jnp.sum(send_right[-1]))
+
+    return merged, max_particles_moved
+
+
 def _canonical_route_authoritative_with_source_tags(
     keys,
     pmid,
@@ -1856,7 +2160,42 @@ def halo_move_pullback_from_prestate_shard_map(
     offsets,
     conf,
 ):
-    """Pull cotangents through a canonical ``particle_halo`` move."""
+    """Pull cotangents through a canonical ``particle_halo`` move.
+
+    Parameters
+    ----------
+    pmid, source_disp, carried_disp, vel, acc : jax.Array
+        Pre-move particle state. ``source_disp`` is the authoritative
+        pre-migration displacement while ``carried_disp`` is the transported
+        post-drift displacement used to rebuild the moved state.
+    halo_end : jax.Array
+        Upper halo bound for the current shard.
+    unused_indexes : jax.Array
+        Boolean mask marking inactive particle slots.
+    disp_cot, vel_cot, acc_cot : jax.Array
+        Cotangents with respect to the moved displacement, velocity, and
+        acceleration arrays.
+    global_nMesh : int
+        Global mesh resolution along the decomposed axis.
+    max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice : int
+        Static capacities for migration, halo rebuild, and per-slab storage.
+    left_perm, right_perm : tuple
+        ``ppermute`` routes describing left and right neighbor exchanges.
+    num_gpus : int
+        Number of shards participating in the move.
+    disp_size : float
+        Physical size of one mesh cell.
+    offsets : tuple[float, float]
+        Offsets used to sort wrapped coordinates deterministically.
+    conf : Configuration
+        Active runtime configuration.
+
+    Returns
+    -------
+    tuple[jax.Array, jax.Array, jax.Array]
+        Cotangents for the input displacement, velocity, and acceleration
+        buffers before the canonical halo move.
+    """
     # Reverse the canonical move in two logical stages:
     # 1. recover the authoritative sequence before the move,
     # 2. transpose the deterministic route/build back to the original slots.
@@ -1978,7 +2317,44 @@ def halo_move_pullback_mesh_halo_from_prestate_shard_map(
     offsets,
     conf,
 ):
-    """Pull cotangents through a ``mesh_halo`` authoritative-only move."""
+    """Pull cotangents through a ``mesh_halo`` authoritative-only move.
+
+    Parameters
+    ----------
+    pmid, source_disp, carried_disp, vel, acc : jax.Array
+        Pre-move authoritative particle state. ``source_disp`` is accepted for
+        API parity with the canonical variant but is not used by this
+        authoritative-only reconstruction.
+    halo_end : jax.Array
+        Unused placeholder kept for a shared call signature with the canonical
+        path.
+    unused_indexes : jax.Array
+        Boolean mask marking inactive authoritative slots.
+    disp_cot, vel_cot, acc_cot : jax.Array
+        Cotangents with respect to the moved displacement, velocity, and
+        acceleration buffers.
+    global_nMesh : int
+        Global mesh resolution along the decomposed axis.
+    max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice : int
+        Static capacities passed through the shared initialization path. Only
+        ``max_values_to_share`` is used directly here.
+    left_perm, right_perm : tuple
+        ``ppermute`` routes describing left and right neighbor exchanges.
+    num_gpus : int
+        Number of shards participating in the move.
+    disp_size : float
+        Physical size of one mesh cell.
+    offsets : tuple[float, float]
+        Offsets used to sort wrapped coordinates deterministically.
+    conf : Configuration
+        Active runtime configuration.
+
+    Returns
+    -------
+    tuple[jax.Array, jax.Array, jax.Array]
+        Cotangents for the input displacement, velocity, and acceleration
+        buffers before the mesh-halo move.
+    """
     del halo_end, max_halo_values_to_share, max_ptcl_per_slice
     (
         auth_keys,
@@ -2129,7 +2505,39 @@ def move_particles_canonical_shard_map(
     offsets,
     conf,
 ):
-    """Move particles across slabs and rebuild duplicated particle-halo storage."""
+    """Move particles across slabs and rebuild duplicated particle-halo storage.
+
+    Parameters
+    ----------
+    pmid, disp_before, disp_after, vel, acc : jax.Array
+        Canonical particle-halo storage before migration and the authoritative
+        displacement after the drift that may cross slab boundaries.
+    halo_start, halo_end : jax.Array
+        Halo interval for the local shard.
+    unused_indexes : jax.Array
+        Boolean mask marking inactive particle slots.
+    global_nMesh : int
+        Global mesh resolution along the decomposed axis.
+    max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice : int
+        Static capacities for migration buffers, duplicated halo rebuilds, and
+        final per-shard particle storage.
+    left_perm, right_perm : tuple
+        ``ppermute`` routes describing left and right neighbor exchanges.
+    num_gpus : int
+        Number of shards participating in the move.
+    disp_size : float
+        Physical size of one mesh cell.
+    offsets : tuple[float, float]
+        Offsets used to sort wrapped coordinates deterministically.
+    conf : Configuration
+        Active runtime configuration.
+
+    Returns
+    -------
+    tuple
+        Updated ``(pmid, disp, vel, acc, halo_mask, unused_indexes,
+        overflow_flag, max_particles_moved)`` for the next particle-halo step.
+    """
     # Forward halo move:
     # 1. drop duplicated storage and keep the authoritative slab only,
     # 2. reroute that slab based on post-drift positions,
@@ -2199,7 +2607,40 @@ def move_particles_mesh_halo_shard_map(
     offsets,
     conf,
 ):
-    """Move particles across slabs while storing only authoritative particles."""
+    """Move particles across slabs while storing only authoritative particles.
+
+    Parameters
+    ----------
+    pmid, disp_before, disp_after, vel, acc : jax.Array
+        Authoritative-only mesh-halo particle state before migration and the
+        post-drift displacement used to determine new ownership.
+    halo_start, halo_end : jax.Array
+        Unused placeholders retained for signature compatibility with the
+        canonical mover.
+    unused_indexes : jax.Array
+        Boolean mask marking inactive particle slots.
+    global_nMesh : int
+        Global mesh resolution along the decomposed axis.
+    max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice : int
+        Static capacities for migration buffers and authoritative per-shard
+        storage. ``max_halo_values_to_share`` is unused in this mode.
+    left_perm, right_perm : tuple
+        ``ppermute`` routes describing left and right neighbor exchanges.
+    num_gpus : int
+        Number of shards participating in the move.
+    disp_size : float
+        Physical size of one mesh cell.
+    offsets : tuple[float, float]
+        Offsets used to sort wrapped coordinates deterministically.
+    conf : Configuration
+        Active runtime configuration.
+
+    Returns
+    -------
+    tuple
+        Updated ``(pmid, disp, vel, acc, halo_mask, unused_indexes,
+        overflow_flag, max_particles_moved)`` for the next mesh-halo step.
+    """
     del disp_before, halo_start, halo_end, max_halo_values_to_share
     auth = _authoritative_prefix_from_owned_only(
         pmid,
@@ -2233,6 +2674,94 @@ def move_particles_mesh_halo_shard_map(
     return pmid, disp, vel, acc, halo_mask, unused_indexes, jnp.bool_(False), max_particles_moved
 
 
+def move_particles_mesh_halo_no_acc_shard_map(
+    pmid,
+    disp_before,
+    disp_after,
+    vel,
+    halo_start,
+    halo_end,
+    unused_indexes,
+    global_nMesh,
+    max_values_to_share,
+    max_halo_values_to_share,
+    max_ptcl_per_slice,
+    left_perm,
+    right_perm,
+    num_gpus,
+    disp_size,
+    offsets,
+    conf,
+):
+    """Move mesh-halo particles for a drift that is immediately followed by force.
+
+    Parameters
+    ----------
+    pmid, disp_before, disp_after, vel : jax.Array
+        Authoritative-only particle state before migration and the post-drift
+        displacement used to determine new ownership.
+    halo_start, halo_end : jax.Array
+        Unused placeholders retained for signature compatibility with the full
+        mover.
+    unused_indexes : jax.Array
+        Boolean mask marking inactive particle slots.
+    global_nMesh : int
+        Global mesh resolution along the decomposed axis.
+    max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice : int
+        Static capacities for migration buffers and authoritative per-shard
+        storage. ``max_halo_values_to_share`` is unused in this mode.
+    left_perm, right_perm : tuple
+        ``ppermute`` routes describing left and right neighbor exchanges.
+    num_gpus : int
+        Number of shards participating in the move.
+    disp_size : float
+        Physical size of one mesh cell.
+    offsets : tuple[float, float]
+        Offsets used to sort wrapped coordinates deterministically.
+    conf : Configuration
+        Active runtime configuration.
+
+    The following force overwrites acceleration, so this path routes only the
+    position and velocity payload while preserving the same sorted authoritative
+    particle order as the full canonical mover.
+
+    Returns
+    -------
+    tuple
+        Updated ``(pmid, disp, vel, halo_mask, unused_indexes, overflow_flag,
+        max_particles_moved)`` for the next force-producing step.
+    """
+    del disp_before, halo_start, halo_end, max_halo_values_to_share
+    auth = _authoritative_prefix_from_owned_only_no_acc(
+        pmid,
+        disp_after,
+        vel,
+        unused_indexes,
+        conf,
+    )
+    (_auth_keys, auth_pmid, auth_disp, auth_vel, auth_valid), max_particles_moved = (
+        _canonical_route_authoritative_no_acc(
+            *auth,
+            global_nMesh,
+            max_values_to_share,
+            left_perm,
+            right_perm,
+            num_gpus,
+            disp_size,
+            offsets,
+            conf,
+        )
+    )
+    pmid, disp, vel, halo_mask, unused_indexes = _pack_authoritative_only_no_acc(
+        auth_pmid,
+        auth_disp,
+        auth_vel,
+        auth_valid,
+        max_ptcl_per_slice,
+    )
+    return pmid, disp, vel, halo_mask, unused_indexes, jnp.bool_(False), max_particles_moved
+
+
 def reconstruct_pre_drift_canonical_shard_map(
     pmid,
     disp,
@@ -2253,7 +2782,40 @@ def reconstruct_pre_drift_canonical_shard_map(
     offsets,
     conf,
 ):
-    """Reconstruct the canonical pre-drift particle-halo state from post-drift data."""
+    """Reconstruct the canonical pre-drift particle-halo state from post-drift data.
+
+    Parameters
+    ----------
+    pmid, disp, vel, acc : jax.Array
+        Post-drift canonical particle-halo storage.
+    halo_start, halo_end : jax.Array
+        Halo interval for the local shard.
+    unused_indexes : jax.Array
+        Boolean mask marking inactive particle slots.
+    drift_factor : jax.Array
+        Scalar displacement multiplier used by the drift step being inverted.
+    global_nMesh : int
+        Global mesh resolution along the decomposed axis.
+    max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice : int
+        Static capacities for migration buffers, halo rebuilds, and final
+        particle storage.
+    left_perm, right_perm : tuple
+        ``ppermute`` routes describing left and right neighbor exchanges.
+    num_gpus : int
+        Number of shards participating in the reconstruction.
+    disp_size : float
+        Physical size of one mesh cell.
+    offsets : tuple[float, float]
+        Offsets used to sort wrapped coordinates deterministically.
+    conf : Configuration
+        Active runtime configuration.
+
+    Returns
+    -------
+    tuple
+        Reconstructed ``(pmid, disp, vel, acc, unused_indexes, halo_mask)``
+        immediately before the drift.
+    """
     auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid = _canonical_authoritative_from_full(
         pmid,
         disp,
@@ -2323,7 +2885,41 @@ def reconstruct_pre_drift_mesh_halo_shard_map(
     offsets,
     conf,
 ):
-    """Reconstruct the pre-drift authoritative-only state from post-drift data."""
+    """Reconstruct the pre-drift authoritative-only state from post-drift data.
+
+    Parameters
+    ----------
+    pmid, disp, vel, acc : jax.Array
+        Post-drift authoritative mesh-halo storage.
+    halo_start, halo_end : jax.Array
+        Unused placeholders retained for signature compatibility with the
+        canonical reconstruction.
+    unused_indexes : jax.Array
+        Boolean mask marking inactive particle slots.
+    drift_factor : jax.Array
+        Scalar displacement multiplier used by the drift step being inverted.
+    global_nMesh : int
+        Global mesh resolution along the decomposed axis.
+    max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice : int
+        Static capacities for migration buffers and authoritative particle
+        storage. ``max_halo_values_to_share`` is unused in this mode.
+    left_perm, right_perm : tuple
+        ``ppermute`` routes describing left and right neighbor exchanges.
+    num_gpus : int
+        Number of shards participating in the reconstruction.
+    disp_size : float
+        Physical size of one mesh cell.
+    offsets : tuple[float, float]
+        Offsets used to sort wrapped coordinates deterministically.
+    conf : Configuration
+        Active runtime configuration.
+
+    Returns
+    -------
+    tuple
+        Reconstructed ``(pmid, disp, vel, acc, unused_indexes, halo_mask)``
+        immediately before the drift.
+    """
     del halo_start, halo_end, max_halo_values_to_share
     auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid = _authoritative_prefix_from_owned_only(
         pmid,
@@ -2382,7 +2978,41 @@ def reconstruct_pre_drift_and_pullback_mesh_halo_shard_map(
     offsets,
     conf,
 ):
-    """Fused mesh-halo reconstruction plus halo-move pullback for drift adjoints."""
+    """Fused mesh-halo reconstruction plus halo-move pullback for drift adjoints.
+
+    Parameters
+    ----------
+    pmid, disp, vel, acc : jax.Array
+        Post-drift authoritative particle state.
+    unused_indexes : jax.Array
+        Boolean mask marking inactive particle slots.
+    drift_factor : jax.Array
+        Scalar displacement multiplier used by the drift step being inverted.
+    disp_cot, vel_cot, acc_cot : jax.Array
+        Cotangents arriving at the post-drift state.
+    global_nMesh : int
+        Global mesh resolution along the decomposed axis.
+    max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice : int
+        Static capacities for migration buffers and authoritative particle
+        storage.
+    left_perm, right_perm : tuple
+        ``ppermute`` routes describing left and right neighbor exchanges.
+    num_gpus : int
+        Number of shards participating in the reconstruction.
+    disp_size : float
+        Physical size of one mesh cell.
+    offsets : tuple[float, float]
+        Offsets used to sort wrapped coordinates deterministically.
+    conf : Configuration
+        Active runtime configuration.
+
+    Returns
+    -------
+    tuple
+        Reconstructed pre-drift state followed by the pulled-back cotangents:
+        ``(pmid, disp, vel, acc, unused_indexes, halo_mask, disp_cot,
+        vel_cot, acc_cot)``.
+    """
     pre_pmid, pre_disp, pre_vel, pre_acc, pre_unused_index, pre_halo_mask = (
         reconstruct_pre_drift_mesh_halo_shard_map(
             pmid,
@@ -2462,7 +3092,41 @@ def reconstruct_pre_drift_and_pullback_canonical_shard_map(
     offsets,
     conf,
 ):
-    """Fused particle-halo reconstruction plus halo-move pullback for drift adjoints."""
+    """Fused particle-halo reconstruction plus halo-move pullback for drift adjoints.
+
+    Parameters
+    ----------
+    pmid, disp, vel, acc : jax.Array
+        Post-drift canonical particle-halo storage.
+    unused_indexes : jax.Array
+        Boolean mask marking inactive particle slots.
+    drift_factor : jax.Array
+        Scalar displacement multiplier used by the drift step being inverted.
+    disp_cot, vel_cot, acc_cot : jax.Array
+        Cotangents arriving at the post-drift state.
+    global_nMesh : int
+        Global mesh resolution along the decomposed axis.
+    max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice : int
+        Static capacities for migration buffers, halo rebuilds, and final
+        particle storage.
+    left_perm, right_perm : tuple
+        ``ppermute`` routes describing left and right neighbor exchanges.
+    num_gpus : int
+        Number of shards participating in the reconstruction.
+    disp_size : float
+        Physical size of one mesh cell.
+    offsets : tuple[float, float]
+        Offsets used to sort wrapped coordinates deterministically.
+    conf : Configuration
+        Active runtime configuration.
+
+    Returns
+    -------
+    tuple
+        Reconstructed pre-drift state followed by the pulled-back cotangents:
+        ``(pmid, disp, vel, acc, unused_indexes, halo_mask, disp_cot,
+        vel_cot, acc_cot)``.
+    """
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     halo_start = conf.halo_start[gpu_id]
     halo_end = conf.halo_end[gpu_id]
@@ -2526,7 +3190,28 @@ def reconstruct_pre_drift_and_pullback_canonical_shard_map(
 
 @partial(jax.jit, static_argnames=["global_nMesh", "disp_size"])
 def compute_halo_mask_shard_map(pmid, disp, unused_indexes, halo_start, halo_end, global_nMesh, disp_size):
-    """Compute halo masks from sharded particle positions."""
+    """Compute halo masks from sharded particle positions.
+
+    Parameters
+    ----------
+    pmid : jax.Array
+        Particle mesh ids on one shard.
+    disp : jax.Array
+        Particle displacements on one shard.
+    unused_indexes : jax.Array
+        Boolean padding mask.
+    halo_start, halo_end : jax.Array
+        Halo-band bounds for the current shard.
+    global_nMesh : int
+        Global mesh size along the decomposed axis.
+    disp_size : float
+        Inverse mesh-cell size used to convert displacements into cell units.
+
+    Returns
+    -------
+    jax.Array
+        Boolean halo mask for the shard.
+    """
     x_mod = (pmid[:, 0] + disp[:, 0] * disp_size) % global_nMesh
     return compute_halo_mask(x_mod, halo_start.squeeze(), halo_end.squeeze(), unused_indexes)
 
@@ -2543,7 +3228,18 @@ def _halo_capacity(conf):
 
 
 def initialize_mGPU_halo_movement_canonical(conf):
-    """Create the sharded forward particle-movement callable."""
+    """Create the sharded forward particle-movement callable.
+
+    Parameters
+    ----------
+    conf : Configuration
+        Configuration defining the active multi-GPU mode and capacities.
+
+    Returns
+    -------
+    callable
+        Sharded particle-routing callable specialized to the active mode.
+    """
     if conf.num_devices == 1:
         def _halo_noop(pmid, disp_before, disp_after, vel, acc, halo_start, halo_end, unused_indexes):
             del disp_before, halo_start, halo_end
@@ -2603,8 +3299,74 @@ def initialize_mGPU_halo_movement_canonical(conf):
     )
 
 
+def initialize_mGPU_halo_movement_no_acc(conf):
+    """Create the sharded mesh-halo mover for drifts followed immediately by force.
+
+    Parameters
+    ----------
+    conf : Configuration
+        Configuration defining the active multi-GPU mode and capacities.
+
+    Returns
+    -------
+    callable or None
+        Specialized mover that skips carrying acceleration, or ``None`` when
+        the optimization does not apply.
+    """
+    if conf.num_devices == 1 or conf.multigpu_mode != "mesh_halo":
+        return None
+
+    func = partial(
+        move_particles_mesh_halo_no_acc_shard_map,
+        global_nMesh=conf.nMesh,
+        max_values_to_share=conf.max_share_ptcl,
+        max_halo_values_to_share=_halo_capacity(conf),
+        max_ptcl_per_slice=conf.max_ptcl_per_slice,
+        left_perm=conf.left_perm,
+        right_perm=conf.right_perm,
+        num_gpus=conf.num_devices,
+        disp_size=conf.disp_size,
+        offsets=conf.offsets,
+        conf=conf,
+    )
+    return shard_map(
+        func,
+        mesh=conf.compute_mesh,
+        in_specs=(
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME),
+            P(AXIS_NAME),
+            P(AXIS_NAME),
+        ),
+        out_specs=(
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME, None),
+            P(AXIS_NAME),
+            P(AXIS_NAME),
+            P(),
+            P(),
+        ),
+        check_rep=False,
+    )
+
+
 def initialize_mGPU_reconstruct_pre_drift(conf):
-    """Create the sharded pre-drift reconstruction callable."""
+    """Create the sharded pre-drift reconstruction callable.
+
+    Parameters
+    ----------
+    conf : Configuration
+        Configuration defining the active multi-GPU mode and capacities.
+
+    Returns
+    -------
+    callable
+        Reconstruction callable used by the drift adjoint.
+    """
     if conf.num_devices == 1:
         def _reconstruct_noop(pmid, disp, vel, acc, halo_start, halo_end, unused_indexes, drift_factor):
             del halo_start, halo_end, drift_factor
@@ -2655,7 +3417,18 @@ def initialize_mGPU_reconstruct_pre_drift(conf):
 
 
 def initialize_mGPU_reconstruct_pre_drift_pullback(conf):
-    """Create the fused reconstruction/pullback callable when available."""
+    """Create the fused reconstruction/pullback callable when available.
+
+    Parameters
+    ----------
+    conf : Configuration
+        Configuration defining the active multi-GPU mode and capacities.
+
+    Returns
+    -------
+    callable or None
+        Fused reconstruction/pullback callable, or ``None`` when unavailable.
+    """
     if conf.num_devices == 1:
         return None
 
@@ -2706,7 +3479,18 @@ def initialize_mGPU_reconstruct_pre_drift_pullback(conf):
 
 
 def initialize_mGPU_halo_move_pullback(conf):
-    """Create the sharded halo-move transpose callable."""
+    """Create the sharded halo-move transpose callable.
+
+    Parameters
+    ----------
+    conf : Configuration
+        Configuration defining the active multi-GPU mode and capacities.
+
+    Returns
+    -------
+    callable
+        Pullback callable for routing cotangents through halo movement.
+    """
     if conf.num_devices == 1:
         def _pullback_noop(
             pmid,
@@ -2766,7 +3550,18 @@ def initialize_mGPU_halo_move_pullback(conf):
 
 
 def initialize_mGPU_compute_halo_mask(conf):
-    """Create the sharded halo-mask helper for the active multi-GPU mode."""
+    """Create the sharded halo-mask helper for the active multi-GPU mode.
+
+    Parameters
+    ----------
+    conf : Configuration
+        Configuration defining the active multi-GPU mode.
+
+    Returns
+    -------
+    callable
+        Halo-mask helper specialized to the active runtime path.
+    """
     if conf.multigpu_mode == "mesh_halo":
         if conf.num_devices == 1:
             def _compute_halo_mask_mesh_halo_noop(pmid, disp, unused_indexes, halo_start, halo_end):

@@ -52,9 +52,21 @@ class Particles:
         Particle canonical velocities in [H_0 L].
     acc : ArrayLike, optional
         Particle accelerations in [H_0^2 L].
+    unused_index : ArrayLike, optional
+        Boolean padding mask used by the static-capacity multi-GPU layouts.
+        True marks inactive slots.
+    halo_mask : ArrayLike, optional
+        Boolean mask marking duplicated halo-particle slots in
+        ``particle_halo`` mode.
     attr : pytree, optional
         Particle attributes (custom features).
 
+    Notes
+    -----
+    In multi-GPU runs the leading slot dimension is a fixed-capacity storage
+    layout, not necessarily the exact number of physical particles per device.
+    ``unused_index`` and ``halo_mask`` distinguish active authoritative slots,
+    padding, and duplicated halo slots.
     """
 
     conf: "Configuration" = field(repr=False)

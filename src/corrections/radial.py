@@ -130,7 +130,32 @@ def init_radial_potential_correction(
     conf=None,
     **unused_kwargs,
 ):
-    """Initialize radial correction parameters for a representative k grid."""
+    """Initialize a radial Fourier-space potential correction.
+
+    Parameters
+    ----------
+    key : jax.Array
+        PRNG key used to initialize Haiku parameters.
+    latent_size : int, optional
+        Hidden width of the conditioning network.
+    n_knots : int, optional
+        Number of spline knots controlling the radial transfer.
+    output_init_scale : float or None, optional
+        Optional output-layer initialization scale.
+    allow_missing_sigma8 : bool, optional
+        Whether later evaluation may fall back to a stored ``sigma8_value``.
+    sigma8_value : float, optional
+        Stored fallback conditioning value.
+    dtype : DTypeLike, optional
+        Parameter dtype.
+    conf : Configuration, optional
+        Representative configuration used to build the normalized ``|k|`` grid.
+
+    Returns
+    -------
+    RadialPotentialCorrection
+        Initialized trainable radial correction.
+    """
     del unused_kwargs
     dtype = jnp.dtype(dtype)
     transform = radial_transform(n_knots, latent_size, output_init_scale)

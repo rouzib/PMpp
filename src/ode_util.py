@@ -46,13 +46,43 @@ zip = safe_zip
 
 
 def ravel_first_arg(f, unravel):
-    """Wrap an ODE function so its first pytree argument is a flat vector."""
+    """Wrap an ODE function so its first pytree argument is a flat vector.
+
+    Parameters
+    ----------
+    f : callable
+        Function accepting a pytree state as its first argument.
+    unravel : callable
+        Callable converting the flattened state vector back to the original
+        pytree structure.
+
+    Returns
+    -------
+    callable
+        Wrapper around ``f`` that accepts a flattened first argument and
+        returns a flattened output pytree.
+    """
     return ravel_first_arg_(lu.wrap_init(f, debug_info=_missing_debug_info("lu")), unravel).call_wrapped
 
 
 @lu.transformation
 def ravel_first_arg_(unravel, y_flat, *args):
-    """Linear-util transformation backing ``ravel_first_arg``."""
+    """Linear-util transformation backing ``ravel_first_arg``.
+
+    Parameters
+    ----------
+    unravel : callable
+        Callable converting a flattened state vector to the original pytree.
+    y_flat : jax.Array
+        Flattened state vector.
+    *args
+        Additional positional arguments passed through to the wrapped function.
+
+    Yields
+    ------
+    tuple
+        Input tuple for the wrapped function followed by the flattened result.
+    """
     y = unravel(y_flat)
     ans = yield (y,) + args, {}
     ans_flat, _ = ravel_pytree(ans)
@@ -60,7 +90,22 @@ def ravel_first_arg_(unravel, y_flat, *args):
 
 
 def interp_fit_dopri(y0, y1, k, dt):
-    """Fit Dormand-Prince dense-output interpolation coefficients."""
+    """Fit Dormand-Prince dense-output interpolation coefficients.
+
+    Parameters
+    ----------
+    y0, y1 : jax.Array
+        State at the beginning and end of the accepted Runge-Kutta step.
+    k : jax.Array
+        Stage derivatives produced by the Dormand-Prince tableau.
+    dt : jax.Array or float
+        Step size.
+
+    Returns
+    -------
+    jax.Array
+        Quartic dense-output coefficients ordered for Horner evaluation.
+    """
     # Fit a polynomial to the results of a Runge-Kutta step.
     dps_c_mid = jnp.array([
         6025192743 / 30085553152 / 2, 0, 51252292925 / 65400821598 / 2,
@@ -71,7 +116,23 @@ def interp_fit_dopri(y0, y1, k, dt):
 
 
 def fit_4th_order_polynomial(y0, y1, y_mid, dy0, dy1, dt):
-    """Fit a quartic polynomial from endpoint and midpoint RK data."""
+    """Fit a quartic polynomial from endpoint and midpoint RK data.
+
+    Parameters
+    ----------
+    y0, y1, y_mid : jax.Array
+        State at the step start, end, and midpoint.
+    dy0, dy1 : jax.Array
+        Derivatives at the step start and end.
+    dt : jax.Array or float
+        Step size.
+
+    Returns
+    -------
+    tuple[jax.Array, ...]
+        Quartic coefficients ``(a, b, c, d, e)`` such that the dense solution
+        can be evaluated on the normalized interval.
+    """
     dt = dt.astype(y0.dtype)
     a = -2.*dt*dy0 + 2.*dt*dy1 - 8.*y0 - 8.*y1 + 16.*y_mid
     b = 5.*dt*dy0 - 3.*dt*dy1 + 18.*y0 + 14.*y1 - 32.*y_mid
@@ -82,7 +143,28 @@ def fit_4th_order_polynomial(y0, y1, y_mid, dy0, dy1, dt):
 
 
 def initial_step_size(fun, t0, y0, order, rtol, atol, f0):
-    """Choose an initial adaptive RK step size from Hairer et al.'s heuristic."""
+    """Choose an initial adaptive RK step size from Hairer et al.'s heuristic.
+
+    Parameters
+    ----------
+    fun : callable
+        RHS function evaluated as ``fun(y, t)``.
+    t0 : jax.Array or float
+        Initial integration time.
+    y0 : jax.Array
+        Initial state.
+    order : int
+        Convergence order of the embedded error estimator.
+    rtol, atol : float
+        Relative and absolute solver tolerances.
+    f0 : jax.Array
+        Derivative at ``(y0, t0)``.
+
+    Returns
+    -------
+    jax.Array
+        Suggested first step size.
+    """
     # Algorithm from:
     # E. Hairer, S. P. Norsett G. Wanner,
     # Solving Ordinary Differential Equations I: Nonstiff Problems, Sec. II.4.
@@ -106,7 +188,28 @@ def initial_step_size(fun, t0, y0, order, rtol, atol, f0):
 
 
 def runge_kutta_step(func, y0, f0, t0, dt):
-    """Take one Dormand-Prince 5(4) Runge-Kutta step."""
+    """Take one Dormand-Prince 5(4) Runge-Kutta step.
+
+    Parameters
+    ----------
+    func : callable
+        RHS function evaluated as ``func(y, t)``.
+    y0 : jax.Array
+        State at the start of the step.
+    f0 : jax.Array
+        Derivative at ``(y0, t0)``.
+    t0 : jax.Array or float
+        Step start time.
+    dt : jax.Array or float
+        Proposed step size.
+
+    Returns
+    -------
+    tuple
+        ``(y1, f1, error_estimate, k)`` containing the step endpoint,
+        derivative at the endpoint, embedded local error estimate, and all
+        tableau stage derivatives.
+    """
     # Dopri5 Butcher tableaux
     alpha = jnp.array([1 / 5, 3 / 10, 4 / 5, 8 / 9, 1., 1., 0], dtype=dt.dtype)
     beta = jnp.array(
@@ -156,7 +259,28 @@ def mean_error_ratio(error_estimate, rtol, atol, y0, y1):
 
 def optimal_step_size(last_step, mean_error_ratio, safety=0.9, ifactor=10.0,
                       dfactor=0.2, order=5.0):
-    """Compute optimal Runge-Kutta stepsize."""
+    """Compute the next adaptive Runge-Kutta step size.
+
+    Parameters
+    ----------
+    last_step : float
+        Previous accepted step size.
+    mean_error_ratio : float
+        Scaled local error ratio; values below one are acceptable.
+    safety : float, optional
+        Safety factor applied to the asymptotic update.
+    ifactor : float, optional
+        Maximum allowed step-growth factor.
+    dfactor : float, optional
+        Maximum allowed step-shrink factor.
+    order : float, optional
+        Effective order of the embedded error estimate.
+
+    Returns
+    -------
+    float
+        Suggested next step size.
+    """
     dfactor = jnp.where(mean_error_ratio < 1, 1.0, dfactor)
 
     factor = jnp.minimum(ifactor,
@@ -168,26 +292,30 @@ def odeint(func, y0, t, *args, rtol=1.4e-8, atol=1.4e-8, mxstep=jnp.inf, hmax=jn
            dt0=None):
     """Adaptive stepsize (Dormand-Prince) Runge-Kutta odeint implementation.
 
-    Args:
-      func: function to evaluate the time derivative of the solution `y` at time
-        `t` as `func(y, t, *args)`, producing the same shape/structure as `y0`.
-      y0: array or pytree of arrays representing the initial value for the state.
-      t: array of float times for evaluation, like `jnp.linspace(0., 10., 101)`,
-        in which the values must be strictly increasing.
-      *args: tuple of additional arguments for `func`, which must be arrays
-        scalars, or (nested) standard Python containers (tuples, lists, dicts,
-        namedtuples, i.e. pytrees) of those types.
-      rtol: float, relative local error tolerance for solver (optional).
-      atol: float, absolute local error tolerance for solver (optional).
-      mxstep: int, maximum number of steps to take for each timepoint (optional).
-      hmax: float, maximum step size allowed (optional).
-      dt0: float, None, or 2-tuple of float or None, initial step size for forward and
-        reverse integration (optional)
+    Parameters
+    ----------
+    func : callable
+        Right-hand side with signature ``func(y, t, *args)``.
+    y0 : pytree
+        Initial state.
+    t : array-like
+        Strictly increasing times at which the solution is requested.
+    *args
+        Extra arguments forwarded to ``func``.
+    rtol, atol : float, optional
+        Relative and absolute local error tolerances.
+    mxstep : int or float, optional
+        Maximum number of internal adaptive steps per target time.
+    hmax : float, optional
+        Maximum allowed internal step size.
+    dt0 : float, None, or 2-tuple of float or None, optional
+        Optional initial step size for forward and reverse integration.
 
-    Returns:
-      Values of the solution `y` (i.e. integrated system values) at each time
-      point in `t`, represented as an array (or pytree of arrays) with the same
-      shape/structure as `y0` except with a new leading axis of length `len(t)`.
+    Returns
+    -------
+    pytree
+        Solution values at each time in ``t`` with the same structure as
+        ``y0`` and a new leading time axis.
     """
     for arg in tree_leaves(args):
         if not isinstance(arg, core.Tracer) and not core.valid_jaxtype(arg):

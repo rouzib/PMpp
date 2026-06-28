@@ -19,7 +19,18 @@ from .utils import AXIS_NAME, raise_error
 
 
 def initialize_mGPU_gather(conf):
-    """Create the sharded gather entry point for the configured multi-GPU mode."""
+    """Create the sharded gather entry point for the configured multi-GPU mode.
+
+    Parameters
+    ----------
+    conf : Configuration
+        Configuration whose multi-GPU mode and mesh determine the wrapper.
+
+    Returns
+    -------
+    callable
+        Gather callable specialized to the active multi-GPU path.
+    """
     if conf.multigpu_mode == "mesh_halo":
         return shard_map(
             _gather_mGPU_mesh_halo,
@@ -404,7 +415,22 @@ def gather(ptcl, conf, mesh):
 
 
 def gather_stacked_mesh_halo(ptcl, conf, mesh_channels):
-    """Gather multiple mesh channels after a single mesh-halo edge exchange."""
+    """Gather multiple mesh channels after a single mesh-halo edge exchange.
+
+    Parameters
+    ----------
+    ptcl : Particles
+        Particle state at which the mesh channels should be sampled.
+    conf : Configuration
+        Active simulation configuration.
+    mesh_channels : jax.Array
+        Stacked mesh channels with the channel axis last.
+
+    Returns
+    -------
+    jax.Array
+        Gathered per-particle values with one trailing channel axis.
+    """
     if (
         not conf.use_mGPU
         or conf.compute_mesh is None

@@ -37,12 +37,40 @@ class CamelsParticlePair:
 
 
 def periodic_wrap(pos, box_size):
-    """Wrap positions into a periodic box."""
+    """Wrap positions into a periodic box.
+
+    Parameters
+    ----------
+    pos : array-like
+        Positions to wrap.
+    box_size : float
+        Periodic box size.
+
+    Returns
+    -------
+    numpy.ndarray
+        Wrapped positions in ``[0, box_size)``.
+    """
     return np.mod(pos, box_size)
 
 
 def periodic_delta(pos, anchor, box_size):
-    """Shortest periodic displacement from ``anchor`` to ``pos``."""
+    """Shortest periodic displacement from ``anchor`` to ``pos``.
+
+    Parameters
+    ----------
+    pos : array-like
+        Target positions.
+    anchor : array-like
+        Reference positions.
+    box_size : float
+        Periodic box size.
+
+    Returns
+    -------
+    numpy.ndarray
+        Minimum-image displacement vectors.
+    """
     return ((pos - anchor + 0.5 * box_size) % box_size) - 0.5 * box_size
 
 
@@ -54,6 +82,19 @@ def gadget_velocity_to_pmpp(vel, redshift):
     raw Gadget km/s values. Empirically, that convention is:
 
     `v_pm = v_gadget / 100 * a`, with `a = 1 / (1 + z)`.
+    
+    Parameters
+    ----------
+    vel : array-like
+        Gadget velocities.
+    redshift : float
+        Snapshot redshift.
+
+    Returns
+    -------
+    numpy.ndarray
+        Velocities converted into the PM units used by PM++ notebook CAMELS
+        files.
     """
     a = 1.0 / (1.0 + float(redshift))
     return np.asarray(vel, dtype=np.float32) / 100.0 * a
@@ -145,7 +186,18 @@ def _load_camels_ics_hdf5(ics_dir: Path):
 
 
 def load_camels_pair(base_dir):
-    """Load CAMELS ICs and final snapshot as a paired supervised dataset."""
+    """Load CAMELS ICs and final snapshot as a paired supervised dataset.
+
+    Parameters
+    ----------
+    base_dir : str or pathlib.Path
+        Directory containing CAMELS IC and final snapshot files.
+
+    Returns
+    -------
+    CamelsParticlePair
+        Paired initial/final particle arrays with aligned IDs and metadata.
+    """
     base_dir = Path(base_dir)
     snapshot_npz = base_dir / "snapshot_090.npz"
     if snapshot_npz.exists():
@@ -242,7 +294,20 @@ def _block_mean(array, factor):
 
 
 def coarsen_camels_pair(pair: CamelsParticlePair, factor: int):
-    """Downsample a CAMELS pair by averaging displacements and velocities."""
+    """Downsample a CAMELS pair by averaging displacements and velocities.
+
+    Parameters
+    ----------
+    pair : CamelsParticlePair
+        Input paired CAMELS dataset.
+    factor : int
+        Integer coarsening factor per spatial axis.
+
+    Returns
+    -------
+    CamelsParticlePair
+        Coarsened particle pair on the lower-resolution Lagrangian grid.
+    """
     if factor < 1:
         raise ValueError("factor must be >= 1")
     if factor == 1:
@@ -285,6 +350,21 @@ def coarsen_camels_pair(pair: CamelsParticlePair, factor: int):
 
 
 def velocity_kms_to_canonical(vel_kms, conf, extra_scale=1.0):
-    """Convert km/s velocities into PM++ canonical velocity units."""
+    """Convert km/s velocities into PM++ canonical velocity units.
+
+    Parameters
+    ----------
+    vel_kms : array-like
+        Velocities in km/s.
+    conf : Configuration
+        Configuration defining PM++ code units.
+    extra_scale : float, optional
+        Additional multiplicative scale factor applied before conversion.
+
+    Returns
+    -------
+    numpy.ndarray
+        Velocities in PM++ canonical units ``[H_0 L]``.
+    """
     km_per_second_per_code_unit = float(conf.V) / 1000.0
     return np.asarray(vel_kms, dtype=np.float32) / km_per_second_per_code_unit * extra_scale

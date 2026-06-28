@@ -380,7 +380,27 @@ def delta_to_cross_correlation(delta_a, delta_b, conf, mas: str | None = "CIC", 
 
 @partial(jax.jit, static_argnames=("conf", "mas"))
 def density_to_pk(density, conf, mas: str | None = "CIC"):
-    """Compute a differentiable power spectrum from a density field."""
+    """Compute a differentiable power spectrum from a density field.
+
+    Parameters
+    ----------
+    density : jax.Array
+        Density field on the PM mesh.
+    conf : Configuration
+        Active PM++ configuration.
+    mas : str or None, optional
+        Mass-assignment scheme used to create the field. This controls optional
+        Fourier-space deconvolution.
+
+    Returns
+    -------
+    k : jax.Array
+        Shell-averaged physical wavenumbers.
+    pk : jax.Array
+        Shell-averaged isotropic monopole.
+    nmodes : jax.Array
+        Number of contributing Fourier modes per shell.
+    """
     density = jnp.asarray(density, dtype=conf.float_dtype)
     mean_density = jnp.mean(density, dtype=conf.float_dtype)
     delta = density / mean_density - 1
@@ -389,7 +409,32 @@ def density_to_pk(density, conf, mas: str | None = "CIC"):
 
 @partial(jax.jit, static_argnames=("conf", "mas"))
 def density_to_cross_correlation(density_a, density_b, conf, mas: str | None = "CIC", eps: float = 1e-30):
-    """Compute the cross-correlation coefficient from two density fields."""
+    """Compute the cross-correlation coefficient from two density fields.
+
+    Parameters
+    ----------
+    density_a, density_b : jax.Array
+        Density fields on the PM mesh.
+    conf : Configuration
+        Active PM++ configuration.
+    mas : str or None, optional
+        Mass-assignment scheme used to create the fields.
+    eps : float, optional
+        Positive floor for the auto-spectrum product in the denominator.
+
+    Returns
+    -------
+    k : jax.Array
+        Shell-averaged physical wavenumbers.
+    r : jax.Array
+        Cross-correlation coefficient.
+    pk_cross : jax.Array
+        Shell-averaged real cross spectrum.
+    pk_a, pk_b : jax.Array
+        Shell-averaged auto spectra for the two fields.
+    nmodes : jax.Array
+        Number of contributing Fourier modes per shell.
+    """
     density_a = jnp.asarray(density_a, dtype=conf.float_dtype)
     density_b = jnp.asarray(density_b, dtype=conf.float_dtype)
     delta_a = density_a / jnp.mean(density_a, dtype=conf.float_dtype) - 1
@@ -399,21 +444,82 @@ def density_to_cross_correlation(density_a, density_b, conf, mas: str | None = "
 
 @partial(jax.jit, static_argnames=("conf", "mas"))
 def particles_to_pk(ptcl, conf, mas: str | None = "CIC"):
-    """Scatter particles to the PM mesh and return the differentiable P(k)."""
+    """Scatter particles to the PM mesh and return the differentiable ``P(k)``.
+
+    Parameters
+    ----------
+    ptcl : Particles
+        Particle state to scatter.
+    conf : Configuration
+        Active PM++ configuration.
+    mas : str or None, optional
+        Mass-assignment scheme matching the scatter rule.
+
+    Returns
+    -------
+    k : jax.Array
+        Shell-averaged physical wavenumbers.
+    pk : jax.Array
+        Shell-averaged isotropic monopole.
+    nmodes : jax.Array
+        Number of contributing Fourier modes per shell.
+    """
     density = scatter(ptcl, conf)
     return density_to_pk(density, conf, mas=mas)
 
 
 @partial(jax.jit, static_argnames=("conf", "mas"))
 def particles_to_cross_correlation(ptcl_a, ptcl_b, conf, mas: str | None = "CIC", eps: float = 1e-30):
-    """Scatter two particle sets and return their cross-correlation coefficient."""
+    """Scatter two particle sets and return their cross-correlation coefficient.
+
+    Parameters
+    ----------
+    ptcl_a, ptcl_b : Particles
+        Particle states to compare.
+    conf : Configuration
+        Active PM++ configuration.
+    mas : str or None, optional
+        Mass-assignment scheme matching the scatter rule.
+    eps : float, optional
+        Positive floor for the auto-spectrum product in the denominator.
+
+    Returns
+    -------
+    k : jax.Array
+        Shell-averaged physical wavenumbers.
+    r : jax.Array
+        Cross-correlation coefficient.
+    pk_cross : jax.Array
+        Shell-averaged real cross spectrum.
+    pk_a, pk_b : jax.Array
+        Shell-averaged auto spectra for the two particle sets.
+    nmodes : jax.Array
+        Number of contributing Fourier modes per shell.
+    """
     density_a = scatter(ptcl_a, conf)
     density_b = scatter(ptcl_b, conf)
     return density_to_cross_correlation(density_a, density_b, conf, mas=mas, eps=eps)
 
 
 def cross_correlation(delta_a, delta_b, conf, mas: str | None = "CIC", eps: float = 1e-30):
-    """Alias for :func:`delta_to_cross_correlation` on overdensity fields."""
+    """Alias for :func:`delta_to_cross_correlation` on overdensity fields.
+
+    Parameters
+    ----------
+    delta_a, delta_b : jax.Array
+        Overdensity fields on the PM mesh.
+    conf : Configuration
+        Active PM++ configuration.
+    mas : str or None, optional
+        Mass-assignment scheme used to create the fields.
+    eps : float, optional
+        Positive floor for the auto-spectrum product in the denominator.
+
+    Returns
+    -------
+    tuple
+        Same return values as :func:`delta_to_cross_correlation`.
+    """
     return delta_to_cross_correlation(delta_a, delta_b, conf, mas=mas, eps=eps)
 
 

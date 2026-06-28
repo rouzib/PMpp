@@ -14,6 +14,7 @@ from .halo_moving import (
     initialize_mGPU_compute_halo_mask,
     initialize_mGPU_halo_move_pullback,
     initialize_mGPU_halo_movement_canonical,
+    initialize_mGPU_halo_movement_no_acc,
     initialize_mGPU_reconstruct_pre_drift,
     initialize_mGPU_reconstruct_pre_drift_pullback,
 )
@@ -33,10 +34,14 @@ def _uninitialized_runtime_callable(*args, **kwargs):
 class MultiGPUConfiguration:
     """Derived multi-GPU topology and compiled helper functions.
 
-    `Configuration` keeps the physical simulation parameters and user-facing input
-    knobs. This object stores the derived distributed runtime state that depends on
-    those inputs: slab layout, halo bands, communication permutations, and the
+    ``Configuration`` keeps the physical simulation parameters and user-facing
+    knobs. This object stores the derived distributed runtime state: slab
+    layout, halo bands, static capacities, communication permutations, and the
     initialized sharded helper functions.
+
+    In normal user code this object is usually only a seed carrying
+    ``compute_mesh`` and an optional ``mode``. The remaining topology arrays and
+    helper callables are filled in during ``Configuration`` initialization.
     """
 
     compute_mesh: Mesh = None
@@ -70,6 +75,7 @@ class MultiGPUConfiguration:
     right_perm: tuple[tuple[int, int], ...] = ()
 
     halo_moving: Callable = _uninitialized_runtime_callable
+    halo_moving_no_acc: Callable | None = None
     reconstruct_pre_drift: Callable = _uninitialized_runtime_callable
     reconstruct_pre_drift_pullback: Callable | None = None
     halo_move_pullback: Callable = _uninitialized_runtime_callable
@@ -88,8 +94,27 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
 
     This function computes slab ownership, halo extents, communication
     permutations, and static buffer capacities. It intentionally does not
-    create jitted helper functions; that happens in ``initialize_multigpu_runtime``
-    after the final ``Configuration`` object exists.
+    create jitted helper functions; that happens in
+    ``initialize_multigpu_runtime`` after the final ``Configuration`` object
+    exists.
+
+    ``mesh_halo`` is the default and preferred modern path. ``particle_halo``
+    remains available for legacy validation and comparison.
+
+    Parameters
+    ----------
+    conf : Configuration
+        User-facing configuration whose mesh, particle layout, and capacity
+        limits define the distributed topology.
+    runtime_seed : MultiGPUConfiguration or None, optional
+        Seed object carrying at least a ``compute_mesh`` and optionally an
+        explicit mode.
+
+    Returns
+    -------
+    MultiGPUConfiguration or None
+        Derived topology without compiled helper callables, or ``None`` when
+        multi-GPU execution is disabled.
     """
     compute_mesh = runtime_seed.compute_mesh if runtime_seed is not None and runtime_seed.compute_mesh is not None else conf.compute_mesh
     if compute_mesh is None:
@@ -118,11 +143,21 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
     local_mesh_shape = (conf.mesh_shape[0] // num_devices, conf.mesh_shape[1], conf.mesh_shape[2])
     global_nMesh = conf.mesh_shape[0]
     store_particle_halos = mode == "particle_halo"
+    static_mesh_halo_width = int(getattr(conf, "static_mesh_halo_width", 0) or 0)
+    if conf.replicated_mesh and static_mesh_halo_width:
+        raise ValueError("replicated_mesh and static_mesh_halo_width are mutually exclusive.")
+    if static_mesh_halo_width < 0:
+        raise ValueError("static_mesh_halo_width must be non-negative.")
     ptcl_halo_width = 0 if num_devices == 1 else max(
         1,
         int(round(conf.mesh_shape[0] / conf.ptcl_grid_shape[0])),
     )
-    mesh_halo_width = 0 if num_devices == 1 else 1
+    mesh_halo_width = 0 if num_devices == 1 else max(1, static_mesh_halo_width)
+    if num_devices > 1 and mesh_halo_width > local_mesh_shape[0]:
+        raise ValueError(
+            "mesh_halo_width cannot exceed the local x-slab width for one-hop ring exchange: "
+            f"mesh_halo_width={mesh_halo_width}, local_x={local_mesh_shape[0]}."
+        )
     local_mesh_with_halo_shape = (
         local_mesh_shape[0] + 2 * mesh_halo_width,
         local_mesh_shape[1],
@@ -195,7 +230,20 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
 
 
 def initialize_multigpu_runtime(conf: "Configuration", runtime: MultiGPUConfiguration) -> MultiGPUConfiguration:
-    """Attach distributed FFT, scatter/gather, and halo-movement callables."""
+    """Attach compiled distributed FFT, scatter/gather, and routing helpers.
+
+    Parameters
+    ----------
+    conf : Configuration
+        Configuration whose derived topology is being finalized.
+    runtime : MultiGPUConfiguration
+        Topology object returned by ``build_multigpu_configuration``.
+
+    Returns
+    -------
+    MultiGPUConfiguration
+        Runtime object augmented with compiled distributed helper callables.
+    """
     rfftn_jit, irfftn_jit, _, _, rfftn_transposed_jit, irfftn_transposed_jit = create_ffts(runtime.compute_mesh)
     _, irfftn_transposed_batched_jit = create_batched_transposed_real_ffts(runtime.compute_mesh)
     return runtime.replace(
@@ -205,6 +253,7 @@ def initialize_multigpu_runtime(conf: "Configuration", runtime: MultiGPUConfigur
         irfftn_transposed=irfftn_transposed_jit,
         irfftn_transposed_batched=irfftn_transposed_batched_jit,
         halo_moving=initialize_mGPU_halo_movement_canonical(conf),
+        halo_moving_no_acc=initialize_mGPU_halo_movement_no_acc(conf),
         reconstruct_pre_drift=initialize_mGPU_reconstruct_pre_drift(conf),
         reconstruct_pre_drift_pullback=initialize_mGPU_reconstruct_pre_drift_pullback(conf),
         halo_move_pullback=initialize_mGPU_halo_move_pullback(conf),

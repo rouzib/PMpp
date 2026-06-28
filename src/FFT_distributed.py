@@ -34,20 +34,21 @@ import jax.numpy as jnp
 
 
 def split_array_for_gpus(array: np.ndarray, num_gpus: int, axis: int = 1) -> np.ndarray:
-    """
-    Splits the given array into equal parts along the second axis for distribution across multiple GPUs.
+    """Split an array into equal chunks for host-side GPU distribution.
 
-    Args:
-    array (np.ndarray): The input array to be split.
-    num_gpus (int): The number of GPUs across which the array needs to be split.
-    axis (int): The axis along which the array needs to be split
+    Parameters
+    ----------
+    array : numpy.ndarray
+        Input host array.
+    num_gpus : int
+        Number of device chunks to create.
+    axis : int, optional
+        Axis to split.
 
-    Returns:
-    np.ndarray: A NumPy array containing sub-arrays, each representing a portion of the original array intended for one GPU.
-
-    Note:
-    This function assumes that the division of the array size by the number of GPUs results in an integer number of elements.
-    The caller must ensure that `num_gpus` evenly divides the second dimension of `array`.
+    Returns
+    -------
+    numpy.ndarray
+        Array of host chunks, one per target GPU.
     """
     # Split the array equally along the second dimension for each GPU
     return jnp.array(jnp.array_split(array, num_gpus, axis=axis))
@@ -86,17 +87,21 @@ ea
 
 
 def distribute_array_on_gpus(array: np.ndarray, compute_mesh: Mesh, partition: P) -> jnp.ndarray:
-    """
-    Distributes the given array across multiple GPUs for computation. The distribution follows a partition configuration
-    and an axis along which the array should be split for distribution.
+    """Place a host array onto a compute mesh with explicit sharding.
 
-    Args:
-    array (np.ndarray): The input array to be distributed.
-    compute_mesh (Mesh): The compute mesh that defines the layout of GPUs.
-    partition (P): The partition configuration for distributing the array.
+    Parameters
+    ----------
+    array : numpy.ndarray
+        Input host array already shaped consistently with ``partition``.
+    compute_mesh : Mesh
+        Device mesh defining the target sharding.
+    partition : PartitionSpec
+        Partition specification for the output array.
 
-    Returns:
-    jnp.ndarray: A Jax array distributed across multiple GPUs.
+    Returns
+    -------
+    jax.Array
+        Sharded array placed on ``compute_mesh``.
     """
     sharding = NamedSharding(compute_mesh, partition)
     array_parts_device = [jax.device_put(array[i], device=d) for d, i in
@@ -106,16 +111,22 @@ def distribute_array_on_gpus(array: np.ndarray, compute_mesh: Mesh, partition: P
 
 
 def create_sharded_fft(basic_fft: Callable, partition_spec: P, global_mesh: Mesh = None):
-    """
-    Creates a sharded version of an FFT function that operates across devices according
-    to a specified partitioning scheme.
+    """Wrap a local FFT kernel in JAX custom partitioning metadata.
 
-    Args:
-    basic_fft: A function that performs an FFT operation.
-    partition_spec: A PartitionSpec specifying how data should be sharded across devices.
+    Parameters
+    ----------
+    basic_fft : callable
+        Local FFT kernel operating on one logical shard layout.
+    partition_spec : PartitionSpec
+        Target sharding of the FFT input and output.
+    global_mesh : Mesh, optional
+        Fallback mesh used when the input sharding object does not carry one
+        directly.
 
-    Returns:
-    A function that applies the FFT operation with the specified sharding.
+    Returns
+    -------
+    callable
+        FFT wrapper carrying custom partitioning rules.
     """
 
     @custom_partitioning
@@ -202,7 +213,20 @@ def _batched_irfftn_second_pass(x):
 def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable]:
     """Create batched real FFT helpers for the transposed spectral layout.
 
-    The leading axis is treated as a pure batch dimension and remains replicated.
+    Parameters
+    ----------
+    compute_mesh : Mesh
+        Device mesh over which the transposed spectral layout is sharded.
+
+    Returns
+    -------
+    tuple[callable, callable]
+        Batched forward and inverse real FFT helpers for the transposed layout.
+
+    Notes
+    -----
+    The leading axis is treated as a pure batch dimension and remains
+    replicated.
     """
     if compute_mesh.size == 1:
         _batched_rfftn_transposed_jit = jax.jit(lambda x: _batched_fftn_first_pass(_batched_rfftn_second_pass(x)))
@@ -311,27 +335,24 @@ def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, C
 
 
 def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Callable, Callable, Callable]:
-    """
-    Create a set of Fourrier Transform functions that distribute computation across a provided compute mesh (a logical
-    grouping of devices for parallel computation). It returns a tuple of functions: `rfftn_jit`, `irfftn_jit`, `fftn_jit`,
-    and `ifftn_jit` for performing real forward, real inverse, complex forward and complex inverse FFT respectively.
+    """Create the distributed FFT helper family used by PM++.
 
-    Args:
-        compute_mesh (Mesh): The compute mesh defining the layout of devices for parallel computation.
+    Parameters
+    ----------
+    compute_mesh : Mesh
+        Device mesh defining the parallel FFT layout.
 
-    Returns:
-        tuple: The forward and inverse FFT functions including real and complex variants. These functions are JIT
-        compiled and are set up for sharding the computation across multiple devices defined by the `compute_mesh`.
-        The FFT functions utilize a two-pass method in which the FFT operation is performed on subsets of the array's
-        dimensions.
+    Returns
+    -------
+    tuple[callable, callable, callable, callable, callable, callable]
+        ``(rfftn, irfftn, fftn, ifftn, rfftn_transposed, irfftn_transposed)``
+        helpers specialized to ``compute_mesh``.
 
-    Note:
-        The returned FFT and IFFT functions are 'jit-ted' (Just-In-Time compiled) for improved performance. They are also
-        set up to perform their computations with input data that are distributed across devices depending on the
-        `compute_mesh`. This is performed by making use of the earlier defined sharded FFT functions.
-
-        Among the returned functions, `rfftn` and `irfftn` functions are differentiable while `fftn` and `ifftn` are not.
-
+    Notes
+    -----
+    The real transforms carry custom VJPs so they remain differentiable in the
+    PM++ solver. The complex transforms are utility kernels without the same
+    public differentiation contract.
     """
     # Single-device shortcut: bypass distributed 2-pass FFT entirely.
     # The strided-batched cuFFT plan created by the first pass is incompatible

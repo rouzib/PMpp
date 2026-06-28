@@ -188,7 +188,35 @@ def init_mesh_cnn_potential_correction(
     conf=None,
     **unused_kwargs,
 ):
-    """Initialize mesh CNN correction parameters on a small representative mesh."""
+    """Initialize a mesh-CNN residual potential correction.
+
+    Parameters
+    ----------
+    key : jax.Array
+        PRNG key used to initialize Haiku parameters.
+    channels : int, optional
+        Hidden channel count in the residual CNN.
+    depth : int, optional
+        Number of convolutional blocks.
+    max_residual : float, optional
+        Maximum multiplicative scale applied to the learned residual branch.
+    output_init_scale : float, optional
+        Output-layer initialization scale.
+    allow_missing_sigma8 : bool, optional
+        Whether later evaluation may fall back to a stored ``sigma8_value``.
+    sigma8_value : float, optional
+        Stored fallback conditioning value.
+    dtype : DTypeLike, optional
+        Parameter dtype.
+    conf : Configuration, optional
+        Representative configuration used to choose an initialization mesh
+        shape. Multi-GPU configs are converted to a single-device init shape.
+
+    Returns
+    -------
+    MeshCNNPotentialCorrection
+        Initialized correction container with Haiku parameters and metadata.
+    """
     del unused_kwargs
     dtype = jnp.dtype(dtype)
     init_conf = conf
