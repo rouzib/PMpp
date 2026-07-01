@@ -39,7 +39,7 @@ html_theme = "sphinx_rtd_theme"
 html_context = {
     "display_github": True,
     "github_user": "rouzib",
-    "github_repo": "PMpp_v2",
+    "github_repo": "PMpp",
     "github_version": "master",
     "conf_py_path": "/docs/source/",
 }
