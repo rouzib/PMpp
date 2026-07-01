@@ -4,9 +4,9 @@ import jax.numpy as jnp
 import Pk_library as PKL
 import MAS_library as MASL
 
-from src.configuration import Configuration
-from src.particles import Particles
-from src.power_spectrum import delta_to_cross_correlation, delta_to_pk, particles_to_pk
+from pmpp.configuration import Configuration
+from pmpp.particles import Particles
+from pmpp.power_spectrum import delta_to_cross_correlation, delta_to_pk, particles_to_pk
 
 
 def _reference_pk(delta, box_size, mas="CIC"):

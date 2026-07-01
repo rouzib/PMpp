@@ -31,21 +31,21 @@ from pmwd.nbody import (
 )
 from pmwd.scatter import scatter as scatter_pmwd
 
-from src.boltzmann import boltzmann as boltzmann_pmpp
-from src.configuration import Configuration
-from src.cosmo import SimpleLCDM as SimpleLCDM_PP
-from src.lpt import lpt as lpt_pmpp
-from src.modes import linear_modes as linear_modes_pmpp
-from src.nbody import (
+from pmpp.boltzmann import boltzmann as boltzmann_pmpp
+from pmpp.configuration import Configuration
+from pmpp.cosmo import SimpleLCDM as SimpleLCDM_PP
+from pmpp.lpt import lpt as lpt_pmpp
+from pmpp.modes import linear_modes as linear_modes_pmpp
+from pmpp.nbody import (
     nbody as nbody_pmpp,
     nbody_adj_init as nbody_adj_init_pmpp,
     nbody_adj_step as nbody_adj_step_pmpp,
 )
-from src.scatter import scatter as scatter_pmpp
-from src.steps import drift_adj as drift_adj_pmpp
-from src.steps import force_adj as force_adj_pmpp
-from src.steps import kick_adj as kick_adj_pmpp
-from src.utils import create_compute_mesh, pmid_to_idx
+from pmpp.scatter import scatter as scatter_pmpp
+from pmpp.steps import drift_adj as drift_adj_pmpp
+from pmpp.steps import force_adj as force_adj_pmpp
+from pmpp.steps import kick_adj as kick_adj_pmpp
+from pmpp.utils import create_compute_mesh, pmid_to_idx
 
 
 def _zeros_like_cosmo(cosmo):

@@ -7,8 +7,8 @@ from tqdm.auto import tqdm
 # Enable 64-bit precision for accurate Finite Difference checks
 config.update("jax_enable_x64", True)
 
-from src.particles import Particles
-from src.scatter import scatter
+from pmpp.particles import Particles
+from pmpp.scatter import scatter
 
 from pmwd.configuration import Configuration as Configuration_pmwd
 from pmwd.scatter import scatter as scatter_pmwd

@@ -3,10 +3,10 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from src.configuration import Configuration
-from src.cosmo import SimpleLCDM
-from src.gravity import gravity
-from src.particles import Particles
+from pmpp.configuration import Configuration
+from pmpp.cosmo import SimpleLCDM
+from pmpp.gravity import gravity
+from pmpp.particles import Particles
 
 
 def _sinusoid_positions(res, box_size, amplitude):

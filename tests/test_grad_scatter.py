@@ -14,8 +14,8 @@ from pmwd.configuration import Configuration as ConfigurationPMWD
 from pmwd.particles import Particles as ParticlesPMWD
 from pmwd.scatter import scatter as scatter_pmwd
 
-from src.particles import Particles
-from src.scatter import scatter
+from pmpp.particles import Particles
+from pmpp.scatter import scatter
 
 from test_utils import init_conf
 

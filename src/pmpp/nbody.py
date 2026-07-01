@@ -233,7 +233,7 @@ def nbody_kappa(ptcl, cosmo, conf, reverse=False):
     Returns
     -------
     object
-        Same return value as :func:`src.nbody_observers.nbody_kappa`.
+        Same return value as :func:`pmpp.nbody_observers.nbody_kappa`.
     """
     from .nbody_observers import nbody_kappa as _nbody_kappa
 

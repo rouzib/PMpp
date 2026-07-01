@@ -20,11 +20,11 @@ from pmwd.cosmology import SimpleLCDM as SimpleLCDM_PMWD
 from pmwd.nbody import kick as kick_pmwd
 from pmwd.particles import Particles as ParticlesPMWD
 
-from src.boltzmann import boltzmann as boltzmann_pmpp
-from src.cosmo import SimpleLCDM as SimpleLCDM_PMPP
-from src.particles import Particles
-from src.steps import kick as kick_pmpp, kick_adj as kick_adj_pmpp
-from src.utils import pmid_to_idx
+from pmpp.boltzmann import boltzmann as boltzmann_pmpp
+from pmpp.cosmo import SimpleLCDM as SimpleLCDM_PMPP
+from pmpp.particles import Particles
+from pmpp.steps import kick as kick_pmpp, kick_adj as kick_adj_pmpp
+from pmpp.utils import pmid_to_idx
 
 from test_utils import init_conf
 

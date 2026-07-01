@@ -32,14 +32,14 @@ import jax
 import numpy as np
 from matplotlib import pyplot as plt
 
-from src.boltzmann import boltzmann
-from src.configuration import Configuration
-from src.cosmo import SimpleLCDM
-from src.lpt import lpt
-from src.modes import linear_modes, white_noise_nested
-from src.nbody import nbody
-from src.scatter import scatter
-from src.utils import create_compute_mesh
+from pmpp.boltzmann import boltzmann
+from pmpp.configuration import Configuration
+from pmpp.cosmo import SimpleLCDM
+from pmpp.lpt import lpt
+from pmpp.modes import linear_modes, white_noise_nested
+from pmpp.nbody import nbody
+from pmpp.scatter import scatter
+from pmpp.utils import create_compute_mesh
 
 
 def parse_args() -> argparse.Namespace:

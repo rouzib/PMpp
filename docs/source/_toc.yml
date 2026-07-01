@@ -1,0 +1,28 @@
+format: jb-book
+root: intro
+chapters:
+  - file: installation
+  - file: quickstart
+  - caption: Theory
+    chapters:
+      - file: theory/particle_mesh
+      - file: theory/lpt
+      - file: theory/integrator
+      - file: theory/differentiability
+  - caption: Multi-GPU execution
+    chapters:
+      - file: multigpu/overview
+      - file: multigpu/mesh_halo
+      - file: multigpu/particle_halo
+      - file: multigpu/distributed_fft
+      - file: multigpu/capacity
+  - caption: Tutorials
+    chapters:
+      - file: tutorials/index
+      - file: tutorials/single_gpu_forward
+      - file: tutorials/multi_gpu_forward
+      - file: tutorials/gradients
+      - file: tutorials/potential_corrections
+  - file: api
+  - file: contributing
+  - file: references

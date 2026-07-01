@@ -47,14 +47,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from src.boltzmann import boltzmann
-from src.configuration import Configuration
-from src.cosmo import Cosmology
-from src.lpt import lpt
-from src.modes import linear_modes, white_noise
-from src.nbody import nbody, nbody_kappa
-from src.scatter import scatter
-from src.utils import create_compute_mesh, get_a_schedule
+from pmpp.boltzmann import boltzmann
+from pmpp.configuration import Configuration
+from pmpp.cosmo import Cosmology
+from pmpp.lpt import lpt
+from pmpp.modes import linear_modes, white_noise
+from pmpp.nbody import nbody, nbody_kappa
+from pmpp.scatter import scatter
+from pmpp.utils import create_compute_mesh, get_a_schedule
 
 
 TARGET_Z = jnp.array(

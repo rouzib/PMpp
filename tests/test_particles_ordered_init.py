@@ -2,9 +2,9 @@ import numpy as np
 
 import jax.numpy as jnp
 
-from src.configuration import Configuration
-from src.particles import Particles
-from src.utils import pmid_to_idx
+from pmpp.configuration import Configuration
+from pmpp.particles import Particles
+from pmpp.utils import pmid_to_idx
 
 
 def test_from_ordered_pos_preserves_unique_grid_anchor_under_collisions():

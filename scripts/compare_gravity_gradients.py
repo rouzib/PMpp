@@ -33,11 +33,11 @@ from pmwd import (
     white_noise as white_noise_pmwd,
 )
 
-from src.configuration import Configuration
-from src.cosmo import SimpleLCDM as SimpleLCDM_PMPP
-from src.gravity import gravity as gravity_pmpp
-from src.particles import Particles
-from src.utils import create_compute_mesh
+from pmpp.configuration import Configuration
+from pmpp.cosmo import SimpleLCDM as SimpleLCDM_PMPP
+from pmpp.gravity import gravity as gravity_pmpp
+from pmpp.particles import Particles
+from pmpp.utils import create_compute_mesh
 
 
 def parse_args() -> argparse.Namespace:

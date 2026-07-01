@@ -166,7 +166,7 @@ def lpt(modes, cosmo, conf):
     ----------
     modes : jax.Array
         Linear matter overdensity modes on the particle grid, usually in Fourier
-        space as returned by :func:`src.modes.linear_modes`.
+        space as returned by :func:`pmpp.modes.linear_modes`.
     cosmo : Cosmology
         Cosmology with precomputed growth tables.
     conf : Configuration

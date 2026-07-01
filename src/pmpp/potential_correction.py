@@ -1,7 +1,7 @@
 """Compatibility facade for PM++ potential corrections.
 
-New correction implementations live under :mod:`src.corrections`. This module is
-kept so existing scripts/tests that import ``src.potential_correction`` continue
+New correction implementations live under :mod:`pmpp.corrections`. This module is
+kept so existing scripts/tests that import ``pmpp.potential_correction`` continue
 to work.
 """
 

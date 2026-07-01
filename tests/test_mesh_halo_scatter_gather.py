@@ -15,9 +15,9 @@ from pmwd.gather import gather as gather_pmwd
 from pmwd.particles import Particles as ParticlesPMWD
 from pmwd.scatter import scatter as scatter_pmwd
 
-from src.gather import gather as gather_pmpp
-from src.particles import Particles
-from src.scatter import scatter
+from pmpp.gather import gather as gather_pmpp
+from pmpp.particles import Particles
+from pmpp.scatter import scatter
 
 from test_utils import init_conf
 
