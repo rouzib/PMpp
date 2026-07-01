@@ -1,8 +1,10 @@
 format: jb-book
 root: intro
-chapters:
-  - file: installation
-  - file: quickstart
+parts:
+  - caption: Getting started
+    chapters:
+      - file: installation
+      - file: quickstart
   - caption: Theory
     chapters:
       - file: theory/particle_mesh
@@ -23,6 +25,8 @@ chapters:
       - file: tutorials/multi_gpu_forward
       - file: tutorials/gradients
       - file: tutorials/potential_corrections
-  - file: api
-  - file: contributing
-  - file: references
+  - caption: Reference
+    chapters:
+      - file: api
+      - file: contributing
+      - file: references
