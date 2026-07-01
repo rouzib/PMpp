@@ -44,13 +44,13 @@ from pmwd import (
     white_noise as white_noise_pmwd,
 )
 
-from src.configuration import Configuration
-from src.cosmo import SimpleLCDM
-from src.lpt import lpt
-from src.modes import linear_modes, white_noise
-from src.nbody import nbody
-from src.scatter import scatter
-from src.utils import create_compute_mesh, pmid_to_idx
+from pmpp.configuration import Configuration
+from pmpp.cosmo import SimpleLCDM
+from pmpp.lpt import lpt
+from pmpp.modes import linear_modes, white_noise
+from pmpp.nbody import nbody
+from pmpp.scatter import scatter
+from pmpp.utils import create_compute_mesh, pmid_to_idx
 
 CURRENT_PMPP_API = SimpleNamespace(
     Configuration=Configuration,

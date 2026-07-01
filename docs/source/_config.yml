@@ -1,0 +1,23 @@
+title: PM++
+author: rouzib
+execute:
+  execute_notebooks: "off"
+repository:
+  url: https://github.com/rouzib/PMpp_v2
+  path_to_book: docs/source
+  branch: master
+  provider: github
+html:
+  use_repository_button: true
+  use_issues_button: true
+sphinx:
+  config:
+    html_theme: sphinx_rtd_theme
+    autodoc_mock_imports: []
+    autosummary_generate: true
+  extra_extensions:
+    - sphinx.ext.autodoc
+    - sphinx.ext.autosummary
+    - sphinx.ext.napoleon
+    - sphinx.ext.mathjax
+    - sphinx.ext.viewcode

@@ -22,8 +22,8 @@ import jax.numpy as jnp
 import numpy as np
 from matplotlib import pyplot as plt
 
-from src.particles import Particles
-from src.steps import _halo_move_vjp
+from pmpp.particles import Particles
+from pmpp.steps import _halo_move_vjp
 from tests.test_utils import init_conf as _init_test_conf
 
 

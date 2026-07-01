@@ -4,10 +4,10 @@ import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 import pytest
 
-from src.configuration import Configuration
-from src.cosmo import SimpleLCDM
-from src.multigpu_configuration import MultiGPUConfiguration
-from src.corrections import (
+from pmpp.configuration import Configuration
+from pmpp.cosmo import SimpleLCDM
+from pmpp.multigpu_configuration import MultiGPUConfiguration
+from pmpp.corrections import (
     apply_potential_correction,
     build_correction_optimizer,
     evaluate_high_k_softening,
@@ -24,7 +24,7 @@ from src.corrections import (
     init_radial_potential_correction,
     sample_potential_transfer,
 )
-from src.utils import create_compute_mesh
+from pmpp.utils import create_compute_mesh
 
 
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])

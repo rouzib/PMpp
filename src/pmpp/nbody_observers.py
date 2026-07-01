@@ -1,7 +1,7 @@
 """Forward-only N-body observers and collectors.
 
 This module keeps analysis / movie / map-export logic out of the core adjoint solver.
-The default `src.nbody.nbody(...)` path stays particle-state focused, while callers that
+The default `pmpp.nbody.nbody(...)` path stays particle-state focused, while callers that
 need per-step products can opt into the observer helpers defined here.
 """
 
@@ -74,7 +74,7 @@ def nbody_kappa(ptcl, cosmo, conf, reverse: bool = False):
     -------
     Particles or jax.Array
         If ``conf.to_save_a`` is ``None``, returns the final particle state via
-        :func:`src.nbody.nbody`. Otherwise returns the stacked saved maps.
+        :func:`pmpp.nbody.nbody`. Otherwise returns the stacked saved maps.
     """
     if conf.to_save_a is None:
         return nbody(ptcl, cosmo, conf, reverse=reverse)

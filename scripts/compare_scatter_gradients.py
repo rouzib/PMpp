@@ -39,10 +39,10 @@ from pmwd import (
     white_noise as white_noise_pmwd,
 )
 
-from src.configuration import Configuration
-from src.particles import Particles
-from src.scatter import scatter
-from src.utils import create_compute_mesh
+from pmpp.configuration import Configuration
+from pmpp.particles import Particles
+from pmpp.scatter import scatter
+from pmpp.utils import create_compute_mesh
 
 
 def parse_args() -> argparse.Namespace:

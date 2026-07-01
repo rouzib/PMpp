@@ -1,8 +1,10 @@
 # PM++: Multi-GPU Particle-Mesh Cosmology
 
+[![Documentation Status](https://readthedocs.org/projects/pmpp-v2/badge/?version=latest)](https://pmpp-v2.readthedocs.io/en/latest/?badge=latest)
+
 PM++ is a JAX-based, differentiable particle-mesh cosmology code built on top
 of PMWD ideas and extended for multi-GPU simulations. The active implementation
-lives in `src/`; the `pmwd/` directory is kept as a reference implementation for
+is imported as `pmpp` and lives in `src/pmpp/`; the `pmwd/` directory is kept as a reference implementation for
 validation.
 
 ## Current Scope
@@ -12,13 +14,13 @@ validation.
 - PMWD comparison tests for forward and gradient correctness.
 - Distributed FFT support for sharded meshes.
 - LPT, Boltzmann/growth utilities, scatter/gather, and power-spectrum tools.
-- Potential-correction models under `src/corrections/`.
+- Potential-correction models under `src/pmpp/corrections/`.
 
 ## Repository Layout
 
 ```text
 PM++_v2/
-|-- src/                         # Active PM++ implementation
+|-- src/pmpp/                    # Active importable PM++ package
 |   |-- configuration.py         # Simulation configuration
 |   |-- multigpu_configuration.py# Multi-GPU mode/configuration object
 |   |-- particles.py             # Particle state and ownership
@@ -50,9 +52,9 @@ top-level `compute_mesh=` compatibility path still exists, but is not preferred.
 import jax
 import jax.numpy as jnp
 
-from src.configuration import Configuration
-from src.multigpu_configuration import MultiGPUConfiguration
-from src.utils import create_compute_mesh
+from pmpp.configuration import Configuration
+from pmpp.multigpu_configuration import MultiGPUConfiguration
+from pmpp.utils import create_compute_mesh
 
 res = 256
 box_size = 1000.0  # Mpc/h
@@ -91,13 +93,13 @@ corresponding capacity and rerun.
 import jax
 import jax.numpy as jnp
 
-from src.boltzmann import boltzmann
-from src.configuration import Configuration
-from src.cosmo import SimpleLCDM
-from src.lpt import lpt
-from src.modes import linear_modes, white_noise
-from src.nbody import nbody
-from src.scatter import scatter
+from pmpp.boltzmann import boltzmann
+from pmpp.configuration import Configuration
+from pmpp.cosmo import SimpleLCDM
+from pmpp.lpt import lpt
+from pmpp.modes import linear_modes, white_noise
+from pmpp.nbody import nbody
+from pmpp.scatter import scatter
 
 res = 32
 box_size = 100.0
@@ -129,18 +131,18 @@ Expected sanity checks:
 
 ## Potential Corrections
 
-Correction implementations now live in `src/corrections/`.
+Correction implementations now live in `pmpp.corrections` (`src/pmpp/corrections/`).
 
 ```python
-from src.corrections import (
+from pmpp.corrections import (
     apply_potential_correction,
     evaluate_potential_transfer,
     init_potential_correction,
 )
 ```
 
-`src/potential_correction.py` remains as a compatibility facade for old scripts,
-but new code and tests should import from `src.corrections`.
+`pmpp.potential_correction` remains as a compatibility facade for old scripts,
+but new code and tests should import from `pmpp.corrections`.
 
 Supported correction families:
 
@@ -193,4 +195,4 @@ The primary example notebooks are:
 - `notebooks/mGPU_pmwd_local.ipynb`
 
 Restart notebook kernels after code changes. Stale kernels can keep old module
-objects, especially around `src.corrections` and multi-GPU configuration.
+objects, especially around `pmpp.corrections` and multi-GPU configuration.
