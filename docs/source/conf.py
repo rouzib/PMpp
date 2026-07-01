@@ -24,6 +24,15 @@ extensions = [
 ]
 
 autosummary_generate = True
+
+# Keep autodoc import-safe on Read the Docs.  Some modules expose optional IO
+# and neural-network correction helpers whose dependencies are not required for
+# the core package or for rendering the documentation.
+autodoc_mock_imports = [
+    "h5py",
+    "haiku",
+    "optax",
+]
 nb_execution_mode = "off"
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "sphinx_rtd_theme"

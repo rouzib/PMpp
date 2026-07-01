@@ -13,7 +13,10 @@ html:
 sphinx:
   config:
     html_theme: sphinx_rtd_theme
-    autodoc_mock_imports: []
+    autodoc_mock_imports:
+      - h5py
+      - haiku
+      - optax
     autosummary_generate: true
   extra_extensions:
     - sphinx.ext.autodoc
