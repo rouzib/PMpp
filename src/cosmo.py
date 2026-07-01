@@ -188,10 +188,11 @@ class Cosmology:
         ----------
         conf
             Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        sigma8
+            Target RMS linear-density fluctuation amplitude in 8 Mpc/h spheres.
         args
             Additional positional cosmology parameters forwarded to the constructor.
-        kwargs
-            Extra keyword options forwarded to the selected correction initializer."""
+        """
         from .boltzmann import boltzmann
 
         cosmo = cls(conf, 1, *args, **kwargs)

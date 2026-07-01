@@ -475,15 +475,12 @@ class Particles:
         conf : Configuration
         pos : ArrayLike
             Particle positions in [L].
-        wrap : bool, optional
-            Whether to wrap around the periodic boundaries.
-
-        Parameters
-        ----------
-        vel
+        vel : ArrayLike or None, optional
             Particle velocity vectors.
-        acc
-            Particle acceleration vectors."""
+        acc : ArrayLike or None, optional
+            Particle acceleration vectors.
+        wrap : bool, optional
+            Whether to wrap around the periodic boundaries."""
         if conf.use_mGPU:
             pos_host = np.asarray(jax.device_get(pos), dtype=np.dtype(conf.float_dtype))
             pmid = np.rint(pos_host / conf.cell_size).astype(np.dtype(conf.pmid_dtype))
@@ -583,15 +580,12 @@ class Particles:
         conf : Configuration
         pos : ArrayLike
             Particle positions in [L].
-        wrap : bool, optional
-            Whether to wrap around the periodic boundaries.
-
-        Parameters
-        ----------
-        vel
+        vel : ArrayLike or None, optional
             Particle velocity vectors.
-        acc
-            Particle acceleration vectors."""
+        acc : ArrayLike or None, optional
+            Particle acceleration vectors.
+        wrap : bool, optional
+            Whether to wrap around the periodic boundaries."""
         if conf.use_mGPU:
             pmid, disp, vel, acc, unused_index, halo_mask = cls._partition_and_shard_particle_fields(
                 conf, pmid, disp, vel, acc
