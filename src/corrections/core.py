@@ -49,8 +49,8 @@ def init_potential_correction(key, model="neural_spline", **kwargs):
     ----------
     key
         JAX PRNG key used to initialize correction parameters.
-    kwargs
-        Extra keyword options forwarded to the selected correction initializer."""
+    model
+        Correction family to initialize, such as a radial spline, mesh CNN, PGD, PM-window, softening, or supported combined model."""
     if model in {"neural_spline", "radial_spline", "radial", "radial_mlp"}:
         return init_radial_potential_correction(key, **kwargs)
     if model in {"mesh_cnn", "cnn"}:
@@ -144,6 +144,8 @@ def sample_potential_transfer(correction, radius_fraction, a, cosmo, conf):
         Potential-correction pytree or ``None`` for the uncorrected PM force.
     radius_fraction
         Radius samples normalized to the mesh Nyquist scale.
+    a
+        Scale factor used when evaluating time-dependent radial corrections.
     cosmo
         Cosmology object supplying density, growth, and transfer parameters.
     conf
@@ -168,6 +170,10 @@ def evaluate_radial_potential_transfer(correction, a, cosmo, conf):
 
     Parameters
     ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force. Combined corrections multiply all supported radial-transfer components.
+    a
+        Scale factor used when evaluating time-dependent PGD or radial corrections.
     cosmo
         Cosmology object supplying density, growth, and transfer parameters.
     conf
@@ -209,6 +215,10 @@ def evaluate_potential_transfer(correction, a, cosmo, conf):
 
     Parameters
     ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
+    a
+        Scale factor used when evaluating time-dependent correction components.
     cosmo
         Cosmology object supplying density, growth, and transfer parameters.
     conf
@@ -222,11 +232,13 @@ def evaluate_mesh_potential_residual(correction, source_real, potential_real, a,
     Parameters
     ----------
     correction
-        Potential-correction pytree or ``None`` for the uncorrected PM force.
+        Mesh CNN correction pytree, combined correction containing a mesh CNN, or ``None``.
     source_real
         Real-space source density mesh.
     potential_real
         Real-space potential mesh.
+    a
+        Scale factor passed to the mesh CNN residual model.
     cosmo
         Cosmology object supplying density, growth, and transfer parameters.
     conf
@@ -242,9 +254,11 @@ def evaluate_mesh_source_residual(correction, source_real, a, cosmo, conf):
     Parameters
     ----------
     correction
-        Potential-correction pytree or ``None`` for the uncorrected PM force.
+        Mesh CNN correction pytree, combined correction containing a mesh CNN, or ``None``.
     source_real
         Real-space source density mesh.
+    a
+        Scale factor passed to the mesh CNN residual model.
     cosmo
         Cosmology object supplying density, growth, and transfer parameters.
     conf
@@ -265,12 +279,18 @@ def apply_potential_correction(pot, a, cosmo, conf, correction, source_real=None
 
     Parameters
     ----------
+    pot
+        Fourier-space PM potential to correct.
+    a
+        Scale factor for time-dependent correction components; ``None`` is treated as ``1.0``.
     cosmo
         Cosmology object supplying density, growth, and transfer parameters.
     conf
         Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
     source_real
-        Real-space source density mesh."""
+        Real-space source density mesh required for mesh CNN corrections."""
     if correction is None:
         return pot
     if isinstance(correction, CombinedPotentialCorrection):
