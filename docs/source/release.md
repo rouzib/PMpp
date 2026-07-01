@@ -23,7 +23,7 @@ GPU-dependent tests should be run separately on hardware that provides the requi
 ```bash
 rm -rf dist build .egg-info
 python -m build
-python -m twine check dist/
+python -m twine check dist/*
 ```
 
 ## Configure Trusted Publishing
