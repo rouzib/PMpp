@@ -219,6 +219,19 @@ def _shell_reduce_transposed(spectral, conf, mas_power: int, num_shells: int):
         check_rep=False,
     )
     def local_reduce(spectral_local, mode_x_rep, mode_y_local, mode_z_rep):
+        """Accumulate local spectral shells before cross-device reduction.
+
+        Parameters
+        ----------
+        spectral_local
+            Local shard of a spectral density field.
+        mode_x_rep
+            Replicated x-axis shell indices.
+        mode_y_local
+            Local y-axis shell indices.
+        mode_z_rep
+            Replicated z-axis shell indices.
+        """
         p_sum_local = _shell_reduce_local(
             spectral_local,
             mode_x_rep,
@@ -258,6 +271,21 @@ def _shell_reduce_cross_transposed(spectral_a, spectral_b, conf, mas_power: int,
         check_rep=False,
     )
     def local_reduce(spectral_a_local, spectral_b_local, mode_x_rep, mode_y_local, mode_z_rep):
+        """Accumulate local spectral shells before cross-device reduction.
+
+        Parameters
+        ----------
+        spectral_a_local
+            Local shard of the first spectral density field.
+        spectral_b_local
+            Local shard of the second spectral density field.
+        mode_x_rep
+            Replicated x-axis shell indices.
+        mode_y_local
+            Local y-axis shell indices.
+        mode_z_rep
+            Replicated z-axis shell indices.
+        """
         p_a_sum_local, p_b_sum_local, p_cross_sum_local = _shell_reduce_cross_local(
             spectral_a_local,
             spectral_b_local,

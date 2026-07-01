@@ -77,7 +77,16 @@ class NeuralSplineFourierFilter(HaikuModuleBase):
 
 @lru_cache(maxsize=None)
 def radial_transform(n_knots, latent_size, output_init_scale):
-    """Return the cached Haiku transform for the radial spline filter."""
+    """Return the cached Haiku transform for the radial spline filter.
+
+    Parameters
+    ----------
+    n_knots
+        Number of radial spline knots in the learnable transfer model.
+    latent_size
+        Hidden width of the radial MLP.
+    output_init_scale
+        Scale of the final-layer initializer."""
     require_haiku("radial potential corrections")
     return hk.without_apply_rng(
         hk.transform(
@@ -155,7 +164,11 @@ def init_radial_potential_correction(
     -------
     RadialPotentialCorrection
         Initialized trainable radial correction.
-    """
+
+    Parameters
+    ----------
+    unused_kwargs
+        Unused keyword options accepted for API compatibility."""
     del unused_kwargs
     dtype = jnp.dtype(dtype)
     transform = radial_transform(n_knots, latent_size, output_init_scale)
@@ -181,7 +194,18 @@ def init_radial_potential_correction(
 
 
 def sample_radial_potential_transfer(correction, radius_fraction, a, cosmo, conf):
-    """Evaluate the radial transfer on user-supplied normalized radii."""
+    """Evaluate the radial transfer on user-supplied normalized radii.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
+    radius_fraction
+        Radius samples normalized to the mesh Nyquist scale.
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     if correction is None:
         return jnp.ones_like(radius_fraction, dtype=conf.float_dtype)
     radius_fraction = jnp.asarray(radius_fraction, dtype=correction.dtype)
@@ -198,7 +222,16 @@ def sample_radial_potential_transfer(correction, radius_fraction, a, cosmo, conf
 
 
 def evaluate_radial_potential_transfer(correction, a, cosmo, conf):
-    """Evaluate the radial transfer on the full solver k grid."""
+    """Evaluate the radial transfer on the full solver k grid.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     if correction is None:
         return jnp.ones(tuple(conf.mesh_shape[:-1]) + (conf.mesh_shape[-1] // 2 + 1,), dtype=conf.float_dtype)
     k_norm = normalized_k_magnitude_transposed(conf)

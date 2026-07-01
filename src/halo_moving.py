@@ -65,6 +65,15 @@ def compute_halo_mask(x_mod, halo_start, halo_end, unused_indexes):
     """
 
     def slice_mask(start, end):
+        """Return a periodic interval mask for wrapped x-coordinates.
+
+        Parameters
+        ----------
+        start
+            Inclusive lower bound of the periodic x-interval.
+        end
+            Exclusive upper bound of the periodic x-interval.
+        """
         within_range = (x_mod >= start) & (x_mod < end)
         across_boundary = (x_mod >= start) | (x_mod < end)
         return jnp.where(start > end, across_boundary, within_range)

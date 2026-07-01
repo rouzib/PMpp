@@ -124,9 +124,25 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
     def tree_flatten(obj):
         # FIXME JAX doesn't like the flatten function to return iterators, and somehow
         # triggered AssertionError by _closure_convert_for_avals in custom_derivatives.py
+        """Split a dataclass pytree into dynamic children and static metadata.
+
+        Parameters
+        ----------
+        obj
+            Dataclass instance being flattened into JAX pytree children.
+        """
         return tuple(obj.children()), tuple(obj.aux_data())
 
     def tree_unflatten(aux_data, children):
+        """Reconstruct a dataclass pytree from static metadata and dynamic children.
+
+        Parameters
+        ----------
+        aux_data
+            Static dataclass metadata saved during pytree flattening.
+        children
+            Dynamic pytree children restored into the dataclass instance.
+        """
         return cls(**dict(zip(children_names, children)),
                    **dict(zip(aux_data_names, aux_data)))
 
@@ -145,6 +161,15 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
 
         def leaves_all(is_placeholder, tree):
             # similar to tree_all(tree_map(is_placeholder, tree))
+            """Test whether all non-placeholder leaves satisfy a predicate.
+
+            Parameters
+            ----------
+            is_placeholder
+                Predicate identifying placeholder leaves that should be ignored.
+            tree
+                Pytree whose leaves are checked.
+            """
             return all(is_placeholder(x) for x in tree_leaves(tree))
 
         # unnecessary to test for None's since they are empty pytree nodes

@@ -228,6 +228,15 @@ def runge_kutta_step(func, y0, f0, t0, dt):
     ], dtype=f0.dtype)
 
     def body_fun(i, k):
+        """Advance one body iteration in the enclosing loop.
+
+        Parameters
+        ----------
+        i
+            Loop index.
+        k
+            Wavenumber samples at which to evaluate the CDM transfer fit.
+        """
         ti = t0 + dt * alpha[i-1]
         yi = y0 + dt.astype(f0.dtype) * jnp.dot(beta[i-1, :], k)
         ft = func(yi, ti)
@@ -251,7 +260,20 @@ def abs2(x):
 
 
 def mean_error_ratio(error_estimate, rtol, atol, y0, y1):
-    """Return the RMS local-error ratio against adaptive tolerances."""
+    """Return the RMS local-error ratio against adaptive tolerances.
+
+    Parameters
+    ----------
+    error_estimate
+        Estimated local truncation error from the Runge-Kutta step.
+    rtol
+        Relative error tolerance.
+    atol
+        Absolute error tolerance.
+    y0
+        State at the beginning of the step.
+    y1
+        Candidate state at the end of the step."""
     err_tol = atol + rtol * jnp.maximum(jnp.abs(y0), jnp.abs(y1))
     err_ratio = error_estimate / err_tol.astype(error_estimate.dtype)
     return jnp.sqrt(jnp.mean(abs2(err_ratio)))
@@ -341,15 +363,48 @@ def _odeint_wrapper(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args):
 @partial(jax.custom_vjp, nondiff_argnums=(0, 1, 2, 3, 4, 5))
 def _odeint(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args):
     """Flat-state adaptive ODE integrator with a custom adjoint."""
-    def func_(y, t): return func(y, t, *args)
+    def func_(y, t):
+        """Evaluate the wrapped ODE function.
+
+        Parameters
+        ----------
+        y
+            Flattened ODE state.
+        t
+            Scalar integration time.
+        """
+        return func(y, t, *args)
 
     def scan_fun(carry, target_t):
 
+        """Advance one scan iteration in the enclosing integration routine.
+
+        Parameters
+        ----------
+        carry
+            Loop-carried state for a JAX scan or while-loop body.
+        target_t
+            Requested output time for the adaptive ODE scan.
+        """
         def cond_fun(state):
+            """Test whether the adaptive ODE loop should continue stepping.
+
+            Parameters
+            ----------
+            state
+                Loop or custom-adjoint state tuple.
+            """
             i, _, _, t, dt, _, _ = state
             return (t < target_t) & (i < mxstep) & (dt > 0)
 
         def body_fun(state):
+            """Advance one body iteration in the enclosing loop.
+
+            Parameters
+            ----------
+            state
+                Loop or custom-adjoint state tuple.
+            """
             i, y, f, t, dt, last_t, interp_coeff = state
             next_y, next_f, next_y_error, k = runge_kutta_step(
                 func_, y, f, t, dt)
@@ -393,7 +448,12 @@ def _odeint_rev(func, rtol, atol, mxstep, hmax, dt0, res, g):
     ys, ts, args = res
 
     def aug_dynamics(augmented_state, t, *args):
-        """Original system augmented with vjp_y, vjp_t and vjp_args."""
+        """Original system augmented with vjp_y, vjp_t and vjp_args.
+
+        Parameters
+        ----------
+        augmented_state
+            Adjoint state containing time, primal state, adjoint, and parameter cotangents."""
         y, y_bar, *_ = augmented_state
         # `t` here is negatice time, so we need to negate again to get back to
         # normal time. See the `odeint` invocation in `scan_fun` below.
@@ -405,6 +465,15 @@ def _odeint_rev(func, rtol, atol, mxstep, hmax, dt0, res, g):
     t0_bar = 0.
 
     def scan_fun(carry, i):
+        """Advance one scan iteration in the enclosing integration routine.
+
+        Parameters
+        ----------
+        carry
+            Loop-carried state for a JAX scan or while-loop body.
+        i
+            Loop index.
+        """
         y_bar, t0_bar, args_bar = carry
         # Compute effect of moving measurement time
         # `t_bar` should not be complex as it represents time

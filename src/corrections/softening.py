@@ -35,7 +35,14 @@ class HighKSofteningCorrection:
 
 
 def init_high_k_softening_correction(dtype=jnp.float32, **kwargs):
-    """Initialize a high-k softening correction."""
+    """Initialize a high-k softening correction.
+
+    Parameters
+    ----------
+    dtype
+        Floating-point dtype for created arrays or model parameters.
+    kwargs
+        Extra keyword options forwarded to the selected correction initializer."""
     return HighKSofteningCorrection(
         strength=kwargs.get("strength", kwargs.get("softening_strength", 0.0)),
         start=kwargs.get("start", kwargs.get("softening_start", 0.7)),
@@ -46,7 +53,14 @@ def init_high_k_softening_correction(dtype=jnp.float32, **kwargs):
 
 
 def evaluate_high_k_softening(correction, conf):
-    """Evaluate the high-k damping transfer on the PM spectral grid."""
+    """Evaluate the high-k damping transfer on the PM spectral grid.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     kx, ky, kz = [jnp.squeeze(a).astype(correction.dtype) for a in conf.kvec]
     particle_nyquist = jnp.asarray(jnp.pi / conf.ptcl_spacing, dtype=correction.dtype)
     qx = jnp.abs(kx[:, None, None]) / particle_nyquist

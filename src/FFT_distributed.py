@@ -131,11 +131,21 @@ def create_sharded_fft(basic_fft: Callable, partition_spec: P, global_mesh: Mesh
 
     @custom_partitioning
     def sharded_fft(x):
-        """Applies the FFT function to the input array with sharding applied."""
+        """Applies the FFT function to the input array with sharding applied.
+
+        Parameters
+        ----------
+        x
+            Input array transformed by this FFT wrapper."""
         return basic_fft(x)
 
     def supported_sharding(sharding, shape):
-        """Returns a NamedSharding based on the input sharding and the partition specification."""
+        """Returns a NamedSharding based on the input sharding and the partition specification.
+
+        Parameters
+        ----------
+        shape
+            Array shape used when deriving output sharding."""
         if isinstance(sharding, NamedSharding):
             mesh = sharding.mesh
         else:
@@ -143,13 +153,31 @@ def create_sharded_fft(basic_fft: Callable, partition_spec: P, global_mesh: Mesh
         return NamedSharding(mesh, partition_spec)
 
     def partition(mesh, arg_shapes, result_shape):
-        """Defines how to partition the FFT computation across the devices."""
+        """Defines how to partition the FFT computation across the devices.
+
+        Parameters
+        ----------
+        mesh
+            JAX device mesh supplied to the custom-partitioning rule.
+        arg_shapes
+            Abstract input shapes supplied by JAX custom partitioning.
+        result_shape
+            Abstract result shape supplied by JAX custom partitioning."""
         arg_shardings = tree.tree_map(lambda x: x.sharding, arg_shapes)
         return mesh, basic_fft, supported_sharding(arg_shardings[0], arg_shapes[0]), (
             supported_sharding(arg_shardings[0], arg_shapes[0]),)
 
     def infer_sharding_from_operands(mesh, arg_shapes, result_shape):
-        """Infers the sharding of the output based on the input sharding."""
+        """Infers the sharding of the output based on the input sharding.
+
+        Parameters
+        ----------
+        mesh
+            JAX device mesh supplied to the custom-partitioning rule.
+        arg_shapes
+            Abstract input shapes supplied by JAX custom partitioning.
+        result_shape
+            Abstract result shape supplied by JAX custom partitioning."""
         arg_shardings = tree.tree_map(lambda x: x.sharding, arg_shapes)
         return supported_sharding(arg_shardings[0], arg_shapes[0])
 
@@ -234,12 +262,35 @@ def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, C
 
         @custom_vjp
         def batched_irfftn_transposed(x):
+            """Apply the batched transposed-layout inverse real FFT.
+
+            Parameters
+            ----------
+            x
+                Input array transformed by this FFT wrapper.
+            """
             return _batched_irfftn_transposed_jit(x)
 
         def batched_irfftn_transposed_fwd(x):
+            """Save the batched transposed inverse FFT input for its custom VJP.
+
+            Parameters
+            ----------
+            x
+                Input array transformed by this FFT wrapper.
+            """
             return _batched_irfftn_transposed_jit(x), x.shape
 
         def batched_irfftn_transposed_bwd(res, g):
+            """Apply the adjoint of the batched transposed inverse real FFT.
+
+            Parameters
+            ----------
+            res
+                Residual values saved by a custom VJP forward rule.
+            g
+                Cotangent array supplied to a custom VJP backward rule.
+            """
             real_shape = g.shape
             g = _batched_rfftn_transposed_jit(g).conj()
             n = g.shape[-1]
@@ -305,12 +356,35 @@ def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, C
 
     @custom_vjp
     def batched_irfftn_transposed(x):
+        """Apply the batched transposed-layout inverse real FFT.
+
+        Parameters
+        ----------
+        x
+            Input array transformed by this FFT wrapper.
+        """
         return _batched_irfftn_transposed_jit(x)
 
     def batched_irfftn_transposed_fwd(x):
+        """Save the batched transposed inverse FFT input for its custom VJP.
+
+        Parameters
+        ----------
+        x
+            Input array transformed by this FFT wrapper.
+        """
         return _batched_irfftn_transposed_jit(x), x.shape
 
     def batched_irfftn_transposed_bwd(res, g):
+        """Apply the adjoint of the batched transposed inverse real FFT.
+
+        Parameters
+        ----------
+        res
+            Residual values saved by a custom VJP forward rule.
+        g
+            Cotangent array supplied to a custom VJP backward rule.
+        """
         real_shape = g.shape
         g = _batched_rfftn_transposed_jit(g).conj()
         n = g.shape[-1]
@@ -365,12 +439,35 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
 
         @custom_vjp
         def rfftn(x):
+            """Apply the distributed real-to-complex FFT wrapper.
+
+            Parameters
+            ----------
+            x
+                Input array transformed by this FFT wrapper.
+            """
             return _rfftn_jit(x)
 
         def rfftn_fwd(x):
+            """Save the real FFT input shape for its custom VJP.
+
+            Parameters
+            ----------
+            x
+                Input array transformed by this FFT wrapper.
+            """
             return _rfftn_jit(x), x.shape
 
         def rfftn_bwd(x_shape, g):
+            """Apply the inverse transform used by the real FFT custom VJP.
+
+            Parameters
+            ----------
+            x_shape
+                Original real-space input shape saved for an inverse custom VJP.
+            g
+                Cotangent array supplied to a custom VJP backward rule.
+            """
             g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
             g = _ifftn_jit(g.conj()).real
             g *= jnp.prod(jnp.array(x_shape))
@@ -380,12 +477,35 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
 
         @custom_vjp
         def irfftn(x):
+            """Apply the distributed complex-to-real inverse FFT wrapper.
+
+            Parameters
+            ----------
+            x
+                Input array transformed by this FFT wrapper.
+            """
             return _irfftn_jit(x)
 
         def irfftn_fwd(x):
+            """Save the inverse real FFT input for its custom VJP.
+
+            Parameters
+            ----------
+            x
+                Input array transformed by this FFT wrapper.
+            """
             return _irfftn_jit(x), x.shape
 
         def irfftn_bwd(res, g):
+            """Apply the real FFT adjoint for the inverse real FFT custom VJP.
+
+            Parameters
+            ----------
+            res
+                Residual values saved by a custom VJP forward rule.
+            g
+                Cotangent array supplied to a custom VJP backward rule.
+            """
             real_shape = g.shape
             g = _rfftn_jit(g).conj()
             n = g.shape[-1]
@@ -469,20 +589,35 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
 
     @custom_vjp
     def rfftn(x):
-        """
-        Perform a real-valued forward FFT with custom VJP (vector-Jacobian product) defined.
+        """Perform a real-valued forward FFT with custom VJP (vector-Jacobian product) defined.
 
         Note:
             This function is differentiable and the derivative is defined using VJP.
-        """
+
+        Parameters
+        ----------
+        x
+            Input array transformed by this FFT wrapper."""
         return _rfftn_jit(x)
 
     def rfftn_fwd(x):
-        """ Forward pass for custom VJP of real-valued forward FFT """
+        """Forward pass for custom VJP of real-valued forward FFT
+
+        Parameters
+        ----------
+        x
+            Input array transformed by this FFT wrapper."""
         return _rfftn_jit(x), x.shape
 
     def rfftn_bwd(x_shape, g):
-        """ Backward pass for custom VJP of real-valued forward FFT """
+        """Backward pass for custom VJP of real-valued forward FFT
+
+        Parameters
+        ----------
+        x_shape
+            Original real-space input shape saved for an inverse custom VJP.
+        g
+            Cotangent array supplied to a custom VJP backward rule."""
         g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
         g = _ifftn_jit(g.conj()).real
         # the previous code is equivalent to jnp.fft.ifftn(g.conj(), s=x_shape).real
@@ -493,12 +628,35 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
 
     @custom_vjp
     def rfftn_transposed(x):
+        """Apply the distributed real FFT and return transposed spectral layout.
+
+        Parameters
+        ----------
+        x
+            Input array transformed by this FFT wrapper.
+        """
         return _rfftn_transposed_jit(x)
 
     def rfftn_transposed_fwd(x):
+        """Save the transposed real FFT input shape for its custom VJP.
+
+        Parameters
+        ----------
+        x
+            Input array transformed by this FFT wrapper.
+        """
         return _rfftn_transposed_jit(x), x.shape
 
     def rfftn_transposed_bwd(x_shape, g):
+        """Apply the adjoint of the transposed real FFT.
+
+        Parameters
+        ----------
+        x_shape
+            Original real-space input shape saved for an inverse custom VJP.
+        g
+            Cotangent array supplied to a custom VJP backward rule.
+        """
         g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
         g = _ifftn_transposed_jit(g.conj()).real
         g *= jnp.prod(jnp.array(x_shape))
@@ -508,20 +666,35 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
 
     @custom_vjp
     def irfftn(x):
-        """
-        Perform a real-valued inverse FFT with custom VJP (vector-Jacobian product) defined.
+        """Perform a real-valued inverse FFT with custom VJP (vector-Jacobian product) defined.
 
         Note:
             This function is differentiable and the derivative is defined using VJP.
-        """
+
+        Parameters
+        ----------
+        x
+            Input array transformed by this FFT wrapper."""
         return _irfftn_jit(x)
 
     def irfftn_fwd(x):
-        """ Forward pass for custom VJP of real-valued inverse FFT """
+        """Forward pass for custom VJP of real-valued inverse FFT
+
+        Parameters
+        ----------
+        x
+            Input array transformed by this FFT wrapper."""
         return _irfftn_jit(x), x.shape
 
     def irfftn_bwd(res, g):
-        """ Backward pass for custom VJP of real-valued inverse FFT """
+        """Backward pass for custom VJP of real-valued inverse FFT
+
+        Parameters
+        ----------
+        res
+            Residual values saved by a custom VJP forward rule.
+        g
+            Cotangent array supplied to a custom VJP backward rule."""
         real_shape = g.shape
         # Compute the RFFT of the gradient (changes the size of g)
         g = _rfftn_jit(g).conj()  # jnp.fft.rfftn(g) # _rfftn_jit(g)
@@ -545,12 +718,35 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
 
     @custom_vjp
     def irfftn_transposed(x):
+        """Apply the inverse real FFT from transposed spectral layout.
+
+        Parameters
+        ----------
+        x
+            Input array transformed by this FFT wrapper.
+        """
         return _irfftn_transposed_jit(x)
 
     def irfftn_transposed_fwd(x):
+        """Save the transposed inverse FFT input for its custom VJP.
+
+        Parameters
+        ----------
+        x
+            Input array transformed by this FFT wrapper.
+        """
         return _irfftn_transposed_jit(x), x.shape
 
     def irfftn_transposed_bwd(res, g):
+        """Apply the adjoint of the transposed inverse real FFT.
+
+        Parameters
+        ----------
+        res
+            Residual values saved by a custom VJP forward rule.
+        g
+            Cotangent array supplied to a custom VJP backward rule.
+        """
         real_shape = g.shape
         g = _rfftn_transposed_jit(g).conj()
         n = g.shape[-1]
