@@ -43,7 +43,22 @@ def nbody_init(a, ptcl, cosmo, conf, correction=None):
 
 @jax.jit
 def nbody_step(a_prev, a_next, ptcl, cosmo, conf, correction=None):
-    """Advance one N-body macro-step between adjacent scale factors."""
+    """Advance one N-body macro-step between adjacent scale factors.
+
+    Parameters
+    ----------
+    a_prev
+        Scale factor at the start of the integration interval.
+    a_next
+        Scale factor at the end of the integration interval.
+    ptcl
+        Particle state passed through the solver.
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force."""
     ptcl = integrate(a_prev, a_next, ptcl, cosmo, conf, correction=correction)
     return ptcl
 
@@ -113,6 +128,15 @@ def nbody_collect(ptcl, cosmo, conf, collector, collector_state, reverse=False, 
     ptcl = nbody_init(a[0], ptcl, cosmo, conf, correction=correction)
 
     def body(carry, ab):
+        """Advance one scan body step for the enclosing N-body integration.
+
+        Parameters
+        ----------
+        carry
+            Loop-carried state for a JAX scan or while-loop body.
+        ab
+            Pair of adjacent scale factors for one scan iteration.
+        """
         ptcl_state, state = carry
         a_prev, a_next = ab
         ptcl_state = nbody_step(a_prev, a_next, ptcl_state, cosmo, conf, correction=correction)
@@ -166,6 +190,15 @@ def nbody_observe(ptcl, cosmo, conf, observer, reverse=False, include_start=Fals
     first_obs = observer(a[0], ptcl, cosmo, conf) if include_start else None
 
     def body(ptcl_state, ab):
+        """Advance one scan body step for the enclosing N-body integration.
+
+        Parameters
+        ----------
+        ptcl_state
+            Flattened particle-state tuple used by the custom adjoint.
+        ab
+            Pair of adjacent scale factors for one scan iteration.
+        """
         a_prev, a_next = ab
         ptcl_state = nbody_step(a_prev, a_next, ptcl_state, cosmo, conf, correction=correction)
         obs = observer(a_next, ptcl_state, cosmo, conf)
@@ -213,6 +246,15 @@ def _nbody_impl(ptcl, cosmo, conf, reverse=False, correction=None):
     ptcl = nbody_init(a[0], ptcl, cosmo, conf, correction=correction)
 
     def body(ptcl, ab):
+        """Advance one scan body step for the enclosing N-body integration.
+
+        Parameters
+        ----------
+        ptcl
+            Particle state passed through the solver.
+        ab
+            Pair of adjacent scale factors for one scan iteration.
+        """
         a_prev, a_next = ab
         ptcl = nbody_step(a_prev, a_next, ptcl, cosmo, conf, correction=correction)
         return ptcl, None
@@ -359,6 +401,15 @@ def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False, correction=None):
     )
 
     def body(carry, stage):
+        """Advance one scan body step for the enclosing N-body integration.
+
+        Parameters
+        ----------
+        carry
+            Loop-carried state for a JAX scan or while-loop body.
+        stage
+            Integration-stage descriptor from the N-body schedule.
+        """
         ptcl, ptcl_cot, cosmo_cot, correction_cot = carry
         a_prev, a_next, a_vel, a_acc, a_kick_prev, a_kick_next = stage
         ptcl, ptcl_cot, cosmo_cot = drift_adj_from_output(

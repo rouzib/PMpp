@@ -16,7 +16,12 @@ except ImportError:
 
 
 def require_haiku(feature_name):
-    """Raise a targeted import error when an optional Haiku feature is used."""
+    """Raise a targeted import error when an optional Haiku feature is used.
+
+    Parameters
+    ----------
+    feature_name
+        Name of the optional feature that requires the dependency."""
     if hk is None:
         raise ImportError(
             f"haiku is required for {feature_name}. Install dm-haiku to enable this correction."
@@ -24,7 +29,12 @@ def require_haiku(feature_name):
 
 
 def require_optax(feature_name):
-    """Raise a targeted import error when an optional Optax utility is used."""
+    """Raise a targeted import error when an optional Optax utility is used.
+
+    Parameters
+    ----------
+    feature_name
+        Name of the optional feature that requires the dependency."""
     if optax is None:
         raise ImportError(
             f"optax is required for {feature_name}. Install optax to enable this optimizer utility."
@@ -35,7 +45,12 @@ HaikuModuleBase = hk.Module if hk is not None else object
 
 
 def normalized_k_magnitude_transposed(conf):
-    """Return ``|k| / k_Nyquist`` on the transposed spectral layout."""
+    """Return ``|k| / k_Nyquist`` on the transposed spectral layout.
+
+    Parameters
+    ----------
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     kx, ky, kz = [jnp.squeeze(a).astype(conf.float_dtype) for a in conf.kvec]
     k_nyquist = jnp.asarray(jnp.pi / conf.cell_size, dtype=conf.float_dtype)
     return jnp.sqrt(
@@ -46,12 +61,26 @@ def normalized_k_magnitude_transposed(conf):
 
 
 def default_cosmo_features(dtype):
-    """Default conditioning vector used when no cosmology is available."""
+    """Default conditioning vector used when no cosmology is available.
+
+    Parameters
+    ----------
+    dtype
+        Floating-point dtype for created arrays or model parameters."""
     return jnp.asarray([0.3, 0.8], dtype=dtype)
 
 
 def resolve_sigma8(cosmo, dtype, allow_missing_sigma8=False):
-    """Extract a finite sigma8 value for correction conditioning."""
+    """Extract a finite sigma8 value for correction conditioning.
+
+    Parameters
+    ----------
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    dtype
+        Floating-point dtype for created arrays or model parameters.
+    allow_missing_sigma8
+        Whether to substitute a default sigma8 feature when it is unavailable on the cosmology."""
     default_sigma8 = float(default_cosmo_features(dtype)[1])
     if cosmo is None:
         return jnp.asarray(default_sigma8, dtype=dtype)
@@ -76,7 +105,14 @@ def resolve_sigma8(cosmo, dtype, allow_missing_sigma8=False):
 
 
 def cosmo_features(cosmo, dtype, allow_missing_sigma8=False):
-    """Pack cosmology conditioning features as ``[Omega_m, sigma8]``."""
+    """Pack cosmology conditioning features as ``[Omega_m, sigma8]``.
+
+    Parameters
+    ----------
+    dtype
+        Floating-point dtype for created arrays or model parameters.
+    allow_missing_sigma8
+        Whether to substitute a default sigma8 feature when it is unavailable on the cosmology."""
     if cosmo is None:
         return default_cosmo_features(dtype)
     if hasattr(cosmo, "shape"):
@@ -86,7 +122,14 @@ def cosmo_features(cosmo, dtype, allow_missing_sigma8=False):
 
 
 def correction_cosmo_features(correction, cosmo, dtype):
-    """Resolve conditioning features, honoring values stored on the correction."""
+    """Resolve conditioning features, honoring values stored on the correction.
+
+    Parameters
+    ----------
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    dtype
+        Floating-point dtype for created arrays or model parameters."""
     if correction is not None and getattr(correction, "sigma8_value", None) is not None:
         if cosmo is None:
             return jnp.asarray([default_cosmo_features(dtype)[0], correction.sigma8_value], dtype=dtype)

@@ -32,6 +32,19 @@ def density_projection_observer(axis: int, normalize: bool = False):
     """
 
     def observer(a, ptcl, cosmo, conf):
+        """Project the current particle density for a snapshot observer.
+
+        Parameters
+        ----------
+        a
+            Scale factor associated with the observer output.
+        ptcl
+            Particle state passed through the solver.
+        cosmo
+            Cosmology object supplying density, growth, and transfer parameters.
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        """
         del a, cosmo
         dens = scatter(ptcl, conf)
         proj = dens.sum(axis=axis)
@@ -71,11 +84,35 @@ def nbody_kappa(ptcl, cosmo, conf, reverse: bool = False):
     max_slice_width = conf.max_slice_width
 
     def collector(saved_state, a_prev, a_next, ptcl_step, cosmo_step, conf_step):
+        """Update the observer save buffer across an integration interval.
+
+        Parameters
+        ----------
+        saved_state
+            Observer accumulation state carried between save steps.
+        a_prev
+            Scale factor at the start of the integration interval.
+        a_next
+            Scale factor at the end of the integration interval.
+        ptcl_step
+            Particle state at the current integration step.
+        cosmo_step
+            Cosmology state associated with the current observer step.
+        conf_step
+            Configuration associated with the current observer step.
+        """
         del a_prev, cosmo_step
         is_close = jnp.isclose(a_next, to_save_a, atol=1e-6)
         match_index = jnp.where(is_close, size=1, fill_value=-1)[0][0]
 
         def save_op(state):
+            """Insert one observed state into the save buffer.
+
+            Parameters
+            ----------
+            state
+                Loop or custom-adjoint state tuple.
+            """
             dens_tot = scatter(ptcl_step, conf_step)
             dens = jnp.stack(
                 [

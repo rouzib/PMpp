@@ -325,12 +325,19 @@ def get_k_magnitude(kvec, conf):
              out_shardings=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None))
              )
     def create_k_magnitude_sharded(kx_sharded, ky_replicated, kz_replicated):
-        """
-        Creates the magnitude of the k-vector in a JIT-compatible and
+        """Creates the magnitude of the k-vector in a JIT-compatible and
         memory-efficient, sharded manner.
 
         Each device runs this same code, but on its own piece of the data.
-        """
+
+        Parameters
+        ----------
+        kx_sharded
+            Local shard of x-axis wavenumbers.
+        ky_replicated
+            Replicated y-axis wavenumbers.
+        kz_replicated
+            Replicated z-axis rFFT wavenumbers."""
         kx_b = kx_sharded[:, None, None]
         ky_b = ky_replicated[None, :, None]
         kz_b = kz_replicated[None, None, :]
@@ -372,6 +379,17 @@ def get_k_magnitude_transposed(kvec, conf):
         out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
     )
     def create_k_magnitude_transposed(kx_replicated, ky_sharded, kz_replicated):
+        """Build transposed-layout squared wavenumber magnitudes on each shard.
+
+        Parameters
+        ----------
+        kx_replicated
+            Replicated x-axis wavenumbers.
+        ky_sharded
+            Local shard of y-axis wavenumbers.
+        kz_replicated
+            Replicated z-axis rFFT wavenumbers.
+        """
         kx_b = kx_replicated[:, None, None]
         ky_b = ky_sharded[None, :, None]
         kz_b = kz_replicated[None, None, :]

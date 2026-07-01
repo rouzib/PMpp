@@ -168,7 +168,14 @@ class TrainablePMWindowCompensationCorrection:
 
 
 def init_pm_window_compensation_correction(dtype=jnp.float32, **kwargs):
-    """Initialize an analytic CIC/PM assignment-window compensation correction."""
+    """Initialize an analytic CIC/PM assignment-window compensation correction.
+
+    Parameters
+    ----------
+    dtype
+        Floating-point dtype for created arrays or model parameters.
+    kwargs
+        Extra keyword options forwarded to the selected correction initializer."""
     return PMWindowCompensationCorrection(
         assignment_order=kwargs.get("assignment_order", 2),
         windows=kwargs.get("windows", 2),
@@ -183,7 +190,14 @@ def init_pm_window_compensation_correction(dtype=jnp.float32, **kwargs):
 
 
 def init_trainable_pm_window_compensation_correction(dtype=jnp.float32, **kwargs):
-    """Initialize a trainable bounded PM-window compensation correction."""
+    """Initialize a trainable bounded PM-window compensation correction.
+
+    Parameters
+    ----------
+    dtype
+        Floating-point dtype for created arrays or model parameters.
+    kwargs
+        Extra keyword options forwarded to the selected correction initializer."""
     dtype = jnp.dtype(dtype)
     alpha_min = kwargs.get("window_alpha_min", kwargs.get("alpha_min", 0.0))
     alpha_max = kwargs.get("window_alpha_max", kwargs.get("alpha_max", 0.8))
@@ -211,7 +225,12 @@ def init_trainable_pm_window_compensation_correction(dtype=jnp.float32, **kwargs
 
 
 def pm_window_parameters(correction):
-    """Return physical ``(alpha, max_gain)`` for fixed or trainable windows."""
+    """Return physical ``(alpha, max_gain)`` for fixed or trainable windows.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force."""
     if isinstance(correction, TrainablePMWindowCompensationCorrection):
         alpha = _bounded_sigmoid(correction.raw_alpha, correction.alpha_min, correction.alpha_max, correction.dtype)
         max_gain = _bounded_sigmoid(
@@ -228,7 +247,14 @@ def pm_window_parameters(correction):
 
 
 def evaluate_pm_window_compensation(correction, conf):
-    """Evaluate the bounded inverse assignment-window transfer on the k grid."""
+    """Evaluate the bounded inverse assignment-window transfer on the k grid.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     kx, ky, kz = [jnp.squeeze(a).astype(correction.dtype) for a in conf.kvec]
     cell_size = jnp.asarray(conf.cell_size, dtype=correction.dtype)
     particle_nyquist = jnp.asarray(jnp.pi / conf.ptcl_spacing, dtype=correction.dtype)

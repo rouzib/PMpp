@@ -85,6 +85,13 @@ class Particles:
     def __post_init__(self):
 
         def get_dtype_by_name(name):
+            """Return the configured dtype for a particle-field name.
+
+            Parameters
+            ----------
+            name
+                Particle field name whose dtype is being resolved.
+            """
             if name == "pmid":
                 return conf.pmid_dtype
             elif name == "disp":
@@ -117,13 +124,33 @@ class Particles:
     @staticmethod
     @jax.jit
     def particles_in_slice_mask(x_mod, slice_start, slice_end):
-        """Compatibility wrapper for the standalone halo-moving helper."""
+        """Compatibility wrapper for the standalone halo-moving helper.
+
+        Parameters
+        ----------
+        x_mod
+            Particle x-coordinate wrapped into the periodic global mesh.
+        slice_start
+            Inclusive start of the x-slice in periodic mesh coordinates.
+        slice_end
+            Exclusive end of the x-slice in periodic mesh coordinates."""
         return halo_particles_in_slice_mask(x_mod, slice_start, slice_end)
 
     @staticmethod
     @jax.jit
     def compute_halo_mask(x_mod, halo_start, halo_end, unused_indexes):
-        """Compatibility wrapper for the standalone halo-moving helper."""
+        """Compatibility wrapper for the standalone halo-moving helper.
+
+        Parameters
+        ----------
+        x_mod
+            Particle x-coordinate wrapped into the periodic global mesh.
+        halo_start
+            Inclusive start of the halo interval in periodic mesh coordinates.
+        halo_end
+            Exclusive end of the halo interval in periodic mesh coordinates.
+        unused_indexes
+            Boolean mask marking padded or inactive particle slots."""
         return halo_compute_halo_mask(x_mod, halo_start, halo_end, unused_indexes)
 
     @staticmethod
@@ -260,6 +287,23 @@ class Particles:
 
     @staticmethod
     def distribute_ptcl_pos(pmid, disp, vel, acc, conf, slice_idx):
+        """Build per-device padded particle arrays from host particle data.
+
+        Parameters
+        ----------
+        pmid
+            Integer particle mesh cell identifiers.
+        disp
+            Particle displacement vectors relative to ``pmid`` cells.
+        vel
+            Particle velocity vectors.
+        acc
+            Particle acceleration vectors.
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        slice_idx
+            Index of the target device slice.
+        """
         runtime = conf.multigpu
         store_particle_halos = runtime is not None and runtime.store_particle_halos
         if runtime is None:
@@ -297,6 +341,13 @@ class Particles:
         valid_count = jnp.minimum(jnp.sum(in_slice_mask), conf.max_ptcl_per_slice)
 
         def slice_particles(indices):
+            """Return a particle pytree sliced by the supplied indices.
+
+            Parameters
+            ----------
+            indices
+                Particle indices selected from each particle field.
+            """
             pmid_sliced = jax.lax.gather(
                 pmid,
                 indices[:, None],
@@ -367,6 +418,13 @@ class Particles:
 
         # Define the no-particles branch
         def zero_slices():
+            """Zero slices.
+
+            Parameters
+            ----------
+            None
+                This helper does not accept parameters.
+            """
             empty_pmid = jnp.zeros((conf.max_ptcl_per_slice, pmid.shape[1]),
                                    dtype=pmid.dtype)
             empty_disp = jnp.zeros((conf.max_ptcl_per_slice, disp.shape[1]),
@@ -420,7 +478,12 @@ class Particles:
         wrap : bool, optional
             Whether to wrap around the periodic boundaries.
 
-        """
+        Parameters
+        ----------
+        vel
+            Particle velocity vectors.
+        acc
+            Particle acceleration vectors."""
         if conf.use_mGPU:
             pos_host = np.asarray(jax.device_get(pos), dtype=np.dtype(conf.float_dtype))
             pmid = np.rint(pos_host / conf.cell_size).astype(np.dtype(conf.pmid_dtype))
@@ -446,7 +509,18 @@ class Particles:
 
     @classmethod
     def from_pos_sharded(cls, conf, pos, vel=None, acc=None, wrap=True):
-        """Construct particle state of ``pmid`` and ``disp`` from positions."""
+        """Construct particle state of ``pmid`` and ``disp`` from positions.
+
+        Parameters
+        ----------
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        vel
+            Particle velocity vectors.
+        acc
+            Particle acceleration vectors.
+        wrap
+            Whether positions should be wrapped into the periodic box before anchoring."""
         return cls.from_pos(conf, pos, vel=vel, acc=acc, wrap=wrap)
 
     @classmethod
@@ -457,7 +531,17 @@ class Particles:
         `Particles.gen_grid(...)` ordering rather than re-rounding the input
         Eulerian positions. It is intended for ordered particle sets such as LPT
         outputs or CAMELS snapshots that preserve particle-grid order.
-        """
+
+        Parameters
+        ----------
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        vel
+            Particle velocity vectors.
+        acc
+            Particle acceleration vectors.
+        wrap
+            Whether positions should be wrapped into the periodic box before anchoring."""
         del wrap
         grid_axes = []
         for sp, sm in zip(conf.ptcl_grid_shape, conf.mesh_shape):
@@ -502,7 +586,12 @@ class Particles:
         wrap : bool, optional
             Whether to wrap around the periodic boundaries.
 
-        """
+        Parameters
+        ----------
+        vel
+            Particle velocity vectors.
+        acc
+            Particle acceleration vectors."""
         if conf.use_mGPU:
             pmid, disp, vel, acc, unused_index, halo_mask = cls._partition_and_shard_particle_fields(
                 conf, pmid, disp, vel, acc
@@ -527,7 +616,10 @@ class Particles:
         wrap : bool, optional
             Whether to wrap around the periodic boundaries.
 
-        """
+        Parameters
+        ----------
+        ptcl
+            Particle state passed through the solver."""
         if conf is None:
             conf = ptcl.conf
         pmid = ptcl.pmid
@@ -568,6 +660,13 @@ class Particles:
         """
 
         def build_local(gpu_id):
+            """Construct the local ordered particle grid for one GPU slab.
+
+            Parameters
+            ----------
+            gpu_id
+                Index of the local GPU/device in the slab decomposition.
+            """
             pmid, disp = [], []
 
             sp = conf.ptcl_grid_shape[0]
@@ -632,6 +731,13 @@ class Particles:
         @partial(shard_map, mesh=conf.compute_mesh, in_specs=(P()),
                  out_specs=(P(AXIS_NAME), P(AXIS_NAME), P(AXIS_NAME), P(AXIS_NAME)))
         def build_all():
+            """Construct ordered particle storage for all configured GPU slabs.
+
+            Parameters
+            ----------
+            None
+                This helper does not accept parameters.
+            """
             axis = jax.lax.axis_index(AXIS_NAME)
             return build_local(axis)
 
@@ -699,12 +805,32 @@ class Particles:
 
     @staticmethod
     def pmid_to_pos(pmid, disp, conf):
+        """Convert mesh-cell IDs and displacements back to positions.
+
+        Parameters
+        ----------
+        pmid
+            Integer particle mesh cell identifiers.
+        disp
+            Particle displacement vectors relative to ``pmid`` cells.
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        """
         pos = pmid * conf.cell_size + disp
         pos %= jnp.array(conf.box_size)
         return pos
 
     @staticmethod
     def pos_to_pmid(pos, conf):
+        """Convert positions into nearest mesh-cell IDs and displacements.
+
+        Parameters
+        ----------
+        pos
+            Particle positions in box units.
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        """
         pmid = jnp.rint(pos / conf.cell_size)
         disp = pos - pmid * conf.cell_size
 
@@ -715,6 +841,13 @@ class Particles:
         return pmid, disp
 
     def values_on_device(self, device_id):
+        """Select values that belong to one local device.
+
+        Parameters
+        ----------
+        device_id
+            Index of the local device whose values are selected.
+        """
         start_id = self.conf.max_ptcl_per_slice * device_id
         end_id = self.conf.max_ptcl_per_slice * (device_id + 1)
 
@@ -772,27 +905,34 @@ class Particles:
         new_valid,
         max_values_to_add,
     ):
-        max_values_to_add = min(max_values_to_add, pmid.shape[0])
-        """
-        Add a specified number of new particle positions, velocities, and indices to the existing particle
-        system, while ensuring that the number of added particles does not exceed the maximum limit. The
-        function updates the particle system and the unused slot indices accordingly.
+        """Append incoming particles into the unused slots of a padded particle buffer.
 
-        :param pos: A 2D array representing the positions of existing particles. Each row corresponds to
-                    a particle, and each column corresponds to a coordinate.
-        :param vel: A 2D array representing the velocities of existing particles. Each row corresponds to
-                    a particle, and each column corresponds to a speed component.
-        :param unused_indexes: A 1D Boolean array where True indicates the presence of available slots
-                               for new particles and False indicates occupied slots.
-        :param new_pos: A 2D array representing the positions of the new particles to be added. Each row
-                        corresponds to a particle, and each column corresponds to a coordinate.
-        :param new_vel: A 2D array representing the velocities of the new particles to be added. Each row
-                        corresponds to a particle, and each column corresponds to a speed component.
-        :param max_values_to_add: An integer representing the maximum number of new particles to add
-                                  to the system.
-        :return: A tuple containing the updated positions, velocities, indices of the particles, and the
-                 updated array of unused indices.
+        Parameters
+        ----------
+        pmid
+            Integer particle mesh cell identifiers.
+        disp
+            Particle displacement vectors relative to ``pmid`` cells.
+        vel
+            Particle velocity vectors.
+        acc
+            Particle acceleration vectors.
+        unused_indexes
+            Boolean mask marking padded or inactive particle slots.
+        new_pmid
+            Mesh cell identifiers for particles being inserted into a padded buffer.
+        new_disp
+            Displacements for particles being inserted into a padded buffer.
+        new_vel
+            Velocities for particles being inserted into a padded buffer.
+        new_acc
+            Accelerations for particles being inserted into a padded buffer.
+        new_valid
+            Boolean validity mask for particles being inserted into a padded buffer.
+        max_values_to_add
+            Static capacity limit used to size padded multi-GPU communication buffers.
         """
+        max_values_to_add = min(max_values_to_add, pmid.shape[0])
         num_values_to_add = jnp.sum(new_valid)
 
         _ = jax.lax.cond(
@@ -1470,6 +1610,51 @@ class Particles:
         # 1. rebuild the authoritative pre-move sequence,
         # 2. replay the routing metadata in packed-key order,
         # 3. transpose the build+route operations with direct scatters/permutations.
+        """Transpose the canonical halo move from the pre-drift full particle state.
+
+        Parameters
+        ----------
+        pmid
+            Integer particle mesh cell identifiers.
+        source_disp
+            Displacements used to determine source ownership before a halo move.
+        carried_disp
+            Displacements carried through the halo move primal path.
+        vel
+            Particle velocity vectors.
+        acc
+            Particle acceleration vectors.
+        halo_end
+            Exclusive end of the halo interval in periodic mesh coordinates.
+        unused_indexes
+            Boolean mask marking padded or inactive particle slots.
+        disp_cot
+            Cotangent of the particle displacements.
+        vel_cot
+            Cotangent of the particle velocities.
+        acc_cot
+            Cotangent of the particle accelerations.
+        global_nMesh
+            Global mesh size along the distributed slab axis.
+        max_values_to_share
+            Capacity of the particle-exchange buffer between neighboring devices.
+        max_halo_values_to_share
+            Capacity of the halo-copy exchange buffer between neighboring devices.
+        max_ptcl_per_slice
+            Padded particle capacity allocated for one device slice.
+        left_perm
+            Device permutation used to exchange values with the left neighbor.
+        right_perm
+            Device permutation used to exchange values with the right neighbor.
+        num_gpus
+            Number of devices participating in the slab decomposition.
+        disp_size
+            Width of one periodic displacement cell in mesh units.
+        offsets
+            Per-device slab offsets in global mesh coordinates.
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        """
         (
             auth_keys,
             auth_pmid,
@@ -1644,6 +1829,47 @@ class Particles:
         # 1. Keep only authoritative owned particles from the previous full state.
         # 2. Re-route those particles according to the post-drift positions.
         # 3. Rebuild the duplicated left-halo + authoritative storage layout.
+        """Move particles between canonical device slabs and rebuild halo copies.
+
+        Parameters
+        ----------
+        pmid
+            Integer particle mesh cell identifiers.
+        disp_before
+            Displacements before applying the drift that may move particles across slabs.
+        disp_after
+            Displacements after the drift used to determine the new owning slab.
+        vel
+            Particle velocity vectors.
+        acc
+            Particle acceleration vectors.
+        halo_start
+            Inclusive start of the halo interval in periodic mesh coordinates.
+        halo_end
+            Exclusive end of the halo interval in periodic mesh coordinates.
+        unused_indexes
+            Boolean mask marking padded or inactive particle slots.
+        global_nMesh
+            Global mesh size along the distributed slab axis.
+        max_values_to_share
+            Capacity of the particle-exchange buffer between neighboring devices.
+        max_halo_values_to_share
+            Capacity of the halo-copy exchange buffer between neighboring devices.
+        max_ptcl_per_slice
+            Padded particle capacity allocated for one device slice.
+        left_perm
+            Device permutation used to exchange values with the left neighbor.
+        right_perm
+            Device permutation used to exchange values with the right neighbor.
+        num_gpus
+            Number of devices participating in the slab decomposition.
+        disp_size
+            Width of one periodic displacement cell in mesh units.
+        offsets
+            Per-device slab offsets in global mesh coordinates.
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        """
         auth = Particles._canonical_authoritative_from_full(
             pmid,
             disp_before,
@@ -1712,6 +1938,47 @@ class Particles:
         # Reverse drift reconstruction uses the same canonical routing contract as
         # the forward move, but starts from the post-drift authoritative block and
         # shifts displacements back before rerouting/repacking.
+        """Reconstruct the pre-drift canonical layout used by the halo-move adjoint.
+
+        Parameters
+        ----------
+        pmid
+            Integer particle mesh cell identifiers.
+        disp
+            Particle displacement vectors relative to ``pmid`` cells.
+        vel
+            Particle velocity vectors.
+        acc
+            Particle acceleration vectors.
+        halo_start
+            Inclusive start of the halo interval in periodic mesh coordinates.
+        halo_end
+            Exclusive end of the halo interval in periodic mesh coordinates.
+        unused_indexes
+            Boolean mask marking padded or inactive particle slots.
+        drift_factor
+            Scale-factor integral multiplying velocity to reconstruct pre-drift displacement.
+        global_nMesh
+            Global mesh size along the distributed slab axis.
+        max_values_to_share
+            Capacity of the particle-exchange buffer between neighboring devices.
+        max_halo_values_to_share
+            Capacity of the halo-copy exchange buffer between neighboring devices.
+        max_ptcl_per_slice
+            Padded particle capacity allocated for one device slice.
+        left_perm
+            Device permutation used to exchange values with the left neighbor.
+        right_perm
+            Device permutation used to exchange values with the right neighbor.
+        num_gpus
+            Number of devices participating in the slab decomposition.
+        disp_size
+            Width of one periodic displacement cell in mesh units.
+        offsets
+            Per-device slab offsets in global mesh coordinates.
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        """
         auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid = Particles._canonical_authoritative_from_full(
             pmid,
             disp,
@@ -1763,22 +2030,69 @@ class Particles:
     @staticmethod
     @partial(jax.jit, static_argnames=["global_nMesh", "disp_size"])
     def compute_halo_mask_shard_map(pmid, disp, unused_indexes, halo_start, halo_end, global_nMesh, disp_size):
+        """Compute the active halo mask on each device shard.
+
+        Parameters
+        ----------
+        pmid
+            Integer particle mesh cell identifiers.
+        disp
+            Particle displacement vectors relative to ``pmid`` cells.
+        unused_indexes
+            Boolean mask marking padded or inactive particle slots.
+        halo_start
+            Inclusive start of the halo interval in periodic mesh coordinates.
+        halo_end
+            Exclusive end of the halo interval in periodic mesh coordinates.
+        global_nMesh
+            Global mesh size along the distributed slab axis.
+        disp_size
+            Width of one periodic displacement cell in mesh units.
+        """
         return halo_compute_halo_mask_shard_map(
             pmid, disp, unused_indexes, halo_start, halo_end, global_nMesh, disp_size
         )
 
     @staticmethod
     def initialize_mGPU_halo_movement_canonical(conf):
+        """Create the shard-map callable for canonical halo movement.
+
+        Parameters
+        ----------
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        """
         return halo_initialize_mGPU_halo_movement_canonical(conf)
 
     @staticmethod
     def initialize_mGPU_reconstruct_pre_drift(conf):
+        """Create the shard-map callable for pre-drift reconstruction.
+
+        Parameters
+        ----------
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        """
         return halo_initialize_mGPU_reconstruct_pre_drift(conf)
 
     @staticmethod
     def initialize_mGPU_halo_move_pullback(conf):
+        """Create the shard-map callable for the halo-move pullback.
+
+        Parameters
+        ----------
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        """
         return halo_initialize_mGPU_halo_move_pullback(conf)
 
     @staticmethod
     def initialize_mGPU_compute_halo_mask(conf):
+        """Create the shard-map callable for distributed halo-mask computation.
+
+        Parameters
+        ----------
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        """
         return halo_initialize_mGPU_compute_halo_mask(conf)

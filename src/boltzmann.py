@@ -99,6 +99,17 @@ def transfer_fit(k, cosmo, conf):
     beta_c = 1 / (1 + b1 * (f_c**b2 - 1))
 
     def T0_tilde(k, alpha_c, beta_c):
+        """Evaluate the Eisenstein-Hu zero-baryon transfer helper.
+
+        Parameters
+        ----------
+        k
+            Wavenumber samples at which to evaluate the CDM transfer fit.
+        alpha_c
+            CDM suppression coefficient from the Eisenstein-Hu transfer fit.
+        beta_c
+            CDM logarithmic-shape coefficient from the Eisenstein-Hu transfer fit.
+        """
         q = k / (13.41 * k_eq)
         L = jnp.log(jnp.e + 1.8 * beta_c * q)
         C = 14.2 / alpha_c + 386 / (1 + 69.9 * q**1.08)
@@ -201,6 +212,17 @@ def growth_integ(cosmo, conf):
     # TODO necessary to add lpt_order support?
     # G and lna can either be at a single time, or have leading time axes
     def ode(G, lna, cosmo):
+        """Evaluate the logarithmic-scale-factor growth ODE system.
+
+        Parameters
+        ----------
+        G
+            Growth-function values and derivatives for the ODE system.
+        lna
+            Natural logarithm of the scale factor used as the ODE time variable.
+        cosmo
+            Cosmology object supplying density, growth, and transfer parameters.
+        """
         a = jnp.exp(lna)
         dlnH_dlna = H_deriv(a, cosmo)
         Omega_fac = 1.5 * Omega_m_a(a, cosmo)

@@ -132,7 +132,18 @@ class MeshResidualPotentialCorrection(HaikuModuleBase):
 
 
 def mesh_cnn_transform(conf, channels, depth, max_residual, output_init_scale):
-    """Return a Haiku transform bound to the mesh CNN architecture and config."""
+    """Return a Haiku transform bound to the mesh CNN architecture and config.
+
+    Parameters
+    ----------
+    channels
+        Number of hidden convolution channels.
+    depth
+        Number of convolutional residual layers.
+    max_residual
+        Maximum residual amplitude applied by the mesh CNN correction.
+    output_init_scale
+        Scale of the final-layer initializer."""
     require_haiku("mesh CNN potential corrections")
     return hk.without_apply_rng(
         hk.transform(
@@ -216,7 +227,11 @@ def init_mesh_cnn_potential_correction(
     -------
     MeshCNNPotentialCorrection
         Initialized correction container with Haiku parameters and metadata.
-    """
+
+    Parameters
+    ----------
+    unused_kwargs
+        Unused keyword options accepted for API compatibility."""
     del unused_kwargs
     dtype = jnp.dtype(dtype)
     init_conf = conf
@@ -265,7 +280,20 @@ def _apply_mesh_cnn_residual(params, source_real, potential_real, a, cosmo_featu
 
 
 def evaluate_mesh_potential_residual(correction, source_real, potential_real, a, cosmo, conf):
-    """Evaluate a mesh CNN residual potential on the local or sharded mesh."""
+    """Evaluate a mesh CNN residual potential on the local or sharded mesh.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
+    source_real
+        Real-space source density mesh.
+    potential_real
+        Real-space potential mesh.
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     if correction is None:
         return jnp.zeros_like(potential_real, dtype=conf.float_dtype)
     if not isinstance(correction, MeshCNNPotentialCorrection):
@@ -289,6 +317,17 @@ def evaluate_mesh_potential_residual(correction, source_real, potential_real, a,
 
 
 def evaluate_mesh_source_residual(correction, source_real, a, cosmo, conf):
-    """Evaluate a mesh CNN source-only residual using a zero input potential."""
+    """Evaluate a mesh CNN source-only residual using a zero input potential.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
+    source_real
+        Real-space source density mesh.
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     potential_real = jnp.zeros_like(source_real, dtype=conf.float_dtype)
     return evaluate_mesh_potential_residual(correction, source_real, potential_real, a, cosmo, conf)

@@ -44,7 +44,13 @@ def init_potential_correction(key, model="neural_spline", **kwargs):
 
     This factory is the public entry point used by scripts and tests. It keeps
     the rest of the solver from depending on the concrete correction classes.
-    """
+
+    Parameters
+    ----------
+    key
+        JAX PRNG key used to initialize correction parameters.
+    kwargs
+        Extra keyword options forwarded to the selected correction initializer."""
     if model in {"neural_spline", "radial_spline", "radial", "radial_mlp"}:
         return init_radial_potential_correction(key, **kwargs)
     if model in {"mesh_cnn", "cnn"}:
@@ -130,7 +136,18 @@ def init_potential_correction(key, model="neural_spline", **kwargs):
 
 
 def sample_potential_transfer(correction, radius_fraction, a, cosmo, conf):
-    """Sample the radial Fourier transfer curve for plotting or diagnostics."""
+    """Sample the radial Fourier transfer curve for plotting or diagnostics.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
+    radius_fraction
+        Radius samples normalized to the mesh Nyquist scale.
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     if isinstance(correction, CombinedPotentialCorrection):
         if correction.radial is None:
             raise TypeError("This combined correction does not define a radial transfer curve.")
@@ -147,7 +164,14 @@ def sample_potential_transfer(correction, radius_fraction, a, cosmo, conf):
 
 
 def evaluate_radial_potential_transfer(correction, a, cosmo, conf):
-    """Evaluate the multiplicative Fourier transfer field for radial corrections."""
+    """Evaluate the multiplicative Fourier transfer field for radial corrections.
+
+    Parameters
+    ----------
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     if isinstance(correction, CombinedPotentialCorrection):
         transfer = jnp.asarray(1.0, dtype=conf.float_dtype)
         if correction.window is not None:
@@ -181,19 +205,50 @@ def evaluate_radial_potential_transfer(correction, a, cosmo, conf):
 
 
 def evaluate_potential_transfer(correction, a, cosmo, conf):
-    """Compatibility alias for callers that predate the correction refactor."""
+    """Compatibility alias for callers that predate the correction refactor.
+
+    Parameters
+    ----------
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     return evaluate_radial_potential_transfer(correction, a, cosmo, conf)
 
 
 def evaluate_mesh_potential_residual(correction, source_real, potential_real, a, cosmo, conf):
-    """Evaluate the real-space residual potential predicted by a mesh CNN."""
+    """Evaluate the real-space residual potential predicted by a mesh CNN.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
+    source_real
+        Real-space source density mesh.
+    potential_real
+        Real-space potential mesh.
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     if isinstance(correction, CombinedPotentialCorrection):
         correction = correction.mesh_cnn
     return _evaluate_mesh_potential_residual(correction, source_real, potential_real, a, cosmo, conf)
 
 
 def evaluate_mesh_source_residual(correction, source_real, a, cosmo, conf):
-    """Evaluate a mesh CNN residual sourced directly from the density field."""
+    """Evaluate a mesh CNN residual sourced directly from the density field.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
+    source_real
+        Real-space source density mesh.
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     if isinstance(correction, CombinedPotentialCorrection):
         correction = correction.mesh_cnn
     return _evaluate_mesh_source_residual(correction, source_real, a, cosmo, conf)
@@ -207,7 +262,15 @@ def apply_potential_correction(pot, a, cosmo, conf, correction, source_real=None
     transforms the current potential to real space, predicts a residual
     potential, transforms the residual back, and adds it to ``pot``. Combined
     corrections apply the radial part first and the mesh residual second.
-    """
+
+    Parameters
+    ----------
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+    source_real
+        Real-space source density mesh."""
     if correction is None:
         return pot
     if isinstance(correction, CombinedPotentialCorrection):
@@ -252,13 +315,29 @@ def zero_potential_correction_cotangent(correction):
 
 
 def add_potential_correction_cotangents(lhs, rhs):
-    """Add correction cotangent pytrees while preserving ``None`` and float0 leaves."""
+    """Add correction cotangent pytrees while preserving ``None`` and float0 leaves.
+
+    Parameters
+    ----------
+    lhs
+        Left cotangent pytree.
+    rhs
+        Right cotangent pytree."""
     if lhs is None:
         return rhs
     if rhs is None:
         return lhs
 
     def add_leaf(x, y):
+        """Add two potential-correction leaves while preserving ``None`` leaves.
+
+        Parameters
+        ----------
+        x
+            Left correction cotangent leaf, or ``None``/``float0`` when absent.
+        y
+            Right correction cotangent leaf, or ``None``/``float0`` when absent.
+        """
         if x is None:
             return y
         if y is None:
@@ -273,7 +352,12 @@ def add_potential_correction_cotangents(lhs, rhs):
 
 
 def force_uses_interlacing(correction):
-    """Return whether gravity should use interlaced CIC assignment."""
+    """Return whether gravity should use interlaced CIC assignment.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force."""
     if isinstance(correction, CombinedPotentialCorrection):
         return any(
             force_uses_interlacing(child)

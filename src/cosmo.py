@@ -182,7 +182,16 @@ class Cosmology:
 
     @classmethod
     def from_sigma8(cls, conf, sigma8, *args, **kwargs):
-        """Construct cosmology with sigma8 instead of A_s."""
+        """Construct cosmology with sigma8 instead of A_s.
+
+        Parameters
+        ----------
+        conf
+            Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+        args
+            Additional positional cosmology parameters forwarded to the constructor.
+        kwargs
+            Extra keyword options forwarded to the selected correction initializer."""
         from .boltzmann import boltzmann
 
         cosmo = cls(conf, 1, *args, **kwargs)

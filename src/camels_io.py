@@ -82,7 +82,7 @@ def gadget_velocity_to_pmpp(vel, redshift):
     raw Gadget km/s values. Empirically, that convention is:
 
     `v_pm = v_gadget / 100 * a`, with `a = 1 / (1 + z)`.
-    
+
     Parameters
     ----------
     vel : array-like

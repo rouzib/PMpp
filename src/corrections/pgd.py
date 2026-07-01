@@ -97,7 +97,13 @@ def init_pgd_potential_correction(dtype=jnp.float32, **kwargs):
 
     Keyword arguments accept both bare names such as ``alpha0`` and prefixed
     names such as ``pgd_alpha0`` for compatibility with experiment scripts.
-    """
+
+    Parameters
+    ----------
+    dtype
+        Floating-point dtype for created arrays or model parameters.
+    kwargs
+        Extra keyword options forwarded to the selected correction initializer."""
     return PGDPotentialCorrection(
         alpha0=kwargs.get("alpha0", kwargs.get("pgd_alpha0", 0.1)),
         A=kwargs.get("A", kwargs.get("pgd_A", 0.0)),
@@ -114,7 +120,13 @@ def init_trainable_pgd_potential_correction(dtype=jnp.float32, **kwargs):
     Keyword arguments accept both bare names and ``pgd_*`` aliases. Physical
     parameters are converted into bounded unconstrained variables suitable for
     optimization.
-    """
+
+    Parameters
+    ----------
+    dtype
+        Floating-point dtype for created arrays or model parameters.
+    kwargs
+        Extra keyword options forwarded to the selected correction initializer."""
     dtype = jnp.dtype(dtype)
     alpha0_scale = kwargs.get("pgd_alpha0_scale", kwargs.get("alpha0_scale", 0.2))
     kl_min = kwargs.get("pgd_kl_min", kwargs.get("kl_min", 0.02))
@@ -142,7 +154,12 @@ def init_trainable_pgd_potential_correction(dtype=jnp.float32, **kwargs):
 
 
 def pgd_parameters(correction):
-    """Return physical ``(alpha0, A, B, kl, ks)`` for fixed or trainable PGD."""
+    """Return physical ``(alpha0, A, B, kl, ks)`` for fixed or trainable PGD.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force."""
     if isinstance(correction, TrainablePGDPotentialCorrection):
         alpha0 = jnp.asarray(correction.alpha0_scale, dtype=correction.dtype) * jnp.tanh(correction.raw_alpha0)
         kl = _bounded_sigmoid(correction.raw_kl, correction.kl_min, correction.kl_max, correction.dtype)
@@ -152,7 +169,18 @@ def pgd_parameters(correction):
 
 
 def pgd_alpha(a, alpha0, A, B, dtype=jnp.float32):
-    """Return the FastPM PGD time-dependent amplitude."""
+    """Return the FastPM PGD time-dependent amplitude.
+
+    Parameters
+    ----------
+    alpha0
+        PGD amplitude at the pivot scale factor.
+    A
+        PGD scale-factor power-law coefficient.
+    B
+        PGD exponential scale-factor coefficient.
+    dtype
+        Floating-point dtype for created arrays or model parameters."""
     a = jnp.asarray(a, dtype=dtype)
     return jnp.asarray(alpha0, dtype=dtype) * (jnp.asarray(10.0, dtype=dtype) ** (jnp.asarray(A, dtype=dtype) * a**2 - jnp.asarray(B, dtype=dtype) * a))
 
@@ -173,6 +201,17 @@ def _k_squared_transposed(kvec, conf):
         out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
     )
     def create_k_magnitude_transposed(kx_replicated, ky_sharded, kz_replicated):
+        """Build transposed-layout squared wavenumber magnitudes on each shard.
+
+        Parameters
+        ----------
+        kx_replicated
+            Replicated x-axis wavenumbers.
+        ky_sharded
+            Local shard of y-axis wavenumbers.
+        kz_replicated
+            Replicated z-axis rFFT wavenumbers.
+        """
         local_shard = (
             kx_replicated[:, None, None] ** 2
             + ky_sharded[None, :, None] ** 2
@@ -184,7 +223,14 @@ def _k_squared_transposed(kvec, conf):
 
 
 def evaluate_pgd_bandpass(correction, a, conf):
-    """Evaluate the PGD intermediate-k band-pass factor."""
+    """Evaluate the PGD intermediate-k band-pass factor.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     k2 = _k_squared_transposed(conf.kvec, conf).astype(correction.dtype)
     _, _, _, kl, ks = pgd_parameters(correction)
     kl2 = jnp.asarray(kl, dtype=correction.dtype) ** 2
@@ -195,7 +241,14 @@ def evaluate_pgd_bandpass(correction, a, conf):
 
 
 def evaluate_pgd_potential_transfer(correction, a, conf):
-    """Evaluate the multiplicative potential transfer equivalent to PGD."""
+    """Evaluate the multiplicative potential transfer equivalent to PGD.
+
+    Parameters
+    ----------
+    correction
+        Potential-correction pytree or ``None`` for the uncorrected PM force.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     alpha0, A, B, _, _ = pgd_parameters(correction)
     alpha = pgd_alpha(a, alpha0, A, B, dtype=correction.dtype)
     band = evaluate_pgd_bandpass(correction, a, conf)

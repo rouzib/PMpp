@@ -19,7 +19,7 @@ def get_k_squared(kvec, conf):
     The distributed branch builds only the local slab of the broadcasted
     ``kx^2 + ky^2 + kz^2`` field. That keeps Poisson-kernel construction from
     forcing a dense all-device materialization.
-    
+
     Parameters
     ----------
     kvec : sequence of jax.Array
@@ -46,12 +46,19 @@ def get_k_squared(kvec, conf):
              out_shardings=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None))
              )
     def create_k_magnitude_sharded(kx_sharded, ky_replicated, kz_replicated):
-        """
-        Creates the magnitude of the k-vector in a JIT-compatible and
+        """Creates the magnitude of the k-vector in a JIT-compatible and
         memory-efficient, sharded manner.
 
         Each device runs this same code, but on its own piece of the data.
-        """
+
+        Parameters
+        ----------
+        kx_sharded
+            Local shard of x-axis wavenumbers.
+        ky_replicated
+            Replicated y-axis wavenumbers.
+        kz_replicated
+            Replicated z-axis rFFT wavenumbers."""
         kx_b = kx_sharded[:, None, None]
         ky_b = ky_replicated[None, :, None]
         kz_b = kz_replicated[None, None, :]
@@ -91,6 +98,17 @@ def get_k_squared_transposed(kvec, conf):
         out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
     )
     def create_k_magnitude_transposed(kx_replicated, ky_sharded, kz_replicated):
+        """Build transposed-layout squared wavenumber magnitudes on each shard.
+
+        Parameters
+        ----------
+        kx_replicated
+            Replicated x-axis wavenumbers.
+        ky_sharded
+            Local shard of y-axis wavenumbers.
+        kz_replicated
+            Replicated z-axis rFFT wavenumbers.
+        """
         kx_b = kx_replicated[:, None, None]
         ky_b = ky_sharded[None, :, None]
         kz_b = kz_replicated[None, None, :]
@@ -107,7 +125,7 @@ def get_discrete_k_squared_transposed(kvec, conf):
     The continuum kernel uses ``k^2``. The optional discrete PM Green's
     function replaces each axis with ``2 sin(k dx / 2) / dx``, matching the
     lattice Laplacian more closely near the mesh scale.
-    
+
     Parameters
     ----------
     kvec : sequence of jax.Array
@@ -142,6 +160,17 @@ def get_discrete_k_squared_transposed(kvec, conf):
         out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
     )
     def create_discrete_k_magnitude_transposed(kx_replicated, ky_sharded, kz_replicated):
+        """Build transposed-layout discrete-gradient wavenumber magnitudes on each shard.
+
+        Parameters
+        ----------
+        kx_replicated
+            Replicated x-axis wavenumbers.
+        ky_sharded
+            Local shard of y-axis wavenumbers.
+        kz_replicated
+            Replicated z-axis rFFT wavenumbers.
+        """
         local_shard = (
             kx_replicated[:, None, None] ** 2
             + ky_sharded[None, :, None] ** 2
@@ -158,7 +187,7 @@ def apply_particle_nyquist_filter(src, masks):
     ``masks`` are one-dimensional sharded arrays prepared by
     ``Configuration``. Multiplying them one axis at a time avoids creating a
     dense 3D boolean mask and preserves the existing FFT sharding.
-    
+
     Parameters
     ----------
     src : jax.Array
@@ -205,7 +234,18 @@ def laplace(kvec, src, conf, cosmo=None):
 
 
 def laplace_fwd(kvec, src, conf, cosmo):
-    """Forward rule for the Poisson custom VJP."""
+    """Forward rule for the Poisson custom VJP.
+
+    Parameters
+    ----------
+    kvec
+        Tuple of spectral wavenumber arrays.
+    src
+        Real-space source density field.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters."""
     pot = laplace(kvec, src, conf, cosmo)
     return pot, (kvec, conf, cosmo)
 
@@ -216,7 +256,12 @@ def laplace_bwd(res, pot_cot):
     .. _JAX FAQ:
         https://jax.readthedocs.io/en/latest/faq.html#gradients-contain-nan-where-using-where
 
-    """
+    Parameters
+    ----------
+    res
+        Residual values saved by a custom VJP forward rule.
+    pot_cot
+        Cotangent of the potential returned by the Laplace solve."""
     kvec, conf, cosmo = res
     src_cot = laplace(kvec, pot_cot, conf, cosmo)
     return None, src_cot, None, None
@@ -253,13 +298,31 @@ def laplace_transposed(kvec, src, conf, cosmo=None):
 
 
 def laplace_transposed_fwd(kvec, src, conf, cosmo):
-    """Forward rule for the transposed-layout Poisson custom VJP."""
+    """Forward rule for the transposed-layout Poisson custom VJP.
+
+    Parameters
+    ----------
+    kvec
+        Tuple of spectral wavenumber arrays.
+    src
+        Real-space source density field.
+    conf
+        Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers.
+    cosmo
+        Cosmology object supplying density, growth, and transfer parameters."""
     pot = laplace_transposed(kvec, src, conf, cosmo)
     return pot, (kvec, conf, cosmo)
 
 
 def laplace_transposed_bwd(res, pot_cot):
-    """Backward rule for the transposed-layout Poisson custom VJP."""
+    """Backward rule for the transposed-layout Poisson custom VJP.
+
+    Parameters
+    ----------
+    res
+        Residual values saved by a custom VJP forward rule.
+    pot_cot
+        Cotangent of the potential returned by the Laplace solve."""
     kvec, conf, cosmo = res
     src_cot = laplace_transposed(kvec, pot_cot, conf, cosmo)
     return None, src_cot, None, None
@@ -542,6 +605,21 @@ def _reduce_gather_disp_cot(pmid, disp, unused_index, disp_cot, conf: Configurat
         check_rep=False,
     )
     def reduce_local(disp_cot_local, pmid_local, unused_local, disp_local, conf_local):
+        """Accumulate local displacement cotangents for owned particles.
+
+        Parameters
+        ----------
+        disp_cot_local
+            Local-device shard of the corresponding distributed value.
+        pmid_local
+            Local-device shard of the corresponding distributed value.
+        unused_local
+            Local-device shard of the corresponding distributed value.
+        disp_local
+            Local-device shard of the corresponding distributed value.
+        conf_local
+            Local-device shard of the corresponding distributed value.
+        """
         valid_mask = ~unused_local
         return reduce_grad_across_gpus(disp_cot_local, pmid_local, disp_local, valid_mask, conf_local)
 
@@ -610,6 +688,21 @@ def duplicate_slot_counts(ptcl, conf: Configuration):
         check_rep=False,
     )
     def count_local(counts_local, pmid_local, unused_local, disp_local, conf_local):
+        """Count local gather contributions for owned particles.
+
+        Parameters
+        ----------
+        counts_local
+            Local-device shard of the corresponding distributed value.
+        pmid_local
+            Local-device shard of the corresponding distributed value.
+        unused_local
+            Local-device shard of the corresponding distributed value.
+        disp_local
+            Local-device shard of the corresponding distributed value.
+        conf_local
+            Local-device shard of the corresponding distributed value.
+        """
         valid_mask = ~unused_local
         return reduce_grad_across_gpus(counts_local, pmid_local, disp_local, valid_mask, conf_local)
 

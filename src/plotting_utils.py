@@ -6,13 +6,16 @@ from jax.typing import ArrayLike
 
 
 def plot_particle_distribution_on_gpus(particles, force_mGPU=False):
-    """
-    Plot the x-axis position distribution of particles across GPUs.
+    """Plot the x-axis position distribution of particles across GPUs.
     Particles are split evenly across GPUs, and unused particles are removed.
 
     Parameters:
     - particles: An instance of the Particles class.
-    """
+
+    Parameters
+    ----------
+    force_mGPU
+        If true, force the multi-GPU visualization path even when the configuration could run locally."""
     # Retrieve positions, device count, and unused indices
     positions = particles.pos(jnp.float32, wrap=True)
     unused_index = particles.unused_index
@@ -140,13 +143,16 @@ def plot_particle_bins(pos, nMesh, title=None, mask=None):
 
 
 def plot_particle_bins_callback(pos, mask, nMesh, title_idx=None):
-    """
-    Wrapper for plotting particle bins in JIT context using host_callback.
+    """Wrapper for plotting particle bins in JIT context using host_callback.
     Args:
         pos: Positions of particles.
         nMesh: Mesh size.
         title_idx: Numeric index representing the title (instead of a string).
-    """
+
+    Parameters
+    ----------
+    mask
+        Boolean particle-selection mask drawn over the particle-bin plot."""
     # Default to title_idx=0 if not provided
     title_idx = title_idx if title_idx is not None else 0
 
