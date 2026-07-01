@@ -235,7 +235,7 @@ def runge_kutta_step(func, y0, f0, t0, dt):
         i
             Loop index.
         k
-            Wavenumber samples at which to evaluate the CDM transfer fit.
+            Runge-Kutta stage-derivative array updated in-place for each stage.
         """
         ti = t0 + dt * alpha[i-1]
         yi = y0 + dt.astype(f0.dtype) * jnp.dot(beta[i-1, :], k)

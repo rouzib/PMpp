@@ -933,26 +933,6 @@ class Particles:
             Static capacity limit used to size padded multi-GPU communication buffers.
         """
         max_values_to_add = min(max_values_to_add, pmid.shape[0])
-        """
-        Add a specified number of new particle positions, velocities, and indices to the existing particle
-        system, while ensuring that the number of added particles does not exceed the maximum limit. The
-        function updates the particle system and the unused slot indices accordingly.
-
-        :param pos: A 2D array representing the positions of existing particles. Each row corresponds to
-                    a particle, and each column corresponds to a coordinate.
-        :param vel: A 2D array representing the velocities of existing particles. Each row corresponds to
-                    a particle, and each column corresponds to a speed component.
-        :param unused_indexes: A 1D Boolean array where True indicates the presence of available slots
-                               for new particles and False indicates occupied slots.
-        :param new_pos: A 2D array representing the positions of the new particles to be added. Each row
-                        corresponds to a particle, and each column corresponds to a coordinate.
-        :param new_vel: A 2D array representing the velocities of the new particles to be added. Each row
-                        corresponds to a particle, and each column corresponds to a speed component.
-        :param max_values_to_add: An integer representing the maximum number of new particles to add
-                                  to the system.
-        :return: A tuple containing the updated positions, velocities, indices of the particles, and the
-                 updated array of unused indices.
-        """
         num_values_to_add = jnp.sum(new_valid)
 
         _ = jax.lax.cond(

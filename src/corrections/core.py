@@ -334,9 +334,9 @@ def add_potential_correction_cotangents(lhs, rhs):
         Parameters
         ----------
         x
-            Input array transformed by this FFT wrapper.
+            Left correction cotangent leaf, or ``None``/``float0`` when absent.
         y
-            Flattened ODE state.
+            Right correction cotangent leaf, or ``None``/``float0`` when absent.
         """
         if x is None:
             return y
