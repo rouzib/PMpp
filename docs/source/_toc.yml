@@ -30,3 +30,4 @@ parts:
       - file: api
       - file: contributing
       - file: references
+      - file: release

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [project]
@@ -8,8 +8,30 @@ version = "0.1.0"
 description = "PM++: a JAX-based differentiable multi-GPU Particle-Mesh cosmology simulator."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "rouzib" }]
+license = "BSD-3-Clause"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [
+  { name = "rouzib" },
+]
+keywords = [
+  "cosmology",
+  "particle-mesh",
+  "jax",
+  "n-body",
+  "multi-gpu",
+  "differentiable-simulation",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: BSD License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Astronomy",
+  "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = [
   "jax>=0.4.7",
   "mcfit>=0.0.18",
@@ -23,6 +45,26 @@ docs = [
   "myst-nb",
   "matplotlib",
 ]
+dev = [
+  "build",
+  "twine",
+  "pytest",
+]
+
+[project.urls]
+Homepage = "https://github.com/rouzib/PMpp"
+Repository = "https://github.com/rouzib/PMpp"
+Documentation = "https://pmpp-v2.readthedocs.io/en/latest/"
+Issues = "https://github.com/rouzib/PMpp/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pmpp"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src/pmpp",
+  "/README.md",
+  "/LICENSE",
+  "/THIRD_PARTY_NOTICES.md",
+  "/pyproject.toml",
+]

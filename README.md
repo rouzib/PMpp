@@ -19,7 +19,7 @@ validation.
 ## Repository Layout
 
 ```text
-PM++_v2/
+PMpp/
 |-- src/pmpp/                    # Active importable PM++ package
 |   |-- configuration.py         # Simulation configuration
 |   |-- multigpu_configuration.py# Multi-GPU mode/configuration object
@@ -196,3 +196,10 @@ The primary example notebooks are:
 
 Restart notebook kernels after code changes. Stale kernels can keep old module
 objects, especially around `pmpp.corrections` and multi-GPU configuration.
+
+## License
+
+PM++ is distributed under the BSD-3-Clause license; see [LICENSE](LICENSE).
+PM++ is based on PMWD and retains the original PMWD BSD 3-Clause notice in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The `pmwd/` directory is kept
+as a reference implementation for validation.

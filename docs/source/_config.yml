@@ -3,7 +3,7 @@ author: rouzib
 execute:
   execute_notebooks: "off"
 repository:
-  url: https://github.com/rouzib/PMpp_v2
+  url: https://github.com/rouzib/PMpp
   path_to_book: docs/source
   branch: master
   provider: github
