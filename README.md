@@ -1,6 +1,6 @@
 # PM++: Multi-GPU Particle-Mesh Cosmology
 
-[![Documentation Status](https://readthedocs.org/projects/pmpp-v2/badge/?version=latest)](https://pmpp-v2.readthedocs.io/en/latest/?badge=latest)
+[![Documentation Status](https://readthedocs.org/projects/pmpp-docs/badge/?version=latest)](https://pmpp-v2.readthedocs.io/en/latest/?badge=latest)
 
 PM++ is a JAX-based, differentiable particle-mesh cosmology code built on top
 of PMWD ideas and extended for multi-GPU simulations. The active implementation
