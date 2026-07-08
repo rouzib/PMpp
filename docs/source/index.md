@@ -9,4 +9,5 @@ PM++ is research software. Interfaces, correction models, and multi-GPU runtime 
 ## Documentation sections
 
 - [Installation](install.md)
+- [Internals and system diagrams](internals/index.md)
 - [API reference](api/index.rst)

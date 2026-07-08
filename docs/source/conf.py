@@ -19,6 +19,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx_copybutton",
     "sphinx_design",
+    "sphinxcontrib.mermaid",
 ]
 
 autosummary_generate = True
@@ -44,7 +45,6 @@ exclude_patterns = [
     "glossary.md",
     "how_to/*",
     "installation.md",
-    "internals/*",
     "intro.md",
     "introduction/*",
     "license.md",

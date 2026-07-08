@@ -2,7 +2,7 @@ API reference
 =============
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
 
    configuration
    multigpu_configuration
