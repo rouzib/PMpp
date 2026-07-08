@@ -47,6 +47,7 @@ docs = [
   "sphinx-rtd-theme",
   "sphinx-copybutton",
   "sphinx-design",
+  "sphinxcontrib-mermaid",
   "matplotlib",
 ]
 dev = [
