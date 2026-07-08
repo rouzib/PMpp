@@ -1,5 +1,11 @@
 # PM++ Documentation
 
+```{image} https://images.nicolaspayot.ca/others/83E87541-E945-4755-B4DD-ED4CE0E130D4.png
+:alt: PM++ logo
+:width: 320px
+:align: center
+```
+
 PM++ is a JAX-based differentiable Particle-Mesh cosmology package for serial and multi-GPU N-body simulations.
 
 ```{warning}
