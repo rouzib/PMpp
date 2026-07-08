@@ -28,6 +28,32 @@ autodoc_typehints = "description"
 myst_enable_extensions = ["dollarmath", "amsmath", "colon_fence"]
 
 autodoc_mock_imports = ["h5py", "haiku", "optax"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "_config.yml", "_toc.yml", "intro.md", "quickstart.md", "installation.md", "references.md", "contributing.md", "release.md", "api.md", "theory/*", "multigpu/*"]
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    "_config.yml",
+    "_toc.yml",
+    "api.md",
+    "citation.md",
+    "contributing.md",
+    "development/*",
+    "examples/*",
+    "faq.md",
+    "getting_started.md",
+    "glossary.md",
+    "how_to/*",
+    "installation.md",
+    "internals/*",
+    "intro.md",
+    "introduction/*",
+    "license.md",
+    "multigpu/*",
+    "quickstart.md",
+    "references.md",
+    "release.md",
+    "theory/*",
+    "tutorials/*",
+]
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
