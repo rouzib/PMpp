@@ -6,6 +6,7 @@ These pages describe implementation mechanisms for maintainers and advanced user
 :maxdepth: 1
 
 architecture
+system_diagrams
 configuration_runtime
 particles_and_ownership
 scatter_gather
