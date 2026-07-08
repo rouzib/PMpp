@@ -203,3 +203,12 @@ PM++ is distributed under the BSD-3-Clause license; see [LICENSE](LICENSE).
 PM++ is based on PMWD and retains the original PMWD BSD 3-Clause notice in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The `pmwd/` directory is kept
 as a reference implementation for validation.
+
+## Documentation build
+
+Install the documentation extra and build the Sphinx site locally:
+
+```bash
+python -m pip install -e ".[docs]"
+sphinx-build -W --keep-going -b html docs/source docs/build/html
+```

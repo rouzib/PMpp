@@ -12,15 +12,25 @@ html:
   use_issues_button: true
 sphinx:
   config:
-    html_theme: sphinx_rtd_theme
+    html_theme: pydata_sphinx_theme
     autodoc_mock_imports:
       - h5py
       - haiku
       - optax
     autosummary_generate: true
+    napoleon_google_docstring: false
+    napoleon_numpy_docstring: true
+    autodoc_typehints: description
+    myst_enable_extensions:
+      - dollarmath
+      - amsmath
+      - colon_fence
   extra_extensions:
     - sphinx.ext.autodoc
     - sphinx.ext.autosummary
     - sphinx.ext.napoleon
     - sphinx.ext.mathjax
     - sphinx.ext.viewcode
+    - sphinx.ext.intersphinx
+    - sphinx_copybutton
+    - sphinx_design

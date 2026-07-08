@@ -41,8 +41,12 @@ dependencies = [
 docs = [
   "jupyter-book<2.0",
   "sphinx",
-  "sphinx-rtd-theme",
+  "myst-parser",
   "myst-nb",
+  "pydata-sphinx-theme",
+  "sphinx-rtd-theme",
+  "sphinx-copybutton",
+  "sphinx-design",
   "matplotlib",
 ]
 dev = [
