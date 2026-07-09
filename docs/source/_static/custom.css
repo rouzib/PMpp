@@ -1,0 +1,76 @@
+:root {
+  --pmpp-accent: #635bff;
+  --pmpp-accent-2: #00c2ff;
+  --pmpp-ink: #182033;
+}
+
+.bd-main .bd-content .bd-article-container {
+  max-width: 1040px;
+}
+
+.pmpp-hero {
+  position: relative;
+  overflow: hidden;
+  padding: 3.5rem 2rem;
+  margin: 0 0 2rem;
+  border-radius: 28px;
+  color: #ffffff;
+  background:
+    radial-gradient(circle at 15% 20%, rgba(255, 255, 255, 0.28), transparent 28%),
+    radial-gradient(circle at 85% 10%, rgba(0, 194, 255, 0.38), transparent 24%),
+    linear-gradient(135deg, #17172f 0%, #34276f 48%, #0f6e95 100%);
+  box-shadow: 0 24px 70px rgba(31, 38, 135, 0.26);
+}
+
+.pmpp-hero h1 {
+  margin: 0 0 0.75rem;
+  color: #ffffff;
+  font-size: clamp(2.4rem, 7vw, 4.7rem);
+  letter-spacing: -0.06em;
+}
+
+.pmpp-hero p {
+  max-width: 760px;
+  margin: 0;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 1.2rem;
+}
+
+.pmpp-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 1rem;
+  padding: 0.3rem 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pmpp-card {
+  border: 1px solid rgba(99, 91, 255, 0.18);
+  border-radius: 18px;
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+
+.pmpp-card:hover {
+  border-color: rgba(99, 91, 255, 0.48);
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.12);
+  transform: translateY(-3px);
+}
+
+.pmpp-section-title {
+  margin-top: 2.5rem;
+}
+
+.ethical-rtd,
+.ethical-sidebar,
+.ethical-footer,
+div[id^="ethical-ad"],
+.admonition.admonition-advertisement {
+  display: none !important;
+}

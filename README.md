@@ -43,7 +43,7 @@ PMpp/
 |-- pmwd/                        # Reference PMWD implementation
 |-- tests/                       # Regression and gradient tests
 |-- scripts/                     # Benchmarks and diagnostics
-|-- notebooks/                   # Examples and exploratory notebooks
+|-- docs/source/notebooks/       # Examples and exploratory notebooks
 `-- docs/                        # Project documentation
 ```
 
@@ -195,8 +195,8 @@ End-to-end gradient:
 
 The primary example notebooks are:
 
-- `notebooks/pmpp_showcase.ipynb`
-- `notebooks/mGPU_pmwd_local.ipynb`
+- `docs/source/notebooks/pmpp_showcase.ipynb`
+- `docs/source/notebooks/mGPU_pmwd_local.ipynb`
 
 Restart notebook kernels after code changes. Stale kernels can keep old module
 objects, especially around `pmpp.corrections` and multi-GPU configuration.

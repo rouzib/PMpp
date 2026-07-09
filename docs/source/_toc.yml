@@ -2,5 +2,6 @@ format: jb-book
 root: index
 chapters:
   - file: install
+  - file: notebooks/index
   - file: internals/index
   - file: api/index

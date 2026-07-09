@@ -26,6 +26,10 @@ sphinx:
       - dollarmath
       - amsmath
       - colon_fence
+    html_css_files:
+      - custom.css
+    html_theme_options:
+      secondary_sidebar_items: []
   extra_extensions:
     - sphinx.ext.autodoc
     - sphinx.ext.autosummary
@@ -36,3 +40,4 @@ sphinx:
     - sphinx_copybutton
     - sphinx_design
     - sphinxcontrib.mermaid
+    - myst_nb

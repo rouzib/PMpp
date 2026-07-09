@@ -11,6 +11,7 @@ author = "rouzib"
 
 extensions = [
     "myst_parser",
+    "myst_nb",
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
@@ -58,3 +59,7 @@ exclude_patterns = [
 html_theme = "pydata_sphinx_theme"
 html_logo = "https://images.nicolaspayot.ca/others/83E87541-E945-4755-B4DD-ED4CE0E130D4.png"
 html_static_path = ["_static"]
+html_css_files = ["custom.css"]
+html_theme_options = {
+    "secondary_sidebar_items": [],
+}
