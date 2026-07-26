@@ -182,6 +182,9 @@ def lpt(modes, cosmo, conf):
     ------
     ValueError
         If ``conf.dim`` or ``conf.lpt_order`` is not supported.
+    NotImplementedError
+        If ``conf.lpt_order`` is 3. Configuration accepts that value, but the
+        third-order source is not implemented.
 
     Notes
     -----

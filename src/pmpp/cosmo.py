@@ -104,8 +104,8 @@ def Omega_m_a(a, cosmo):
 class Cosmology:
     """Cosmological and configuration parameters, "immutable" as a frozen dataclass.
 
-    Cosmological parameters with trailing underscores ("foo_") can be set to None, in
-    which case they take some fixed values (set by class variable "foo_fixed") and will
+    Cosmological parameters with trailing underscores (``foo_``) can be set to None, in
+    which case they take some fixed values (set by class variable ``foo_fixed``) and will
     not receive gradients. They should be accessed through corresponding properties
     named without the trailing underscores ("foo").
 

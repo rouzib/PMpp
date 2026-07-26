@@ -1,7 +1,22 @@
-# References
+# References and attribution
 
-PM++ builds on PMWD ideas for differentiable Particle-Mesh cosmology simulation while maintaining the public `pmpp` package for the active implementation.
+## Mathematical foundation
 
-The `pmwd/` directory is retained as a reference implementation for validation against the PMWD behavior that motivated PM++ development.
+Y. Li, C. Modi, D. Jamieson, Y. Zhang, L. Lu, Y. Feng, F. Lanusse, and
+L. Greengard, *Differentiable Cosmological Simulation with the Adjoint Method*,
+[arXiv:2211.09815v2](https://arxiv.org/abs/2211.09815v2), 2024.
 
-PMWD's original BSD 3-Clause notice is retained in the repository-level `THIRD_PARTY_NOTICES.md` file. Add formal citations here as papers, software references, and project documentation mature.
+This is the primary source for the forward PM formulation, symplectic
+integration, and discrete adjoint/reverse-time reconstruction inherited by
+PM++. The local repository may contain a reading copy, but the documentation
+links the canonical arXiv record and does not distribute the PDF.
+
+## PMWD
+
+PM++ builds on ideas and code from
+[PMWD](https://github.com/eelregit/pmwd), the upstream differentiable
+particle-mesh reference implementation. PMWD's BSD 3-Clause notice is preserved
+in the repository-level `THIRD_PARTY_NOTICES.md`.
+
+PMWD has no tutorials, API pages, or navigation subtree in this documentation;
+the link above is the authoritative upstream project.

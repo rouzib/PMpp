@@ -1,0 +1,100 @@
+# Evolution and analysis
+
+## Evolve particles
+
+`nbody` advances an LPT particle state over `conf.a_nbody`:
+
+```python
+import jax
+
+from pmpp.nbody import nbody
+from pmpp.scatter import scatter
+
+@jax.jit
+def evolve_and_scatter(initial_particles):
+    final_particles = nbody(initial_particles, cosmo, conf)
+    return final_particles, scatter(final_particles, conf)
+
+final_particles, density = evolve_and_scatter(particles)
+jax.block_until_ready(density)
+```
+
+`reverse=False` follows the scale-factor schedule from `a_start` to `a_stop`.
+`reverse=True` traverses it in reverse; it is not a substitute for the custom
+reverse-mode adjoint used by `jax.grad`.
+
+## Particle and density products
+
+A `Particles` object carries integer mesh-cell identifiers (`pmid`), floating
+displacements (`disp`), canonical velocities (`vel`), acceleration when
+initialized, and masks for unused/halo slots. Obtain wrapped physical positions
+with `particles.pos()` rather than reconstructing them from storage details.
+
+`scatter(particles, conf)` uses CIC weights and defaults to a normalized density
+whose volume mean is one. Useful checks are:
+
+```python
+assert density.shape == conf.mesh_shape
+assert bool(jax.numpy.isfinite(density).all())
+assert jax.numpy.allclose(density.mean(), 1.0, rtol=2e-5, atol=2e-5)
+assert jax.numpy.allclose(density.sum(), conf.mesh_size, rtol=2e-5, atol=2e-5)
+```
+
+For a projected map, sum over one spatial axis. Projections along `y` or `z`
+retain the decomposed global x axis and are useful for inspecting multi-GPU slab
+boundaries. Projection along `x` hides those boundaries.
+
+## Observers and collectors
+
+Observers keep diagnostic work out of the core adjoint solver:
+
+```python
+from pmpp.nbody import nbody_observe
+from pmpp.nbody_observers import density_projection_observer
+
+observer = density_projection_observer(axis=2, normalize=True)
+observe = jax.jit(
+    lambda initial_particles: nbody_observe(
+        initial_particles,
+        cosmo,
+        conf,
+        observer,
+        include_start=True,
+        return_final=True,
+    )
+)
+final_particles, images = observe(particles)
+```
+
+`nbody_observe` stacks `observer(a, particles, cosmo, conf)` once per integration
+boundary. `nbody_collect` instead updates a caller-provided PyTree with a pure
+function of the previous state and current step. Both are forward-only
+diagnostic interfaces; use `nbody` when differentiating the simulation.
+
+Large per-step images can dominate memory. Prefer a collector when only a
+running statistic or selected outputs are required.
+
+## Power spectra and cross-correlations
+
+```python
+from pmpp.power_spectrum import density_to_pk, particles_to_pk
+
+analyze_density = jax.jit(lambda field: density_to_pk(field, conf, mas="CIC"))
+analyze_particles = jax.jit(lambda state: particles_to_pk(state, conf, mas="CIC"))
+k, pk, nmodes = analyze_density(density)
+k2, pk2, nmodes2 = analyze_particles(final_particles)
+```
+
+The `mas` argument describes the mass-assignment scheme and controls Fourier
+window deconvolution; it must match how the field was constructed. Use `None`
+to disable deconvolution. PM++ also provides density/particle cross-correlation
+functions that return $r(k)$, the cross spectrum, both auto spectra, and mode
+counts.
+
+The isotropic shell estimator assumes a cubic box. Treat low-mode-count shells
+and modes near the mesh Nyquist limit carefully. Save `nmodes` with every
+spectrum so downstream fits can identify poorly sampled bins.
+
+See [Particle-mesh force internals](../internals/particle_mesh.md), the
+[particles and evolution API](../api/particles_evolution.rst), and the notebook gallery for
+pre-executed projections and spectra.

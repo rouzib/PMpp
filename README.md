@@ -1,15 +1,18 @@
 # PM++: Multi-GPU Particle-Mesh Cosmology
 
 <p align="center">
-  <img src="https://images.nicolaspayot.ca/others/83E87541-E945-4755-B4DD-ED4CE0E130D4.png" alt="PM++ logo" width="360">
+  <img src="docs/source/_static/pmpp-logo.png" alt="PM++ logo" width="360">
 </p>
 
 [![Documentation Status](https://readthedocs.org/projects/pmpp-docs/badge/?version=latest)](https://pmpp-docs.readthedocs.io/en/latest/?badge=latest)
 
-PM++ is a JAX-based, differentiable particle-mesh cosmology code built on top
-of PMWD ideas and extended for multi-GPU simulations. The active implementation
-is imported as `pmpp` and lives in `src/pmpp/`; the `pmwd/` directory is kept as a reference implementation for
-validation.
+PM++ is a JAX-based, differentiable particle-mesh cosmology code built on PMWD
+ideas and extended for multi-GPU simulations. The active implementation is
+imported as `pmpp` and lives in `src/pmpp/`; the `pmwd/` directory is retained
+as a reference implementation for validation.
+
+The documented baseline uses exactly two GPUs so every example exercises the
+distributed ownership, mesh-halo, and FFT paths.
 
 ## Current Scope
 
@@ -38,12 +41,11 @@ PMpp/
 |   |-- modes.py                 # White noise and linear modes
 |   |-- lpt.py                   # LPT initialization
 |   |-- power_spectrum.py        # Density and particle P(k)
-|   |-- corrections/             # Potential corrections
 |   `-- potential_correction.py  # Backward-compatible correction facade
 |-- pmwd/                        # Reference PMWD implementation
 |-- tests/                       # Regression and gradient tests
 |-- scripts/                     # Benchmarks and diagnostics
-|-- docs/source/notebooks/       # Examples and exploratory notebooks
+|-- docs/source/notebooks/       # Pre-executed documentation notebooks
 `-- docs/                        # Project documentation
 ```
 
@@ -68,8 +70,9 @@ ptcl_spacing = box_size / res
 gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
 if len(gpu_devices) < 2:
     raise RuntimeError("This multi-GPU example requires at least 2 GPUs.")
-compute_mesh = create_compute_mesh(gpu_devices)
-num_devices = len(gpu_devices)
+selected_devices = gpu_devices[:2]
+compute_mesh = create_compute_mesh(selected_devices)
+num_devices = len(selected_devices)
 
 conf = Configuration(
     ptcl_spacing,
@@ -91,7 +94,7 @@ Capacity overflows are correctness failures. If a run reports overflow in
 particle migration, halo rebuild, or gather exchange buffers, increase the
 corresponding capacity and rerun.
 
-## Minimal Forward Run
+## Minimal Two-GPU Forward Run
 
 ```python
 import jax
@@ -102,26 +105,40 @@ from pmpp.configuration import Configuration
 from pmpp.cosmo import SimpleLCDM
 from pmpp.lpt import lpt
 from pmpp.modes import linear_modes, white_noise
+from pmpp.multigpu_configuration import MultiGPUConfiguration
 from pmpp.nbody import nbody
 from pmpp.scatter import scatter
+from pmpp.utils import create_compute_mesh
 
 res = 32
 box_size = 100.0
+gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
+if len(gpu_devices) < 2:
+    raise RuntimeError("This PM++ simulation requires at least two GPUs")
+selected_devices = gpu_devices[:2]
+
 conf = Configuration(
     box_size / res,
     (res, res, res),
     mesh_shape=1,
+    multigpu=MultiGPUConfiguration(
+        compute_mesh=create_compute_mesh(selected_devices),
+        mode="mesh_halo",
+    ),
     float_dtype=jnp.float32,
 )
 
-cosmo = boltzmann(SimpleLCDM(conf), conf)
-modes = white_noise(0, conf)
-modes = linear_modes(modes, cosmo, conf)
-ptcl = lpt(modes, cosmo, conf)
+@jax.jit
+def simulate(seed):
+    cosmo = boltzmann(SimpleLCDM(conf), conf)
+    noise = white_noise(seed, conf)
+    modes = linear_modes(noise, cosmo, conf)
+    particles = lpt(modes, cosmo, conf)
+    particles = nbody(particles, cosmo, conf)
+    return particles, scatter(particles, conf)
 
-nbody_jit = jax.jit(nbody, static_argnames=("conf", "reverse"))
-ptcl_final = nbody_jit(ptcl, cosmo, conf)
-density = scatter(ptcl_final, conf)
+ptcl_final, density = simulate(0)
+density.block_until_ready()
 
 print(density.shape)
 print(float(density.mean()))
@@ -132,28 +149,6 @@ Expected sanity checks:
 - density shape matches the mesh;
 - density mean is close to `1.0`;
 - no capacity warnings appear.
-
-## Potential Corrections
-
-Correction implementations now live in `pmpp.corrections` (`src/pmpp/corrections/`).
-
-```python
-from pmpp.corrections import (
-    apply_potential_correction,
-    evaluate_potential_transfer,
-    init_potential_correction,
-)
-```
-
-`pmpp.potential_correction` remains as a compatibility facade for old scripts,
-but new code and tests should import from `pmpp.corrections`.
-
-Supported correction families:
-
-- `radial`, `radial_spline`, `neural_spline`
-- `mesh_cnn`, `cnn`
-- `combined`, `hybrid`, `spline_cnn`
-- `pm_window`, `cic_compensation`, `cic_window_compensation`
 
 ## Multi-GPU Modes
 
@@ -169,11 +164,10 @@ Prefer `mesh_halo` for current serious multi-GPU work:
 
 ## Testing
 
-Focused correction and gravity checks:
+Focused gravity checks:
 
 ```bash
 /home/rouzib/.virtualenvs/PMPP/bin/python -m pytest \
-  tests/test_potential_correction.py \
   tests/test_grad_gravity.py \
   tests/test_gravity_particle_nyquist_filter.py \
   -q
@@ -193,13 +187,17 @@ End-to-end gradient:
 
 ## Notebooks
 
-The primary example notebooks are:
+The documentation gallery contains six pre-executed notebooks:
 
-- `docs/source/notebooks/pmpp_showcase.ipynb`
-- `docs/source/notebooks/mGPU_pmwd_local.ipynb`
+- first simulation and configuration;
+- resolution-consistent initial conditions evolved from $32^3$ through $256^3$;
+- a two-GPU `mesh_halo` run;
+- observers and analysis;
+- differentiation with finite-difference checks.
 
-Restart notebook kernels after code changes. Stale kernels can keep old module
-objects, especially around `pmpp.corrections` and multi-GPU configuration.
+Read the Docs renders committed outputs and does not execute the notebooks.
+Restart kernels after code changes. Re-run every notebook with exactly two
+selected GPUs in a clean temporary copy before committing its outputs.
 
 ## License
 

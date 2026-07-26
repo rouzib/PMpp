@@ -13,7 +13,7 @@ from .boltzmann import linear_power
 
 @partial(jax.jit, static_argnames=('conf', 'real', 'unit_abs'))
 def white_noise(seed, conf, real=False, unit_abs=False):
-    """White noise Fourier or real modes.
+    """Generate white-noise modes in real or Fourier representation.
 
     Parameters
     ----------
@@ -23,13 +23,18 @@ def white_noise(seed, conf, real=False, unit_abs=False):
     real : bool, optional
         Whether to return real or Fourier modes.
     unit_abs : bool, optional
-        Whether to set the absolute values to 1.
+        Whether to normalize every stored Fourier coefficient to unit modulus.
+        This preserves phases but changes the Gaussian ensemble.
 
     Returns
     -------
-    modes : jax.Array of conf.float_dtype
-        White noise Fourier or real modes, both dimensionless with zero mean and unit
-        variance.
+    modes : jax.Array
+        Dimensionless noise. With ``real=True``, the result has
+        ``conf.float_dtype``; otherwise it has the corresponding complex dtype.
+        Ordinary real noise is standard normal and its Fourier representation
+        uses orthonormal rFFT normalization. With ``unit_abs=True``, Fourier
+        coefficients have unit modulus and the inverse-transformed real field
+        does not retain the ordinary standard-normal statistics.
 
     """
     key = random.PRNGKey(seed)
@@ -418,9 +423,11 @@ def linear_modes(modes, cosmo, conf, a=None, real=False):
 
     Returns
     -------
-    modes : jax.Array of conf.float_dtype
-        Linear matter overdensity Fourier or real modes, in [L^3] or dimensionless,
-        respectively.
+    modes : jax.Array
+        Linear matter overdensity modes. With ``real=True``, the result has
+        ``conf.float_dtype`` and is dimensionless. Otherwise it has the
+        corresponding complex dtype and PM++'s Fourier-space ``[L^3]``
+        normalization.
 
     Notes
     -----

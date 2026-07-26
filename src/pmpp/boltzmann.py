@@ -363,8 +363,11 @@ def varlin(R, a, cosmo, conf):
 
 
 def boltzmann(cosmo, conf, transfer=True, growth=True, varlin=True):
-    """Solve Einstein-Boltzmann equations and precompute transfer and growth functions,
-    etc.
+    """Precompute analytic transfer, growth, and linear-variance tables.
+
+    This routine is not a general Einstein--Boltzmann solver. The current
+    transfer path tabulates the configured Eisenstein--Hu analytic fit, then
+    integrates PM++'s growth equations and derives the variance table.
 
     Parameters
     ----------
@@ -380,7 +383,8 @@ def boltzmann(cosmo, conf, transfer=True, growth=True, varlin=True):
     Returns
     -------
     cosmo : Cosmology
-        A new instance containing transfer and growth tables, etc.
+        A new instance containing the requested transfer, growth, and
+        linear-variance tables.
 
     """
     if transfer:

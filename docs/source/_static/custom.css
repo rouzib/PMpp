@@ -2,6 +2,27 @@
   --pmpp-accent: #635bff;
   --pmpp-accent-2: #00c2ff;
   --pmpp-ink: #182033;
+  --pmpp-mermaid-edge: #4b5563;
+}
+
+html[data-theme="dark"] {
+  --pmpp-mermaid-edge: #d1d5db;
+}
+
+/* Mermaid emits its own SVG styles, so the important declarations are needed
+   to keep flow lines and arrowheads visible when the site theme changes. */
+.mermaid svg .flowchart-link,
+.mermaid-container-fullscreen svg .flowchart-link {
+  stroke: var(--pmpp-mermaid-edge) !important;
+  stroke-width: 2px !important;
+}
+
+.mermaid svg marker path,
+.mermaid svg .arrowheadPath,
+.mermaid-container-fullscreen svg marker path,
+.mermaid-container-fullscreen svg .arrowheadPath {
+  fill: var(--pmpp-mermaid-edge) !important;
+  stroke: var(--pmpp-mermaid-edge) !important;
 }
 
 .bd-main .bd-content .bd-article-container {

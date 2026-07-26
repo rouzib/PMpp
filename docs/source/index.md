@@ -1,88 +1,69 @@
-<div class="pmpp-hero">
-  <div class="pmpp-kicker">Differentiable cosmology • JAX • Multi-GPU</div>
-  <h1>PM++ Documentation</h1>
-  <p>Build, differentiate, and scale Particle-Mesh N-body simulations with a documentation path that moves from installation to notebooks, internals, and API references.</p>
-</div>
+# PM++ documentation
 
-```{warning}
-PM++ is research software. Interfaces, correction models, and multi-GPU runtime details may change until a stable release is declared.
+PM++ is a differentiable particle-mesh cosmology simulator built with JAX. It
+supports the complete path from Gaussian initial modes to Lagrangian
+perturbation theory (LPT), N-body evolution, density fields, summary statistics,
+and gradients. Its distributed runtime scales the same model across a
+one-dimensional mesh of accelerators.
+
+```{important}
+For real single-GPU science, use upstream
+[PMWD](https://github.com/eelregit/pmwd): with matched inputs and numerical
+settings, it should produce the same scientific output within the validated
+tolerance. A one-device PM++ mesh is for troubleshooting only.
 ```
 
-## Start here
+```{warning}
+PM++ is research software. Record the package revision, complete configuration,
+random seed, JAX version, and hardware with scientific results.
+```
 
-::::{grid} 1 1 2 3
+::::{grid} 1 2 2 3
 :gutter: 3
 
-:::{grid-item-card} Install PM++
-:link: install
+:::{grid-item-card} Run your first simulation
+:link: getting_started/first_simulation
 :link-type: doc
-:class-card: sd-shadow-sm pmpp-card
 
-Prepare a Python/JAX environment and install the package for local experiments or documentation work.
+Build a two-device mesh, evolve a small periodic box, and check mass
+conservation in about ten minutes.
+:::
+
+:::{grid-item-card} Understand the solver
+:link: internals/architecture
+:link-type: doc
+
+Connect the equations to the arrays, JAX transforms, communication, and custom
+adjoints used by PM++.
 :::
 
 :::{grid-item-card} Explore notebooks
 :link: notebooks/index
 :link-type: doc
-:class-card: sd-shadow-sm pmpp-card
 
-Open the moved showcase and multi-GPU notebooks directly from the docs tree.
-:::
-
-:::{grid-item-card} Read internals
-:link: internals/index
-:link-type: doc
-:class-card: sd-shadow-sm pmpp-card
-
-Follow the system diagrams, mesh exchange, adjoint, and runtime architecture notes.
+Study pre-executed, reproducible examples without requiring Read the Docs to
+provide GPUs.
 :::
 
 ::::
 
-## What PM++ helps with
+## Choose a path
 
-::::{grid} 1 1 2 2
-:gutter: 3
-
-:::{grid-item-card} Differentiable N-body pipelines
-:class-card: sd-shadow-sm pmpp-card
-
-Trace gradients through selected Particle-Mesh stages while keeping long-running simulations memory-aware.
-:::
-
-:::{grid-item-card} Multi-GPU decomposition
-:class-card: sd-shadow-sm pmpp-card
-
-Use static-capacity buffers, mesh halos, distributed FFT utilities, and clear debugging guidance for slab-decomposed runs.
-:::
-
-:::{grid-item-card} Research-friendly examples
-:class-card: sd-shadow-sm pmpp-card
-
-Start small with CPU-safe examples, then scale notebooks and tutorials on the hardware that matches your experiment.
-:::
-
-:::{grid-item-card} Maintainer references
-:class-card: sd-shadow-sm pmpp-card
-
-Dive into API pages, implementation diagrams, and documentation conventions when extending PM++.
-:::
-
-::::
-
-## Documentation sections
+- **New user:** [install PM++](getting_started/installation.md), then run the
+  [first simulation](getting_started/first_simulation.md).
+- **Scientific user:** use the [user guide](user_guide/index.md) to choose
+  initial conditions, schedules, analysis products, and gradient targets.
+- **Method developer:** read [How PM++ works](internals/index.md), then consult
+  the [API reference](api/index.rst).
+- **Contributor:** begin with [development and reference](development/index.md).
 
 ```{toctree}
-:maxdepth: 2
+:maxdepth: 4
 :hidden:
 
-install
-notebooks/index
+getting_started/index
 internals/index
+notebooks/index
 api/index
+development/index
 ```
-
-- [Installation](install.md)
-- [Notebooks](notebooks/index.md)
-- [Internals and system diagrams](internals/index.md)
-- [API reference](api/index.rst)
