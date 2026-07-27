@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pmpp"
-version = "0.1.3"
+version = "0.1.4"
 description = "PM++: a JAX-based differentiable multi-GPU Particle-Mesh cosmology simulator."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -56,7 +56,7 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/rouzib/PMpp"
 Repository = "https://github.com/rouzib/PMpp"
-Documentation = "https://pmpp-v2.readthedocs.io/en/latest/"
+Documentation = "https://pmpp-docs.readthedocs.io/en/latest/"
 Issues = "https://github.com/rouzib/PMpp/issues"
 
 [tool.hatch.build.targets.wheel]
