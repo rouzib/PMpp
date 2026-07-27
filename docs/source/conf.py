@@ -105,6 +105,7 @@ html_logo = "_static/pmpp-logo.png"
 html_favicon = "_static/pmpp-logo.png"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
+html_js_files = [("mermaid-pan-zoom.js", {"defer": "defer"})]
 html_sidebars = {
     # The PyData theme's stock sidebar starts below the current top-level
     # section.  PM++ uses a persistent master tree instead so readers can move

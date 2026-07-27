@@ -25,6 +25,75 @@ html[data-theme="dark"] {
   stroke: var(--pmpp-mermaid-edge) !important;
 }
 
+/* Every Mermaid figure supports direct manipulation in the page and in the
+   fullscreen clone. The controls deliberately sit opposite the extension's
+   fullscreen button. */
+.mermaid-container,
+.mermaid-container-fullscreen {
+  position: relative;
+}
+
+.mermaid svg[data-pmpp-pan-zoom="true"] {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.mermaid svg[data-pmpp-pan-zoom="true"].is-panning {
+  cursor: grabbing;
+}
+
+.mermaid svg[data-pmpp-pan-zoom="true"]:focus-visible {
+  outline: 3px solid var(--pmpp-accent-2);
+  outline-offset: -3px;
+}
+
+.pmpp-mermaid-controls {
+  position: absolute;
+  z-index: 8;
+  top: 0.55rem;
+  left: 0.55rem;
+  display: inline-flex;
+  gap: 0.2rem;
+  padding: 0.22rem;
+  border: 1px solid rgba(75, 85, 99, 0.32);
+  border-radius: 0.5rem;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(4px);
+}
+
+.pmpp-mermaid-controls button {
+  display: inline-grid;
+  width: 1.8rem;
+  height: 1.8rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0.32rem;
+  color: #182033;
+  background: transparent;
+  place-items: center;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.pmpp-mermaid-controls button:hover,
+.pmpp-mermaid-controls button:focus-visible {
+  color: #ffffff;
+  background: var(--pmpp-accent);
+  outline: none;
+}
+
+html[data-theme="dark"] .pmpp-mermaid-controls {
+  border-color: rgba(209, 213, 219, 0.34);
+  background: rgba(24, 32, 51, 0.92);
+}
+
+html[data-theme="dark"] .pmpp-mermaid-controls button {
+  color: #f3f4f6;
+}
+
 .bd-main .bd-content .bd-article-container {
   max-width: 1040px;
 }

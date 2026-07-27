@@ -28,6 +28,11 @@ are numerical operators, indigo nodes are cross-device layout/communication,
 and red nodes are validation or loss products. A textual equivalent follows
 every diagram for accessibility and non-JavaScript builds.
 
+Every Mermaid diagram is interactive: drag to pan, use the mouse wheel or
+trackpad to zoom, use the arrow keys to pan while the diagram is focused, and
+press `+`, `-`, or `0` to zoom in, zoom out, or reset. The visible controls and
+fullscreen viewer provide the same actions.
+
 ```{toctree}
 :maxdepth: 1
 :hidden:
