@@ -8,6 +8,12 @@
 /diagnostics/
 /notebooks/
 /scripts/
+!/scripts/
+/scripts/*
+!/scripts/execute_docs_notebooks.py
+!/scripts/generate_docs_notebooks.py
+!/scripts/validate_docs_code.py
+!/scripts/validate_docs_notebooks.py
 /PM++_flow_h.png
 /PM++_flow_v.png
 /Quijote/

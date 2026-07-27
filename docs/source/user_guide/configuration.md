@@ -126,25 +126,27 @@ and replacing differentiable parameters.
 
 ## Device mesh and capacities
 
-Use the nested runtime form in new code:
+Use the nested runtime form in new code. The following is a shape template,
+not a standalone example; replace every named placeholder with values validated
+for the intended run:
 
-```python
+```text
 gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
 if len(gpu_devices) < 2:
     raise RuntimeError("This PM++ example requires at least two GPUs")
 selected_devices = gpu_devices[:2]
 
 conf = Configuration(
-    ptcl_spacing,
-    particle_shape,
+    ptcl_spacing=<particle spacing>,
+    ptcl_grid_shape=<particle shape>,
     multigpu=MultiGPUConfiguration(
         compute_mesh=create_compute_mesh(selected_devices),
         mode="mesh_halo",
     ),
-    max_ptcl_per_slice=...,
-    max_share_ptcl=...,
-    max_halo_share_ptcl=...,
-    max_share_gather_ptcl=...,
+    max_ptcl_per_slice=<particle slots per device>,
+    max_share_ptcl=<migration slots>,
+    max_halo_share_ptcl=<particle-halo exchange slots>,
+    max_share_gather_ptcl=<gather exchange slots>,
 )
 ```
 

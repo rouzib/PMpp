@@ -23,21 +23,58 @@ Define a scalar loss and make the floating modes the differentiated argument:
 import jax
 import jax.numpy as jnp
 
+from pmpp.boltzmann import boltzmann
+from pmpp.configuration import Configuration
+from pmpp.cosmo import SimpleLCDM
 from pmpp.lpt import lpt
+from pmpp.modes import linear_modes, white_noise
+from pmpp.multigpu_configuration import MultiGPUConfiguration
 from pmpp.nbody import nbody
 from pmpp.scatter import scatter
+from pmpp.utils import create_compute_mesh
 
-def loss_from_modes(modes, cosmo, conf):
-    particles = lpt(modes, cosmo, conf)
-    final_particles = nbody(particles, cosmo, conf)
+n = 16
+gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
+if len(gpu_devices) < 2:
+    raise RuntimeError("This PM++ example requires at least two GPUs")
+
+conf = Configuration(
+    ptcl_spacing=50.0 / n,
+    ptcl_grid_shape=(n,) * 3,
+    mesh_shape=1,
+    multigpu=MultiGPUConfiguration(
+        compute_mesh=create_compute_mesh(gpu_devices[:2]),
+        mode="mesh_halo",
+    ),
+    max_ptcl_per_slice=4_096,
+    max_share_ptcl=2_048,
+    max_halo_share_ptcl=2_048,
+    max_share_gather_ptcl=2_048,
+    float_dtype=jnp.float32,
+    a_start=1 / 64,
+    a_stop=1 / 32,
+    a_nbody_maxstep=1 / 64,
+)
+cosmo = SimpleLCDM(conf)
+noise_real = white_noise(7, conf, real=True)
+
+def loss_from_noise(noise_real, cosmo, conf):
+    evolved_cosmo = boltzmann(cosmo, conf)
+    modes = linear_modes(noise_real, evolved_cosmo, conf)
+    particles = lpt(modes, evolved_cosmo, conf)
+    final_particles = nbody(particles, evolved_cosmo, conf)
     density = scatter(final_particles, conf)
     return jnp.mean((density - 1.0) ** 2)
 
 value_and_grad = jax.jit(
-    jax.value_and_grad(loss_from_modes),
+    jax.value_and_grad(loss_from_noise),
     static_argnames=("conf",),
 )
-value, modes_grad = value_and_grad(modes, cosmo, conf)
+value, noise_grad = value_and_grad(noise_real, cosmo, conf)
+jax.block_until_ready(noise_grad)
+assert bool(jnp.isfinite(value))
+assert noise_grad.shape == noise_real.shape
+assert bool(jnp.isfinite(noise_grad).all())
 ```
 
 Keep `conf` static, choose a tiny grid and short schedule first, and block the

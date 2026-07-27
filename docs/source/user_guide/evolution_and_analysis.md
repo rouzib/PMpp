@@ -6,9 +6,44 @@
 
 ```python
 import jax
+import jax.numpy as jnp
 
+from pmpp.boltzmann import boltzmann
+from pmpp.configuration import Configuration
+from pmpp.cosmo import SimpleLCDM
+from pmpp.lpt import lpt
+from pmpp.modes import linear_modes, white_noise
+from pmpp.multigpu_configuration import MultiGPUConfiguration
 from pmpp.nbody import nbody
 from pmpp.scatter import scatter
+from pmpp.utils import create_compute_mesh
+
+n = 32
+gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
+if len(gpu_devices) < 2:
+    raise RuntimeError("This PM++ example requires at least two GPUs")
+
+conf = Configuration(
+    ptcl_spacing=100.0 / n,
+    ptcl_grid_shape=(n,) * 3,
+    mesh_shape=1,
+    multigpu=MultiGPUConfiguration(
+        compute_mesh=create_compute_mesh(gpu_devices[:2]),
+        mode="mesh_halo",
+    ),
+    max_ptcl_per_slice=32_768,
+    max_share_ptcl=16_384,
+    max_halo_share_ptcl=16_384,
+    max_share_gather_ptcl=16_384,
+    float_dtype=jnp.float32,
+    a_start=1 / 64,
+    a_stop=1 / 32,
+    a_nbody_maxstep=1 / 64,
+)
+cosmo = boltzmann(SimpleLCDM(conf), conf)
+noise = white_noise(3, conf)
+modes = linear_modes(noise, cosmo, conf)
+particles = lpt(modes, cosmo, conf)
 
 @jax.jit
 def evolve_and_scatter(initial_particles):
@@ -17,6 +52,7 @@ def evolve_and_scatter(initial_particles):
 
 final_particles, density = evolve_and_scatter(particles)
 jax.block_until_ready(density)
+assert bool(jnp.isfinite(density).all())
 ```
 
 `reverse=False` follows the scale-factor schedule from `a_start` to `a_stop`.

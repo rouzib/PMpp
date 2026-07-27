@@ -18,6 +18,27 @@ reference implementation used exclusively for validation.
 The documented baseline uses exactly two GPUs so every example exercises the
 distributed ownership, mesh-halo, and FFT paths.
 
+## Installation
+
+On Linux x86_64 or WSL2 with an NVIDIA driver and two visible GPUs:
+
+```bash
+# Run inside the Ubuntu/WSL2 shell, not Windows PowerShell.
+python3.10 -m venv ~/.venvs/pmpp
+source ~/.venvs/pmpp/bin/activate
+python -m pip install --upgrade pip
+python -m pip install pmpp jupyter
+
+# The checkout supplies the notebooks; PM++ itself remains pip-installed.
+git clone https://github.com/rouzib/PMpp.git ~/PMpp
+cd ~/PMpp
+jupyter lab docs/source/notebooks
+```
+
+PM++ requests a CUDA 12-capable JAX build without pinning a specific JAX
+release on this target. Native Windows and other platforms receive the regular
+JAX build; use WSL2 for the documented NVIDIA multi-GPU workflows.
+
 ## Current Scope
 
 - Multi-GPU PM N-body simulation with JAX.

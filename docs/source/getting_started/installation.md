@@ -3,26 +3,39 @@
 PM++ requires Python 3.10 or newer. The project name is **PM++**; both the
 distribution and import name are `pmpp`.
 
-## Create an environment
+## Install the user environment
 
-For local development or documentation work:
+On Linux x86_64 or WSL2 with an NVIDIA driver visible to Linux, PM++ requests
+a CUDA 12-enabled JAX build and installs the plotting/I/O libraries used by
+the documentation. A user environment needs only PM++ and Jupyter:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+# Run inside the Ubuntu/WSL2 shell, not Windows PowerShell.
+python3.10 -m venv ~/.venvs/pmpp
+source ~/.venvs/pmpp/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e .
+python -m pip install pmpp jupyter
+
+# The checkout supplies the notebooks; PM++ itself remains pip-installed.
+git clone https://github.com/rouzib/PMpp.git ~/PMpp
+cd ~/PMpp
+jupyter lab docs/source/notebooks
 ```
 
-On native Windows, PowerShell activation is
-`.venv\Scripts\Activate.ps1`; use that environment for documentation work.
-For NVIDIA and multi-GPU PM++ on a Windows host, run Linux Python under WSL2
-rather than native Windows Python, create/activate the environment inside WSL,
-and make sure the GPUs are visible there. On Linux or WSL, install the JAX wheel
-appropriate for the driver/CUDA stack by following the
-[official JAX installation guide](https://docs.jax.dev/en/latest/installation.html),
-then install PM++ with the command above. Set
-`XLA_PYTHON_CLIENT_PREALLOCATE=false` before launching shared development runs.
+Keep the virtual environment in the WSL2 Linux filesystem (for example under
+`~/.venvs`), not in a Windows-mounted directory. Do not install the checkout in
+editable mode for this user workflow and do not add its `src/` directory to
+`PYTHONPATH`; the notebooks must import the package installed by pip.
+
+The machine must already have a sufficiently recent NVIDIA driver; CUDA and
+cuDNN user-space libraries are supplied by the JAX wheel. On a Windows host,
+run this environment under WSL2 rather than native Windows Python and confirm
+that both GPUs are visible there. Set `XLA_PYTHON_CLIENT_PREALLOCATE=false`
+before launching shared development runs.
+
+On non-Linux platforms, PM++ installs the regular JAX distribution so that
+the package and CPU-safe utilities remain importable. The documented simulation
+gallery still requires exactly two CUDA GPUs.
 
 ## Verify the backend
 
@@ -62,7 +75,9 @@ the named axis and the corresponding x-slab order used by PM++ sharding.
 ## Documentation environment
 
 ```bash
-python -m pip install -e ".[docs]"
+git clone https://github.com/rouzib/PMpp.git
+cd PMpp
+python -m pip install -e ".[docs]" jupyter
 sphinx-build -W --keep-going -b html docs/source docs/build/html
 python -m http.server --directory docs/build/html 8000
 ```

@@ -5,11 +5,38 @@ initialization:
 
 ```python
 import jax
+import jax.numpy as jnp
 
 from pmpp.boltzmann import boltzmann
+from pmpp.configuration import Configuration
 from pmpp.cosmo import SimpleLCDM
 from pmpp.lpt import lpt
 from pmpp.modes import linear_modes, white_noise, white_noise_nested
+from pmpp.multigpu_configuration import MultiGPUConfiguration
+from pmpp.utils import create_compute_mesh
+
+n = 32
+gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
+if len(gpu_devices) < 2:
+    raise RuntimeError("This PM++ example requires at least two GPUs")
+
+conf = Configuration(
+    ptcl_spacing=100.0 / n,
+    ptcl_grid_shape=(n,) * 3,
+    mesh_shape=1,
+    multigpu=MultiGPUConfiguration(
+        compute_mesh=create_compute_mesh(gpu_devices[:2]),
+        mode="mesh_halo",
+    ),
+    max_ptcl_per_slice=32_768,
+    max_share_ptcl=16_384,
+    max_halo_share_ptcl=16_384,
+    max_share_gather_ptcl=16_384,
+    float_dtype=jnp.float32,
+    a_start=1 / 64,
+    a_stop=1 / 32,
+    a_nbody_maxstep=1 / 64,
+)
 
 @jax.jit
 def make_initial_particles(seed):
@@ -20,6 +47,7 @@ def make_initial_particles(seed):
 
 particles = make_initial_particles(7)
 jax.block_until_ready(particles.disp)
+assert bool(jnp.isfinite(particles.disp).all())
 ```
 
 ## Ordinary Gaussian noise
@@ -40,6 +68,7 @@ Set `unit_abs=True` to normalize each Fourier coefficient to unit modulus:
 make_phase_only = jax.jit(lambda seed: white_noise(seed, conf, unit_abs=True))
 phase_only = make_phase_only(7)
 jax.block_until_ready(phase_only)
+assert bool(jnp.isfinite(phase_only).all())
 ```
 
 This preserves randomized phases but removes Rayleigh amplitude fluctuations.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pmpp"
-version = "0.1.5"
+version = "0.1.6"
 description = "PM++: a JAX-based differentiable multi-GPU Particle-Mesh cosmology simulator."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,7 +33,10 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
-  "jax>=0.4.7",
+  "jax[cuda12]>=0.4.7; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "jax>=0.4.7; sys_platform != 'linux' or platform_machine != 'x86_64'",
+  "h5py>=3.10,<4",
+  "matplotlib>=3.8,<4",
   "mcfit>=0.0.18",
 ]
 
