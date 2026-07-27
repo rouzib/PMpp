@@ -5,6 +5,10 @@
 </p>
 
 [![Documentation Status](https://readthedocs.org/projects/pmpp-docs/badge/?version=latest)](https://pmpp-docs.readthedocs.io/en/latest/?badge=latest)
+[![Package build](https://github.com/rouzib/PMpp/actions/workflows/publish-to-pypi.yml/badge.svg)](https://github.com/rouzib/PMpp/actions/workflows/publish-to-pypi.yml)
+[![PyPI version](https://img.shields.io/pypi/v/pmpp.svg)](https://pypi.org/project/pmpp/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pmpp.svg)](https://pypi.org/project/pmpp/)
+[![License](https://img.shields.io/pypi/l/pmpp.svg)](https://github.com/rouzib/PMpp/blob/master/LICENSE)
 
 PM++ is a JAX-based, differentiable particle-mesh cosmology code built on PMWD
 ideas and extended for multi-GPU simulations. The active implementation is
