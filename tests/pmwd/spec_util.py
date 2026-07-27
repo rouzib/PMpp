@@ -4,7 +4,7 @@ import math
 from jax import jit, ensure_compile_time_eval
 import jax.numpy as jnp
 
-from pmwd.pm_util import fftfreq, fftfwd
+from .pm_util import fftfreq, fftfwd
 
 
 @partial(jit, static_argnames=('bins', 'cut_zero', 'cut_nyq', 'dtype', 'int_dtype'))

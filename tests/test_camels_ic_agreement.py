@@ -13,14 +13,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pmwd.boltzmann import boltzmann as boltzmann_pmwd
-from pmwd.configuration import Configuration as ConfigurationPMWD
-from pmwd.cosmology import Cosmology as CosmologyPMWD
-from pmwd.nbody import drift as drift_pmwd
-from pmwd.nbody import nbody as nbody_pmwd
-from pmwd.nbody import nbody_init as nbody_init_pmwd
-from pmwd.particles import Particles as ParticlesPMWD
-from pmwd.scatter import scatter as scatter_pmwd
+from tests.pmwd.boltzmann import boltzmann as boltzmann_pmwd
+from tests.pmwd.configuration import Configuration as ConfigurationPMWD
+from tests.pmwd.cosmology import Cosmology as CosmologyPMWD
+from tests.pmwd.nbody import drift as drift_pmwd
+from tests.pmwd.nbody import nbody as nbody_pmwd
+from tests.pmwd.nbody import nbody_init as nbody_init_pmwd
+from tests.pmwd.particles import Particles as ParticlesPMWD
+from tests.pmwd.scatter import scatter as scatter_pmwd
 
 from pmpp.boltzmann import boltzmann as boltzmann_pmpp
 from pmpp.camels_io import load_camels_pair

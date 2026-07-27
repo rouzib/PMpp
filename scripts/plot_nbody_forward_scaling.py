@@ -36,7 +36,7 @@ import jax.numpy as jnp
 import numpy as np
 from matplotlib import pyplot as plt
 
-from pmwd import (
+from tests.pmwd import (
     Configuration as ConfigurationPMWD,
     SimpleLCDM as SimpleLCDM_PMWD,
     boltzmann as boltzmann_pmwd,

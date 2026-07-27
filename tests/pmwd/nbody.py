@@ -4,9 +4,9 @@ from jax import value_and_grad, jit, vjp, custom_vjp, lax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 
-from pmwd.boltzmann import growth
-from pmwd.cosmology import E2, H_deriv
-from pmwd.gravity import gravity
+from .boltzmann import growth
+from .cosmology import E2, H_deriv
+from .gravity import gravity
 
 
 def _G_D(a, cosmo, conf):

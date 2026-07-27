@@ -10,9 +10,9 @@ config.update("jax_enable_x64", True)
 from pmpp.particles import Particles
 from pmpp.scatter import scatter
 
-from pmwd.configuration import Configuration as Configuration_pmwd
-from pmwd.scatter import scatter as scatter_pmwd
-from pmwd.particles import Particles as Particles_pmwd
+from tests.pmwd.configuration import Configuration as Configuration_pmwd
+from tests.pmwd.scatter import scatter as scatter_pmwd
+from tests.pmwd.particles import Particles as Particles_pmwd
 
 from test_utils import init_conf
 

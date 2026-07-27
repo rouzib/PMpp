@@ -8,11 +8,11 @@ from jax.typing import ArrayLike
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 
-from pmwd.tree_util import pytree_dataclass
-from pmwd.configuration import Configuration
-from pmwd.cosmology import E2
-from pmwd.util import is_float0_array
-from pmwd.pm_util import enmesh
+from .tree_util import pytree_dataclass
+from .configuration import Configuration
+from .cosmology import E2
+from .util import is_float0_array
+from .pm_util import enmesh
 
 
 @partial(pytree_dataclass, aux_fields="conf", frozen=True)

@@ -7,8 +7,8 @@ from jax import custom_vjp, vjp
 from jax import random
 from jax.tree_util import tree_map
 
-from pmwd.particles import Particles
-from pmwd.util import is_float0_array, float0_like
+from .particles import Particles
+from .util import is_float0_array, float0_like
 
 
 def gen_ptcl(conf, disp_std=None, vel_std=None, acc_std=None,

@@ -1,9 +1,9 @@
 import jax.numpy as jnp
 from jax import custom_vjp
 
-from pmwd.scatter import scatter
-from pmwd.gather import gather
-from pmwd.pm_util import fftfreq, fftfwd, fftinv
+from .scatter import scatter
+from .gather import gather
+from .pm_util import fftfreq, fftfwd, fftinv
 
 
 @custom_vjp

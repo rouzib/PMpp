@@ -1,8 +1,8 @@
 from jax import jit, custom_vjp, ensure_compile_time_eval
 import jax.numpy as jnp
 
-from pmwd.cosmology import H_deriv, Omega_m_a
-from pmwd.ode_util import odeint
+from .cosmology import H_deriv, Omega_m_a
+from .ode_util import odeint
 
 
 @jit

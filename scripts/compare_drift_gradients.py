@@ -23,11 +23,11 @@ import numpy as np
 from matplotlib import pyplot as plt
 from jax.tree_util import tree_leaves, tree_map
 
-from pmwd.boltzmann import boltzmann as boltzmann_pmwd
-from pmwd.configuration import Configuration as ConfigurationPMWD
-from pmwd.cosmology import SimpleLCDM as SimpleLCDM_PMWD
-from pmwd.nbody import drift as drift_pmwd, drift_adj as drift_adj_pmwd, drift_factor
-from pmwd.particles import Particles as ParticlesPMWD
+from tests.pmwd.boltzmann import boltzmann as boltzmann_pmwd
+from tests.pmwd.configuration import Configuration as ConfigurationPMWD
+from tests.pmwd.cosmology import SimpleLCDM as SimpleLCDM_PMWD
+from tests.pmwd.nbody import drift as drift_pmwd, drift_adj as drift_adj_pmwd, drift_factor
+from tests.pmwd.particles import Particles as ParticlesPMWD
 
 from pmpp.boltzmann import boltzmann as boltzmann_pmpp
 from pmpp.cosmo import SimpleLCDM as SimpleLCDM_PMPP

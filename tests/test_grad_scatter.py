@@ -10,9 +10,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pmwd.configuration import Configuration as ConfigurationPMWD
-from pmwd.particles import Particles as ParticlesPMWD
-from pmwd.scatter import scatter as scatter_pmwd
+from tests.pmwd.configuration import Configuration as ConfigurationPMWD
+from tests.pmwd.particles import Particles as ParticlesPMWD
+from tests.pmwd.scatter import scatter as scatter_pmwd
 
 from pmpp.particles import Particles
 from pmpp.scatter import scatter

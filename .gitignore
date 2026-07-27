@@ -9,3 +9,5 @@
 /notebooks/
 /Quijote/
 /CAMELS/
+__pycache__/
+*.py[cod]

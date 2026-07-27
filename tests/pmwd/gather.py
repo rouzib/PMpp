@@ -3,7 +3,7 @@ import jax.numpy as jnp
 from jax import custom_vjp
 from jax.lax import scan
 
-from pmwd.pm_util import _chunk_split, _chunk_cat, enmesh
+from .pm_util import _chunk_split, _chunk_cat, enmesh
 
 
 def gather(ptcl, conf, mesh, val=0, offset=0, cell_size=None):

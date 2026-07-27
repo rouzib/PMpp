@@ -9,8 +9,8 @@ import jax.numpy as jnp
 from jax.tree_util import tree_map
 from mcfit import TophatVar
 
-from pmwd.tree_util import pytree_dataclass
-from pmwd.pm_util import build_particle_nyquist_filter, fftfreq
+from .tree_util import pytree_dataclass
+from .pm_util import build_particle_nyquist_filter, fftfreq
 
 
 jax.config.update("jax_enable_x64", True)

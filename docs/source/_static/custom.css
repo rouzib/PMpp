@@ -25,6 +25,30 @@ html[data-theme="dark"] {
   stroke: var(--pmpp-mermaid-edge) !important;
 }
 
+/* Mermaid wraps every HTML label in a horizontal flex row.  Keep the title
+   and KaTeX expression as one child stack so equations always sit below their
+   explanatory text instead of being concatenated on the same baseline. */
+.mermaid .pmpp-node-stack,
+.mermaid-container-fullscreen .pmpp-node-stack {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.mermaid .pmpp-node-title,
+.mermaid-container-fullscreen .pmpp-node-title {
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.mermaid .pmpp-node-math .katex-display,
+.mermaid-container-fullscreen .pmpp-node-math .katex-display {
+  margin: 0 !important;
+}
+
 /* Every Mermaid figure supports direct manipulation in the page and in the
    fullscreen clone. The controls deliberately sit opposite the extension's
    fullscreen button. */

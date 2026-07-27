@@ -4,7 +4,11 @@
 if (!globalThis.mermaid) {
   await new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = new URL("./mermaid.min.js", import.meta.url).href;
+    // Keep the runtime URL versioned.  Without a query token, a long-lived
+    // local preview tab can reuse an older Mermaid bundle after the vendored
+    // file is updated; older releases report native $$...$$ labels as a
+    // generic "Syntax error in text".
+    script.src = new URL("./mermaid.min.js?v=11.12.1", import.meta.url).href;
     script.onload = resolve;
     script.onerror = () => reject(new Error("Unable to load the local Mermaid bundle"));
     document.head.appendChild(script);

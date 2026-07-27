@@ -3,11 +3,11 @@ from itertools import permutations, combinations
 from jax import jit, checkpoint, ensure_compile_time_eval
 import jax.numpy as jnp
 
-from pmwd.particles import Particles
-from pmwd.cosmology import E2
-from pmwd.boltzmann import growth
-from pmwd.gravity import laplace, neg_grad
-from pmwd.pm_util import fftfreq, fftfwd, fftinv
+from .particles import Particles
+from .cosmology import E2
+from .boltzmann import growth
+from .gravity import laplace, neg_grad
+from .pm_util import fftfreq, fftfwd, fftinv
 
 
 def _strain(kvec, i, j, pot, conf):

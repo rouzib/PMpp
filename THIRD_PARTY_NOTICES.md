@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-PM++ is based on PMWD ideas/code and keeps `pmwd/` as a reference implementation for validation. PMWD is distributed under the BSD 3-Clause License; its original notice is preserved below.
+PM++ is based on PMWD ideas/code and keeps `tests/pmwd/` as a test-only reference implementation for validation. PMWD is distributed under the BSD 3-Clause License; its original notice is preserved below.
 
 ## PMWD
 

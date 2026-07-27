@@ -8,8 +8,8 @@
 
 PM++ is a JAX-based, differentiable particle-mesh cosmology code built on PMWD
 ideas and extended for multi-GPU simulations. The active implementation is
-imported as `pmpp` and lives in `src/pmpp/`; the `pmwd/` directory is retained
-as a reference implementation for validation.
+imported as `pmpp` and lives in `src/pmpp/`; `tests/pmwd/` retains the PMWD
+reference implementation used exclusively for validation.
 
 The documented baseline uses exactly two GPUs so every example exercises the
 distributed ownership, mesh-halo, and FFT paths.
@@ -42,8 +42,8 @@ PMpp/
 |   |-- lpt.py                   # LPT initialization
 |   |-- power_spectrum.py        # Density and particle P(k)
 |   `-- potential_correction.py  # Backward-compatible correction facade
-|-- pmwd/                        # Reference PMWD implementation
 |-- tests/                       # Regression and gradient tests
+|   `-- pmwd/                    # Test-only PMWD reference implementation
 |-- scripts/                     # Benchmarks and diagnostics
 |-- docs/source/notebooks/       # Pre-executed documentation notebooks
 `-- docs/                        # Project documentation
@@ -203,8 +203,8 @@ selected GPUs in a clean temporary copy before committing its outputs.
 
 PM++ is distributed under the BSD-3-Clause license; see [LICENSE](LICENSE).
 PM++ is based on PMWD and retains the original PMWD BSD 3-Clause notice in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The `pmwd/` directory is kept
-as a reference implementation for validation.
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The test-only `tests/pmwd/`
+package is kept as a reference implementation for validation.
 
 ## Documentation build
 

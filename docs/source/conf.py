@@ -145,6 +145,10 @@ mermaid_output_format = "raw"
 mermaid_init_config = {
     "startOnLoad": False,
     "securityLevel": "strict",
+    # Render KaTeX's HTML fallback instead of native MathML.  It gives
+    # multi-line equation labels consistent dimensions across browsers.
+    "legacyMathML": True,
+    "flowchart": {"htmlLabels": True},
     # Keep connectors visible even before the theme-specific CSS override is
     # applied.  This mid-tone has sufficient contrast in both site themes.
     "themeVariables": {"lineColor": "#6B7280"},

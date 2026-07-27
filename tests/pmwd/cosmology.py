@@ -8,8 +8,8 @@ from jax.typing import ArrayLike
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 
-from pmwd.tree_util import pytree_dataclass
-from pmwd.configuration import Configuration
+from .tree_util import pytree_dataclass
+from .configuration import Configuration
 
 
 @partial(pytree_dataclass, aux_fields="conf", frozen=True)
@@ -95,7 +95,7 @@ class Cosmology:
     @classmethod
     def from_sigma8(cls, conf, sigma8, *args, **kwargs):
         """Construct cosmology with sigma8 instead of A_s."""
-        from pmwd.boltzmann import boltzmann
+        from .boltzmann import boltzmann
 
         cosmo = cls(conf, 1, *args, **kwargs)
         cosmo = boltzmann(cosmo, conf)
@@ -151,7 +151,7 @@ class Cosmology:
     @property
     def sigma8(self):
         """Linear matter rms overdensity within a tophat sphere of 8 Mpc/h radius at a=1."""
-        from pmwd.boltzmann import varlin
+        from .boltzmann import varlin
         R = 8 * self.conf.Mpc_SI / self.conf.L
         return jnp.sqrt(varlin(R, 1, self, self.conf))
 
