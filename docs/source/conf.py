@@ -101,7 +101,7 @@ intersphinx_mapping = {
 linkcheck_report_timeouts_as_broken = False
 
 html_theme = "pydata_sphinx_theme"
-html_logo = "_static/pmpp-logo.png"
+html_logo = "_static/pmpp-logo.svg"
 html_favicon = "_static/pmpp-logo.png"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]

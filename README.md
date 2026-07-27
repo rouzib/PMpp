@@ -1,7 +1,7 @@
 # PM++: Multi-GPU Particle-Mesh Cosmology
 
 <p align="center">
-  <img src="docs/source/_static/pmpp-logo.png" alt="PM++ logo" width="360">
+  <img src="https://raw.githubusercontent.com/rouzib/PMpp/master/docs/source/_static/pmpp-logo.svg" alt="PM++ logo" width="360">
 </p>
 
 [![Documentation Status](https://readthedocs.org/projects/pmpp-docs/badge/?version=latest)](https://pmpp-docs.readthedocs.io/en/latest/?badge=latest)
