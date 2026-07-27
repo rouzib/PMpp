@@ -9,11 +9,11 @@ Every notebook begins with a committed-execution admonition.  Its first executed
 records the JAX version, backend, selected and visible devices, seed, configuration, and
 applicable static capacities used to produce the displayed plots.
 
-```{admonition} Reproducing the gallery
-:class: tip
-Generate stable source cells with `python scripts/generate_docs_notebooks.py`,
-execute with `python scripts/execute_docs_notebooks.py --write`,
-then run `python scripts/validate_docs_notebooks.py`.
+```{admonition} Gallery execution policy
+:class: note
+Notebook source, provenance, and rendered outputs are committed together.
+Regeneration and validation helpers are maintained locally by project
+developers and are not distributed as part of the repository.
 ```
 
 ::::{grid} 1 1 2 2

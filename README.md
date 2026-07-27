@@ -44,7 +44,6 @@ PMpp/
 |   `-- potential_correction.py  # Backward-compatible correction facade
 |-- tests/                       # Regression and gradient tests
 |   `-- pmwd/                    # Test-only PMWD reference implementation
-|-- scripts/                     # Benchmarks and diagnostics
 |-- docs/source/notebooks/       # Pre-executed documentation notebooks
 `-- docs/                        # Project documentation
 ```
