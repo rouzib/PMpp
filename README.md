@@ -20,11 +20,10 @@ distributed ownership, mesh-halo, and FFT paths.
 
 ## Installation
 
-On Linux x86_64 or WSL2 with an NVIDIA driver and two visible GPUs:
+On a computer with two visible GPUs:
 
 ```bash
-# Run inside the Ubuntu/WSL2 shell, not Windows PowerShell.
-python3.10 -m venv ~/.venvs/pmpp
+python -m venv ~/.venvs/pmpp
 source ~/.venvs/pmpp/bin/activate
 python -m pip install --upgrade pip
 python -m pip install pmpp jupyter
@@ -36,8 +35,7 @@ jupyter lab docs/source/notebooks
 ```
 
 PM++ requests a CUDA 12-capable JAX build without pinning a specific JAX
-release on this target. Native Windows and other platforms receive the regular
-JAX build; use WSL2 for the documented NVIDIA multi-GPU workflows.
+release on this target. 
 
 ## Current Scope
 
@@ -176,7 +174,7 @@ Expected sanity checks:
 
 ## Multi-GPU Modes
 
-Prefer `mesh_halo` for current serious multi-GPU work:
+Prefer `mesh_halo` for current multi-GPU work:
 
 - particles are stored authoritatively on their owning slab;
 - particles migrate between slabs when needed;
