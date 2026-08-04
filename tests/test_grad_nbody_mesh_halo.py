@@ -69,6 +69,7 @@ def _init_confs():
         a_start=1 / 60,
         a_stop=1 / 15,
         a_nbody_maxstep=1 / 60,
+        pallas_cic=False,
         cosmo_dtype=jnp.float64,
         float_dtype=jnp.float64,
     )

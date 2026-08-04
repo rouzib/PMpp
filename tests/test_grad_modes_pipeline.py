@@ -55,6 +55,7 @@ def _init_confs():
         to_save_z=[1, 2 / 3, 1 / 3, 0],
         a_start=1 / 60,
         a_nbody_maxstep=1 / 60,
+        pallas_cic=False,
         cosmo_dtype=jnp.float64,
         float_dtype=jnp.float64,
     )

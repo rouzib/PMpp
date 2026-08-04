@@ -31,7 +31,7 @@ import operator as op
 
 import jax
 import jax.numpy as jnp
-from jax._src import core
+from jax._src import api_util, core
 from jax import custom_derivatives
 from jax import lax
 from jax._src.numpy.util import promote_dtypes_inexact
@@ -39,7 +39,6 @@ from jax._src.util import safe_map, safe_zip
 from jax.flatten_util import ravel_pytree
 from jax.tree_util import tree_leaves, tree_map
 from jax._src import linear_util as lu
-from jax._src.linear_util import _missing_debug_info
 
 map = safe_map
 zip = safe_zip
@@ -62,7 +61,8 @@ def ravel_first_arg(f, unravel):
         Wrapper around ``f`` that accepts a flattened first argument and
         returns a flattened output pytree.
     """
-    return ravel_first_arg_(lu.wrap_init(f, debug_info=_missing_debug_info("lu")), unravel).call_wrapped
+    debug_info = api_util.debug_info("ravel_first_arg", f, (), {})
+    return ravel_first_arg_(lu.wrap_init(f, debug_info=debug_info), unravel).call_wrapped
 
 
 @lu.transformation
@@ -412,7 +412,7 @@ def _odeint(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args):
             error_ratio = mean_error_ratio(next_y_error, rtol, atol, y, next_y)
             new_interp_coeff = interp_fit_dopri(y, next_y, k, dt)
             dt = jnp.clip(optimal_step_size(
-                dt, error_ratio), a_min=0., a_max=hmax)
+                dt, error_ratio), min=0., max=hmax)
 
             new = [i + 1, next_y, next_f, next_t, dt,      t, new_interp_coeff]
             old = [i + 1,      y,      f,      t, dt, last_t,     interp_coeff]
@@ -429,7 +429,7 @@ def _odeint(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args):
     dt = dt0[0] if isinstance(dt0, tuple) else dt0
     if dt is None:
         dt = initial_step_size(func_, ts[0], y0, 4, rtol, atol, f0)
-    dt = jnp.clip(dt, a_min=0., a_max=hmax)
+    dt = jnp.clip(dt, min=0., max=hmax)
     interp_coeff = jnp.array([y0] * 5)
     init_carry = [y0, f0, ts[0], dt, ts[0], interp_coeff]
     _, ys = lax.scan(scan_fun, init_carry, ts[1:])

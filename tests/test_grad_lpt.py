@@ -62,6 +62,7 @@ def _init_confs(lpt_order=1):
         a_start=1 / 60,
         a_nbody_maxstep=1 / 60,
         lpt_order=lpt_order,
+        pallas_cic=False,
         cosmo_dtype=jnp.float64,
         float_dtype=jnp.float64,
     )

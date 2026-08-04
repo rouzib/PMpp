@@ -184,6 +184,7 @@ def _base_setup_x64(num_ptcl=8):
             a_start=1 / 60,
             a_stop=1,
             a_nbody_maxstep=1 / 60,
+            pallas_cic=False,
             float_dtype=jnp.float64,
             cosmo_dtype=jnp.float64,
         )
@@ -210,6 +211,7 @@ def _particle_fd_setup_x64(num_ptcl=4, seed=42):
             a_start=1 / 60,
             a_nbody_maxstep=1 / 60,
             a_stop=1 / 30,
+            pallas_cic=False,
             float_dtype=jnp.float64,
             cosmo_dtype=jnp.float64,
         )

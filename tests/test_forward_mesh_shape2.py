@@ -100,6 +100,7 @@ def _init_confs(
         a_start=a_start,
         a_stop=a_stop,
         a_nbody_maxstep=a_nbody_maxstep,
+        pallas_cic=False,
         cosmo_dtype=jnp.float64,
         float_dtype=jnp.float64,
     )
