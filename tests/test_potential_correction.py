@@ -17,6 +17,7 @@ from pmpp.corrections import (
     evaluate_pgd_bandpass,
     evaluate_pgd_potential_transfer,
     evaluate_radial_potential_transfer,
+    force_gradient_kernel,
     force_green_kernel,
     force_uses_interlacing,
     init_potential_correction,
@@ -25,6 +26,7 @@ from pmpp.corrections import (
     sample_potential_transfer,
 )
 from pmpp.utils import create_compute_mesh
+from pmpp.gravity import neg_grad
 
 
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
@@ -234,6 +236,81 @@ def test_windowed_spline_combined_applies_window_and_radial_transfer():
     assert force_green_kernel(correction) == "discrete_laplacian"
 
 
+def test_fastpm_four_point_force_derivative_matches_discrete_symbol():
+    spacing = 0.75
+    k = jnp.asarray([0.0, 0.2, -0.6, jnp.pi / spacing], dtype=jnp.float32)
+    potential = jnp.ones_like(k, dtype=jnp.complex64)
+
+    actual = neg_grad(k, potential, spacing, kernel="fastpm_4point")
+    expected_k = (8.0 * jnp.sin(k * spacing) - jnp.sin(2.0 * k * spacing)) / (6.0 * spacing)
+
+    np.testing.assert_allclose(np.asarray(actual), np.asarray(-1j * expected_k), atol=1e-6, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(actual[-1]), 0.0, atol=1e-6, rtol=1e-6)
+
+
+def test_window_correction_selects_fastpm_four_point_force_derivative():
+    conf = Configuration(1.0, (4, 4, 4), mesh_shape=1, float_dtype=jnp.float32)
+    correction = init_potential_correction(
+        jax.random.PRNGKey(5),
+        model="windowed_spline",
+        output_init_scale=0.0,
+        window_gradient_kernel="fastpm_4point",
+        dtype=jnp.float32,
+        conf=conf,
+    )
+
+    assert force_gradient_kernel(correction) == "fastpm_4point"
+
+
+@pytest.mark.parametrize(
+    "model, expected_green",
+    (("fastpm_1_4", "continuum"), ("fastpm_3_4", "discrete_laplacian")),
+)
+def test_named_fastpm_force_kernels_are_identity_transfers(model, expected_green):
+    conf = Configuration(1.0, (4, 4, 4), mesh_shape=1, float_dtype=jnp.float32)
+    correction = init_potential_correction(jax.random.PRNGKey(0), model=model, dtype=jnp.float32, conf=conf)
+    transfer = evaluate_pm_window_compensation(correction, conf)
+
+    np.testing.assert_allclose(np.asarray(transfer), 1.0, atol=1e-6, rtol=1e-6)
+    assert force_green_kernel(correction) == expected_green
+    assert force_gradient_kernel(correction) == "fastpm_4point"
+
+
+@pytest.mark.parametrize(
+    "model, has_radial, trainable_window",
+    (
+        ("windowed_mesh_cnn", False, False),
+        ("windowed_spline_mesh_cnn", True, False),
+        ("trainable_windowed_mesh_cnn", False, True),
+        ("trainable_windowed_spline_mesh_cnn", True, True),
+    ),
+)
+def test_phase_aware_composites_build_window_and_mesh_branches(model, has_radial, trainable_window):
+    conf = Configuration(1.0, (4, 4, 4), mesh_shape=1, float_dtype=jnp.float32)
+    correction = init_potential_correction(
+        jax.random.PRNGKey(13),
+        model=model,
+        latent_size=6,
+        n_knots=6,
+        output_init_scale=0.0,
+        mesh_channels=3,
+        mesh_depth=2,
+        mesh_max_residual=0.15,
+        mesh_output_init_scale=0.0,
+        window_alpha=0.25,
+        window_max_gain=2.0,
+        allow_missing_sigma8=True,
+        dtype=jnp.float32,
+        conf=conf,
+    )
+
+    assert correction.mesh_cnn.channels == 3
+    assert correction.mesh_cnn.depth == 2
+    assert correction.mesh_cnn.max_residual == pytest.approx(0.15)
+    assert (correction.radial is not None) is has_radial
+    assert hasattr(correction.window, "raw_alpha") is trainable_window
+
+
 def test_pgd_potential_correction_has_finite_band_limited_transfer():
     conf = Configuration(1.0, (8, 8, 8), mesh_shape=1, float_dtype=jnp.float32)
     cosmo = SimpleLCDM(conf)
@@ -343,7 +420,10 @@ def test_trainable_windowed_spline_pgd_has_trainable_scalar_leaves():
 def test_mesh_cnn_potential_correction_matches_single_device_on_mesh_halo():
     ptcl_grid_shape = (8, 8, 8)
     conf_single = Configuration(1.0, ptcl_grid_shape, mesh_shape=1, float_dtype=jnp.float32)
-    compute_mesh = create_compute_mesh([device for device in jax.devices() if device.platform == "gpu"][:2])
+    gpu_devices = [device for device in jax.devices() if device.platform == "gpu"][:2]
+    if len(gpu_devices) < 2:
+        pytest.skip("nontrivial mesh-CNN partition test requires two GPUs")
+    compute_mesh = create_compute_mesh(gpu_devices)
     conf_multi = Configuration(
         1.0,
         ptcl_grid_shape,
@@ -368,6 +448,24 @@ def test_mesh_cnn_potential_correction_matches_single_device_on_mesh_halo():
         conf=conf_single,
     )
 
+    # Initialization deliberately zeros the convolutional output layer, which
+    # would only exercise the replicated scalar-gain branch. Activate the CNN
+    # while disabling that shortcut so this regression covers halo exchange and
+    # the distributed source/potential normalization used by trained models.
+    params = {
+        module_name: dict(module_params)
+        for module_name, module_params in correction.params.items()
+    }
+    out_name = next(module_name for module_name in params if module_name.endswith("/out"))
+    direct_gain_name = next(module_name for module_name in params if module_name.endswith("/direct_gain"))
+    out_weights = jnp.zeros_like(params[out_name]["w"])
+    out_weights = out_weights.at[1, 1, 1, :, :].set(jnp.asarray(0.05, dtype=out_weights.dtype))
+    params[out_name]["w"] = out_weights
+    params[out_name]["b"] = jnp.zeros_like(params[out_name]["b"])
+    params[direct_gain_name]["w"] = jnp.zeros_like(params[direct_gain_name]["w"])
+    params[direct_gain_name]["b"] = jnp.zeros_like(params[direct_gain_name]["b"])
+    correction = correction.replace(params=params)
+
     source = jnp.linspace(0.1, 1.6, np.prod(conf_single.mesh_shape), dtype=conf_single.float_dtype).reshape(conf_single.mesh_shape)
     potential = jnp.linspace(-0.8, 0.7, np.prod(conf_single.mesh_shape), dtype=conf_single.float_dtype).reshape(conf_single.mesh_shape)
     source_sharded = jax.device_put(source, NamedSharding(compute_mesh, P("gpus", None, None)))
@@ -383,6 +481,7 @@ def test_mesh_cnn_potential_correction_matches_single_device_on_mesh_halo():
         conf_multi,
     )
 
+    assert float(jnp.max(jnp.abs(residual_single))) > 1e-6
     np.testing.assert_allclose(
         np.asarray(jax.device_get(residual_multi)),
         np.asarray(residual_single),

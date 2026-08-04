@@ -31,6 +31,7 @@ def _bounded_sigmoid(raw, lo, hi, dtype):
         "taper_stop",
         "interlacing",
         "green_kernel",
+        "gradient_kernel",
         "dtype",
     ),
     frozen=True,
@@ -92,6 +93,11 @@ class PMWindowCompensationCorrection:
         uses ``-1 / k^2``.  ``"discrete_laplacian"`` uses the lattice Laplacian
         symbol with ``2 sin(k_i dx / 2) / dx`` on each axis, which usually gives
         a stronger and more accurate near-mesh response for this correction.
+    gradient_kernel : {"spectral", "fastpm_4point"}, optional
+        Fourier derivative used to turn potential into force. ``"spectral"``
+        uses the exact ``k`` symbol. ``"fastpm_4point"`` uses FastPM's
+        fourth-order centered finite-difference symbol
+        ``(8 sin(k dx) - sin(2 k dx)) / (6 dx)``.
     dtype : dtype, optional
         Floating-point dtype used for evaluating the transfer field.
 
@@ -110,11 +116,14 @@ class PMWindowCompensationCorrection:
     taper_stop: float = 1.0
     interlacing: bool = False
     green_kernel: str = "discrete_laplacian"
+    gradient_kernel: str = "spectral"
     dtype: jnp.dtype = field(default=jnp.float32, repr=False)
 
     def __post_init__(self):
         if self._is_transforming():
             return
+        if self.gradient_kernel not in {"spectral", "fastpm_4point"}:
+            raise ValueError(f"Unsupported force-gradient kernel {self.gradient_kernel!r}.")
         object.__setattr__(self, "dtype", jnp.dtype(self.dtype))
 
 
@@ -131,6 +140,7 @@ class PMWindowCompensationCorrection:
         "taper_stop",
         "interlacing",
         "green_kernel",
+        "gradient_kernel",
         "dtype",
     ),
     frozen=True,
@@ -156,11 +166,14 @@ class TrainablePMWindowCompensationCorrection:
     taper_stop: float = 1.0
     interlacing: bool = False
     green_kernel: str = "discrete_laplacian"
+    gradient_kernel: str = "spectral"
     dtype: jnp.dtype = field(default=jnp.float32, repr=False)
 
     def __post_init__(self):
         if self._is_transforming():
             return
+        if self.gradient_kernel not in {"spectral", "fastpm_4point"}:
+            raise ValueError(f"Unsupported force-gradient kernel {self.gradient_kernel!r}.")
         dtype = jnp.dtype(self.dtype)
         object.__setattr__(self, "dtype", dtype)
         object.__setattr__(self, "raw_alpha", jnp.asarray(self.raw_alpha, dtype=dtype))
@@ -185,6 +198,7 @@ def init_pm_window_compensation_correction(dtype=jnp.float32, **kwargs):
         taper_stop=kwargs.get("taper_stop", kwargs.get("window_taper_stop", 1.0)),
         interlacing=kwargs.get("interlacing", False),
         green_kernel=kwargs.get("green_kernel", "discrete_laplacian"),
+        gradient_kernel=kwargs.get("gradient_kernel", kwargs.get("window_gradient_kernel", "spectral")),
         dtype=dtype,
     )
 
@@ -220,6 +234,7 @@ def init_trainable_pm_window_compensation_correction(dtype=jnp.float32, **kwargs
         taper_stop=kwargs.get("taper_stop", kwargs.get("window_taper_stop", 1.0)),
         interlacing=kwargs.get("interlacing", False),
         green_kernel=kwargs.get("green_kernel", "discrete_laplacian"),
+        gradient_kernel=kwargs.get("gradient_kernel", kwargs.get("window_gradient_kernel", "spectral")),
         dtype=dtype,
     )
 

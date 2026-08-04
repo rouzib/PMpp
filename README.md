@@ -184,6 +184,15 @@ Prefer `mesh_halo` for current multi-GPU work:
 
 `particle_halo` remains useful for comparison and legacy validation.
 
+### Performance defaults
+
+`mesh_halo` always uses canonical sparse routing and packed migration
+collectives. `pallas_cic=True` uses paired Pallas gather/scatter on qualified
+float32 GPU setups; unsupported platforms warn and fall back to reference JAX.
+CUDA routing is selected automatically when its optional FFI is qualified.
+See [the optimization guide](docs/source/user_guide/optimizations.md) for the
+measured forward and AD recommendations.
+
 ## Testing
 
 Focused gravity checks:

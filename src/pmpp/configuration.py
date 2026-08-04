@@ -1,4 +1,5 @@
 import math
+import warnings
 from functools import partial
 from typing import ClassVar, List, Optional, Tuple, Union
 
@@ -16,6 +17,7 @@ from .multigpu_configuration import (
     build_multigpu_configuration,
     initialize_multigpu_runtime,
 )
+from .pallas_cic import pallas_cic_supported
 from .utils import build_particle_nyquist_filter, pytree_dataclass
 
 
@@ -109,6 +111,10 @@ class Configuration:
         Whether the hand-written N-body adjoint computes cosmology parameter
         cotangents. Keep True for full scientific gradients; set False for
         displacement-only gradients to skip unused adjoint work.
+    pallas_cic : bool, optional
+        Use the Pallas CIC gather/scatter kernels and their hand-written
+        adjoints when a float32 GPU backend is available. The reference JAX
+        implementation remains the fallback for unsupported backends.
     replicated_mesh : bool, optional
         Experimental multi-GPU path that keeps particles on their initial
         authoritative shard and computes force/scatter on a replicated full
@@ -184,6 +190,9 @@ class Configuration:
     float_dtype: DTypeLike = jnp.dtype(jnp.float32)
     corrected_force_batched_fft: bool = False
     nbody_cosmo_grad: bool = True
+    # Qualifying GPU/JAX combinations use Pallas forward CIC by default; the
+    # wrapper falls back to reference JAX everywhere else.
+    pallas_cic: bool = True
     replicated_mesh: bool = False
     static_mesh_halo_width: int = 0
     particle_halo_gather_mesh_halo: bool = False
@@ -264,6 +273,14 @@ class Configuration:
             raise ValueError('pmid_dtype must be signed integers')
         if not jnp.issubdtype(self.float_dtype, jnp.floating):
             raise ValueError('float_dtype must be floating point numbers')
+        if self.pallas_cic and not pallas_cic_supported(self.float_dtype):
+            warnings.warn(
+                "Pallas CIC was requested but is unavailable for this configuration; "
+                "using the reference JAX CIC implementation. Pallas requires a "
+                "float32 GPU backend on the qualified JAX 0.6 minor line.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         if self.a_custom is not None and not isinstance(self.a_custom, tuple):
             with jax.ensure_compile_time_eval():
@@ -379,6 +396,7 @@ class Configuration:
         "devices": "devices",
         "devices_index": "devices_index",
         "mesh_halo_width": "mesh_halo_width",
+        "cuda_routing": "cuda_routing",
         "mesh_halo_offsets": "mesh_halo_offsets",
         "local_mesh_shape": "local_mesh_shape",
         "local_mesh_with_halo_shape": "local_mesh_with_halo_shape",

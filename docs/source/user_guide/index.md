@@ -17,6 +17,12 @@ PM++'s distributed ownership, communication, and FFT paths.
   validation strategy.
 - [Multi-GPU execution](multigpu.md): device meshes, `mesh_halo`, ownership,
   distributed FFTs, and capacity planning.
+- [Optimizations](optimizations.md): measured forward and AD settings and
+  portable fallbacks.
+- [Pallas CIC kernels](pallas_cic.md): the paired particle-mesh kernels,
+  qualification, and reference fallback.
+- [CUDA routing](cuda_routing.md): optional FFI setup for accelerated local
+  mesh-halo particle routing.
 - [Troubleshooting](troubleshooting.md): overflows, decompositions, compilation,
   and memory failures.
 
@@ -32,4 +38,7 @@ initial_conditions
 evolution_and_analysis
 differentiation
 multigpu
+optimizations
+pallas_cic
+cuda_routing
 ```

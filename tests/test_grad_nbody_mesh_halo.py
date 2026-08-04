@@ -58,7 +58,10 @@ def _init_confs():
         ptcl_spacing,
         ptcl_grid_shape,
         mesh_shape=1,
-        multigpu=MultiGPUConfiguration(compute_mesh=compute_mesh, mode="mesh_halo"),
+        multigpu=MultiGPUConfiguration(
+            compute_mesh=compute_mesh,
+            mode="mesh_halo",
+        ),
         max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * 2.5),
         max_share_ptcl=4000,
         max_halo_share_ptcl=4000,

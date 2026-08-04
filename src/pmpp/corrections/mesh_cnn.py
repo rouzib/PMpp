@@ -13,7 +13,7 @@ from ..mesh_halo import (
     maybe_shard_map_mesh_local_op,
     owned_mesh_partition_spec,
 )
-from ..utils import is_float0_array, pytree_dataclass
+from ..utils import AXIS_NAME, is_float0_array, pytree_dataclass
 from .common import (
     HaikuModuleBase,
     correction_cosmo_features,
@@ -44,6 +44,14 @@ def _mesh_conditioning_vector(a, cosmo, dtype):
             cosmo_features(cosmo, dtype),
         ]
     )
+
+
+def _global_mesh_mean(x, conf):
+    """Return a mesh-wide mean, reducing equal-size x slabs when sharded."""
+    mean = jnp.mean(x)
+    if conf.compute_mesh is not None and conf.num_devices > 1:
+        mean = jax.lax.pmean(mean, AXIS_NAME)
+    return mean
 
 
 def _periodic_pad_mesh_channels(x, halo_width, conf):
@@ -93,9 +101,13 @@ class MeshResidualPotentialCorrection(HaikuModuleBase):
 
     def __call__(self, source, potential_real, a, cosmo, conf):
         dtype = source.dtype
-        source_scale = jnp.sqrt(jnp.mean(source ** 2) + jnp.asarray(1e-6, dtype=dtype))
+        source_scale = jnp.sqrt(
+            _global_mesh_mean(source ** 2, conf) + jnp.asarray(1e-6, dtype=dtype)
+        )
         source_norm = source / source_scale
-        potential_scale = jnp.sqrt(jnp.mean(potential_real ** 2) + jnp.asarray(1e-6, dtype=dtype))
+        potential_scale = jnp.sqrt(
+            _global_mesh_mean(potential_real ** 2, conf) + jnp.asarray(1e-6, dtype=dtype)
+        )
         potential_norm = potential_real / potential_scale
         features = _mesh_conditioning_channels(source_norm, potential_norm, a, cosmo, dtype)
         conditioning = _mesh_conditioning_vector(a, cosmo, dtype)

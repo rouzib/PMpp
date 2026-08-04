@@ -201,22 +201,31 @@ AXIS_NAME = "gpus"
 
 
 def raise_error(err_msg, **error_dict):
-    """
-    Raises an error by printing the error message and the associated details.
+    """Abort a compiled run when a static-capacity invariant is violated.
 
-    This function utilizes the `jax.debug.print` mechanism to output error
-    messages, along with any additional contextual information provided as a
-    dictionary. It can be used for debugging purposes, ensuring that errors
-    are logged with their accompanying details in a structured manner.
+    PM++ historically only printed these messages and then continued with a
+    truncated static buffer.  Continuing produces a numerically plausible but
+    scientifically invalid trajectory, so capacity failures must be observable
+    as real runtime errors by training and acceptance harnesses.  A debug
+    callback is used because the predicate is normally evaluated inside a
+    jitted/sharded computation.
 
     :param err_msg: The message describing the error.
     :type err_msg: str
     :param error_dict: A dictionary containing additional context
         or details about the error.
     :type error_dict: dict
-    :return: None
+    :raises RuntimeError: when the compiled callback executes
     """
-    jax.debug.print(err_msg, **error_dict)
+
+    def _raise_on_host(**values):
+        formatted = {}
+        for name, value in values.items():
+            array = np.asarray(value)
+            formatted[name] = array.item() if array.ndim == 0 else array.tolist()
+        raise RuntimeError(err_msg.format(**formatted))
+
+    jax.debug.callback(_raise_on_host, **error_dict)
 
 
 def create_compute_mesh(devices):

@@ -408,7 +408,9 @@ def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, C
     return _batched_rfftn_transposed_jit, batched_irfftn_transposed
 
 
-def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Callable, Callable, Callable]:
+def create_ffts(
+    compute_mesh: Mesh,
+) -> Tuple[Callable, Callable, Callable, Callable, Callable, Callable]:
     """Create the distributed FFT helper family used by PM++.
 
     Parameters
@@ -658,6 +660,9 @@ def create_ffts(compute_mesh: Mesh) -> Tuple[Callable, Callable, Callable, Calla
             Cotangent array supplied to a custom VJP backward rule.
         """
         g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
+        g = lax.with_sharding_constraint(
+            g, NamedSharding(compute_mesh, P(None, "gpus", None))
+        )
         g = _ifftn_transposed_jit(g.conj()).real
         g *= jnp.prod(jnp.array(x_shape))
         return (g,)

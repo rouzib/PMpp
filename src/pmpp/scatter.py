@@ -10,6 +10,11 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 from .enmesh import _chunk_split, enmesh, _chunk_cat
 from .halo_moving import particles_in_slice_mask
 from .mesh_halo import reduce_mesh_halo_to_owned, zero_pad_owned_mesh_halo
+from .pallas_cic import (
+    pallas_cic_supported,
+    pallas_scatter,
+    pallas_scatter_bwd,
+)
 from .utils import AXIS_NAME, raise_error
 
 
@@ -133,6 +138,7 @@ def initialize_mGPU_scatter(conf):
     callable
         Scatter callable specialized to the active multi-GPU path.
     """
+    val_spec = P(AXIS_NAME)
     if conf.replicated_mesh:
         return shard_map(
             _scatter_mGPU_replicated,
@@ -142,8 +148,9 @@ def initialize_mGPU_scatter(conf):
                 P(AXIS_NAME, None),  # disp
                 None,  # conf
                 None,  # mesh, ignored in replicated mode
-                P(AXIS_NAME),  # val
+                val_spec,  # val
                 None,  # cell_size
+                P(AXIS_NAME),  # valid particle mask
             ),
             out_specs=P(None, None, None),
             check_rep=False,
@@ -157,8 +164,9 @@ def initialize_mGPU_scatter(conf):
                 P(AXIS_NAME, None),  # disp
                 None,  # conf
                 P(AXIS_NAME, None, None),  # mesh
-                P(AXIS_NAME),  # val
+                val_spec,  # val
                 None,  # cell_size
+                P(AXIS_NAME),  # valid particle mask
             ),
             out_specs=(P(AXIS_NAME, None, None)),
             check_rep=False,
@@ -171,23 +179,24 @@ def initialize_mGPU_scatter(conf):
             P(AXIS_NAME, None),  # disp
             None,  # conf
             P(AXIS_NAME, None, None),  # mesh
-            P(AXIS_NAME),  # val
+            val_spec,  # val
             None,  # cell_size
+            P(AXIS_NAME),  # valid particle mask
         ),
         out_specs=(P(AXIS_NAME, None, None)),
         check_rep=False
     )
 
 
-def _scatter_mGPU_replicated(pmid, disp, conf, mesh, val, cell_size):
+def _scatter_mGPU_replicated(pmid, disp, conf, mesh, val, cell_size, valid_mask):
     """Scatter local particle shards to a replicated full mesh with psum reduction."""
     del mesh
     local_mesh = jnp.zeros(conf.mesh_shape + val.shape[1:], dtype=conf.float_dtype)
-    local_density = _scatter(pmid, disp, conf, local_mesh, val, 0, cell_size)
+    local_density = _scatter(pmid, disp, conf, local_mesh, val, 0, cell_size, valid_mask)
     return jax.lax.psum(local_density, AXIS_NAME)
 
 
-def _scatter_mGPU_mesh_halo(pmid, disp, conf, mesh, val, cell_size):
+def _scatter_mGPU_mesh_halo(pmid, disp, conf, mesh, val, cell_size, valid_mask):
     """Scatter through a temporary mesh halo and reduce edge contributions.
 
     In ``mesh_halo`` mode particles are not duplicated across devices. Particles
@@ -198,35 +207,35 @@ def _scatter_mGPU_mesh_halo(pmid, disp, conf, mesh, val, cell_size):
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     mesh_halo = zero_pad_owned_mesh_halo(mesh, conf.mesh_halo_width)
     offset = conf.mesh_halo_offsets[gpu_id]
-    mesh_halo = _scatter(pmid, disp, conf, mesh_halo, val, offset, cell_size)
+    mesh_halo = _scatter(pmid, disp, conf, mesh_halo, val, offset, cell_size, valid_mask)
     return reduce_mesh_halo_to_owned(mesh_halo, conf.mesh_halo_width, conf.left_perm, conf.right_perm)
 
 
 @partial(custom_vjp, nondiff_argnums=(2,))
-def _scatter_mGPU(pmid, disp, conf, mesh, val, cell_size):
+def _scatter_mGPU(pmid, disp, conf, mesh, val, cell_size, valid_mask):
     """Scatter for ``particle_halo`` mode, where halo particles already exist."""
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
-    return _scatter(pmid, disp, conf, mesh, val, offset, cell_size)
+    return _scatter(pmid, disp, conf, mesh, val, offset, cell_size, valid_mask)
 
 
-def _scatter_mGPU_fwd(pmid, disp, conf, mesh, val, cell_size):
+def _scatter_mGPU_fwd(pmid, disp, conf, mesh, val, cell_size, valid_mask):
     """Forward rule for sharded particle-halo scatter."""
-    result = _scatter_mGPU(pmid, disp, conf, mesh, val, cell_size)
-    return result, (pmid, disp, mesh, val, cell_size)
+    result = _scatter_mGPU(pmid, disp, conf, mesh, val, cell_size, valid_mask)
+    return result, (pmid, disp, mesh, val, cell_size, valid_mask)
 
 
 def _scatter_mGPU_bwd(conf, res, mesh_cot):
     """Backward rule for sharded particle-halo scatter."""
-    pmid, disp, mesh, val, cell_size_res = res
+    pmid, disp, mesh, val, cell_size_res, valid_mask = res
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
 
-    _, disp_cot, _, mesh_in_cot, val_cot, _, _ = _scatter_bwd(
-        (pmid, disp, conf, val, offset, cell_size_res),
+    _, disp_cot, _, mesh_in_cot, val_cot, _, _, _ = _scatter_bwd(
+        (pmid, disp, conf, val, offset, cell_size_res, valid_mask),
         mesh_cot,
     )
-    return None, disp_cot, mesh_in_cot, val_cot, None
+    return None, disp_cot, mesh_in_cot, val_cot, None, None
 
 
 _scatter_mGPU.defvjp(_scatter_mGPU_fwd, _scatter_mGPU_bwd)
@@ -269,23 +278,33 @@ def scatter(ptcl, conf, mesh=None, val=None, offset=0, cell_size=None):
 
     """
 
+    valid_mask = None if ptcl.unused_index is None else ~jax.lax.stop_gradient(ptcl.unused_index)
     if val is None:
         val = conf.mesh_size / conf.ptcl_num
-        if ptcl.unused_index is None:
+        if valid_mask is None:
             valid = jnp.ones(ptcl.disp.shape[0], dtype=conf.float_dtype)
         else:
-            valid = (~ptcl.unused_index).astype(conf.float_dtype)
+            valid = valid_mask.astype(conf.float_dtype)
         val = valid * val
 
     if mesh is None:
-        mesh = _initialize_mesh_on_devices(conf.mesh_shape, conf.float_dtype, conf.compute_mesh, val.shape)
+        # ``val`` is intentionally a replicated Python/JAX scalar on the
+        # density-specialized path, so do not access ``val.shape`` directly.
+        mesh = _initialize_mesh_on_devices(
+            conf.mesh_shape,
+            conf.float_dtype,
+            conf.compute_mesh,
+            jnp.shape(val),
+        )
     if not conf.use_mGPU or conf.mGPU_scatter is None:
-        return _scatter(ptcl.pmid, ptcl.disp, conf, mesh, val, offset, cell_size)
-    return conf.mGPU_scatter(ptcl.pmid, ptcl.disp, conf, mesh, val, cell_size)
+        return _scatter(ptcl.pmid, ptcl.disp, conf, mesh, val, offset, cell_size, valid_mask)
+    if valid_mask is None:
+        valid_mask = jnp.ones(ptcl.pmid.shape[0], dtype=jnp.bool_)
+    return conf.mGPU_scatter(ptcl.pmid, ptcl.disp, conf, mesh, val, cell_size, valid_mask)
 
 
 @custom_vjp
-def _scatter(pmid, disp, conf, mesh, val, offset, cell_size):
+def _scatter(pmid, disp, conf, mesh, val, offset, cell_size, valid_mask=None):
     """Local multilinear scatter primitive with a custom VJP."""
     ptcl_num, spatial_ndim = pmid.shape
 
@@ -300,6 +319,23 @@ def _scatter(pmid, disp, conf, mesh, val, offset, cell_size):
     if mesh.shape[spatial_ndim:] != val.shape[1:]:
         raise ValueError('channel shape mismatch: '
                          f'{mesh.shape[spatial_ndim:]} != {val.shape[1:]}')
+
+    if valid_mask is not None and val.ndim != 0:
+        valid_shape = valid_mask.shape + (1,) * (val.ndim - 1)
+        val = jnp.where(valid_mask.reshape(valid_shape), val, 0)
+
+    if getattr(conf, "pallas_cic", True) and pallas_cic_supported(mesh.dtype):
+        return pallas_scatter(
+            pmid,
+            disp,
+            val,
+            mesh,
+            offset=offset,
+            particle_cell_size=conf.cell_size,
+            cell_size=cell_size,
+            global_shape=conf.mesh_shape,
+            valid_mask=valid_mask,
+        )
 
     carry = mesh, offset, cell_size, conf.cell_size, conf.mesh_shape
     if conf.chunk_size is None or conf.chunk_size >= ptcl_num:
@@ -375,21 +411,37 @@ def _scatter_chunk_adj(carry, chunk):
 
     return carry, (disp_cot, val_cot)
 
-def _scatter_fwd(pmid, disp, conf, mesh, val, offset, cell_size):
+def _scatter_fwd(pmid, disp, conf, mesh, val, offset, cell_size, valid_mask=None):
     """Forward rule for the local scatter primitive."""
-    mesh = _scatter(pmid, disp, conf, mesh, val, offset, cell_size)
-    return mesh, (pmid, disp, conf, val, offset, cell_size)
+    mesh = _scatter(pmid, disp, conf, mesh, val, offset, cell_size, valid_mask)
+    if val is not None and valid_mask is not None and jnp.ndim(val) != 0:
+        val = jnp.where(valid_mask.reshape(valid_mask.shape + (1,) * (jnp.ndim(val) - 1)), val, 0)
+    return mesh, (pmid, disp, conf, val, offset, cell_size, valid_mask)
 
 
 def _scatter_bwd(res, mesh_cot):
     """Backward rule for the local scatter primitive."""
-    pmid, disp, conf, val, offset, cell_size = res
+    pmid, disp, conf, val, offset, cell_size, valid_mask = res
 
     local_ptcl_num = len(pmid)
 
     if val is None:
         val = conf.mesh_size / conf.ptcl_num
     val = jnp.asarray(val, dtype=conf.float_dtype)
+
+    if getattr(conf, "pallas_cic", True) and pallas_cic_supported(mesh_cot.dtype):
+        disp_cot, val_cot = pallas_scatter_bwd(
+            pmid,
+            disp,
+            val,
+            mesh_cot,
+            offset=offset,
+            particle_cell_size=conf.cell_size,
+            cell_size=cell_size,
+            global_shape=conf.mesh_shape,
+            valid_mask=valid_mask,
+        )
+        return None, disp_cot, None, mesh_cot, val_cot, None, None, None
 
     carry = mesh_cot, offset, cell_size, conf.cell_size, conf.mesh_shape
     if conf.chunk_size is None or conf.chunk_size >= local_ptcl_num:
@@ -410,12 +462,16 @@ def _scatter_bwd(res, mesh_cot):
     # when duplicate halo-slot cotangents should be aggregated back to unique
     # particles.
     val_nonzero = jnp.asarray(val != 0)
+    if val_nonzero.ndim > 1:
+        val_nonzero = jnp.any(val_nonzero, axis=tuple(range(1, val_nonzero.ndim)))
+    if valid_mask is not None:
+        val_nonzero = val_nonzero & valid_mask
     if val_nonzero.ndim == 0:
         disp_cot = jnp.where(val_nonzero, disp_cot, 0)
     else:
         disp_cot = jnp.where(val_nonzero[:, None], disp_cot, 0)
 
-    return None, disp_cot, None, mesh_cot, val_cot, None, None
+    return None, disp_cot, None, mesh_cot, val_cot, None, None, None
 
 
 _scatter.defvjp(_scatter_fwd, _scatter_bwd)

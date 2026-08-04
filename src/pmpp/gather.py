@@ -15,6 +15,11 @@ from .mesh_halo import (
     extend_owned_mesh_with_halo,
     reduce_mesh_halo_to_owned,
 )
+from .pallas_cic import (
+    pallas_cic_supported,
+    pallas_gather,
+    pallas_gather_bwd,
+)
 from .utils import AXIS_NAME, raise_error
 
 
@@ -86,7 +91,7 @@ def _gather_mGPU_mesh_halo(pmid, disp, unused_index, conf, mesh):
     )
     mesh_halo = extend_owned_mesh_from_halo_edges(mesh, incoming_left, incoming_right, conf.mesh_halo_width)
     offset = conf.mesh_halo_offsets[gpu_id]
-    val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None)
+    val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None, ~unused_index)
     mask = unused_index.reshape(unused_index.shape + (1,) * (val.ndim - 1))
     return jnp.where(mask, jnp.zeros_like(val), val)
 
@@ -102,7 +107,7 @@ def _gather_mGPU_mesh_halo_fwd(pmid, disp, unused_index, conf, mesh):
     )
     mesh_halo = extend_owned_mesh_from_halo_edges(mesh, incoming_left, incoming_right, conf.mesh_halo_width)
     offset = conf.mesh_halo_offsets[gpu_id]
-    val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None)
+    val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None, ~unused_index)
     mask = unused_index.reshape(unused_index.shape + (1,) * (val.ndim - 1))
     val = jnp.where(mask, jnp.zeros_like(val), val)
     return val, (pmid, disp, unused_index, mesh, incoming_left, incoming_right, offset)
@@ -114,8 +119,8 @@ def _gather_mGPU_mesh_halo_bwd(conf, res, val_cot):
     mesh_halo = extend_owned_mesh_from_halo_edges(mesh, incoming_left, incoming_right, conf.mesh_halo_width)
     mask = unused_index.reshape(unused_index.shape + (1,) * (val_cot.ndim - 1))
     val_cot = jnp.where(mask, jnp.zeros_like(val_cot), val_cot)
-    _, disp_cot, _, mesh_halo_cot, _, _, _ = _gather_bwd(
-        (pmid, disp, conf, mesh_halo, offset, None),
+    _, disp_cot, _, mesh_halo_cot, _, _, _, _ = _gather_bwd(
+        (pmid, disp, conf, mesh_halo, offset, None, ~unused_index),
         val_cot,
     )
     mesh_cot = reduce_mesh_halo_to_owned(
@@ -130,6 +135,8 @@ def _gather_mGPU_mesh_halo_bwd(conf, res, val_cot):
 _gather_mGPU_mesh_halo.defvjp(_gather_mGPU_mesh_halo_fwd, _gather_mGPU_mesh_halo_bwd)
 
 
+
+
 @partial(custom_vjp, nondiff_argnums=(3,))
 def _gather_mGPU_particle_halo_mesh_edges(pmid, disp, unused_index, conf, mesh):
     """Gather particle-halo slots from exchanged mesh edges instead of exchanged values."""
@@ -142,7 +149,7 @@ def _gather_mGPU_particle_halo_mesh_edges(pmid, disp, unused_index, conf, mesh):
     )
     mesh_halo = extend_owned_mesh_from_halo_edges(mesh, incoming_left, incoming_right, conf.mesh_halo_width)
     offset = conf.mesh_halo_offsets[gpu_id]
-    val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None)
+    val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None, ~unused_index)
     mask = unused_index.reshape(unused_index.shape + (1,) * (val.ndim - 1))
     return jnp.where(mask, jnp.zeros_like(val), val)
 
@@ -157,7 +164,7 @@ def _gather_mGPU_particle_halo_mesh_edges_fwd(pmid, disp, unused_index, conf, me
     )
     mesh_halo = extend_owned_mesh_from_halo_edges(mesh, incoming_left, incoming_right, conf.mesh_halo_width)
     offset = conf.mesh_halo_offsets[gpu_id]
-    val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None)
+    val = _gather_impl(pmid, disp, conf, mesh_halo, 0, offset, None, ~unused_index)
     mask = unused_index.reshape(unused_index.shape + (1,) * (val.ndim - 1))
     val = jnp.where(mask, jnp.zeros_like(val), val)
     return val, (pmid, disp, unused_index, mesh, incoming_left, incoming_right, offset)
@@ -168,8 +175,8 @@ def _gather_mGPU_particle_halo_mesh_edges_bwd(conf, res, val_cot):
     mesh_halo = extend_owned_mesh_from_halo_edges(mesh, incoming_left, incoming_right, conf.mesh_halo_width)
     mask = unused_index.reshape(unused_index.shape + (1,) * (val_cot.ndim - 1))
     val_cot = jnp.where(mask, jnp.zeros_like(val_cot), val_cot)
-    _, disp_cot, _, mesh_halo_cot, _, _, _ = _gather_bwd(
-        (pmid, disp, conf, mesh_halo, offset, None),
+    _, disp_cot, _, mesh_halo_cot, _, _, _, _ = _gather_bwd(
+        (pmid, disp, conf, mesh_halo, offset, None, ~unused_index),
         val_cot,
     )
     mesh_cot = reduce_mesh_halo_to_owned(
@@ -347,7 +354,7 @@ def _gather_mGPU(pmid, disp, unused_index, conf, mesh):
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
 
-    val = _gather_impl(pmid, disp, conf, mesh, 0, offset, None)
+    val = _gather_impl(pmid, disp, conf, mesh, 0, offset, None, ~unused_index)
     return _apply_exchange(val, pmid, disp, unused_index, conf, gpu_id)
 
 
@@ -356,7 +363,7 @@ def _gather_mGPU_fwd(pmid, disp, unused_index, conf, mesh):
     gpu_id = jax.lax.axis_index(AXIS_NAME)
     offset = conf.scatter_offsets[gpu_id]
 
-    val = _gather_impl(pmid, disp, conf, mesh, 0, offset, None)
+    val = _gather_impl(pmid, disp, conf, mesh, 0, offset, None, ~unused_index)
     val, routing = _apply_exchange(val, pmid, disp, unused_index, conf, gpu_id, return_routing=True)
     return val, (pmid, disp, unused_index, mesh, routing)
 
@@ -368,7 +375,9 @@ def _gather_mGPU_bwd(conf, res, val_cot):
     offset = conf.scatter_offsets[gpu_id]
     local_val_cot = _apply_exchange_bwd_from_routing(val_cot, routing, unused_index, conf)
 
-    _, disp_cot, _, mesh_cot, _, _, _ = _gather_bwd((pmid, disp, conf, mesh, offset, None), local_val_cot)
+    _, disp_cot, _, mesh_cot, _, _, _, _ = _gather_bwd(
+        (pmid, disp, conf, mesh, offset, None, ~unused_index), local_val_cot
+    )
     return None, disp_cot, None, mesh_cot
 
 
@@ -408,7 +417,8 @@ def gather(ptcl, conf, mesh):
     disp = ptcl.disp
 
     if not conf.use_mGPU or conf.mGPU_gather is None:
-        return _gather(pmid, disp, conf, mesh, 0, 0, None)
+        valid_mask = None if ptcl.unused_index is None else ~jax.lax.stop_gradient(ptcl.unused_index)
+        return _gather(pmid, disp, conf, mesh, 0, 0, None, valid_mask)
 
     unused_index = jax.lax.stop_gradient(ptcl.unused_index)
     return conf.mGPU_gather(pmid, disp, unused_index, conf, mesh)
@@ -431,15 +441,16 @@ def gather_stacked_mesh_halo(ptcl, conf, mesh_channels):
     jax.Array
         Gathered per-particle values with one trailing channel axis.
     """
-    if (
-        not conf.use_mGPU
-        or conf.compute_mesh is None
-        or conf.multigpu_mode != "mesh_halo"
-    ):
-        return jnp.stack(
-            [gather(ptcl, conf, mesh_channels[..., i]) for i in range(mesh_channels.shape[-1])],
-            axis=-1,
-        )
+    multigpu_mode = (
+        conf.multigpu.mode
+        if conf.multigpu is not None
+        else conf.multigpu_mode
+    )
+    if not conf.use_mGPU or multigpu_mode != "mesh_halo":
+        # ``_gather`` broadcasts trailing channel dimensions through CIC and
+        # its custom VJP, avoiding repeated enmesh work for force components.
+        pmid = jax.lax.stop_gradient(ptcl.pmid)
+        return _gather(pmid, ptcl.disp, conf, mesh_channels, 0, 0, None, None)
 
     pmid = jax.lax.stop_gradient(ptcl.pmid)
     disp = ptcl.disp
@@ -473,18 +484,19 @@ def gather_stacked_mesh_halo(ptcl, conf, mesh_channels):
             conf_local.mesh_halo_width,
         )
         offset = conf_local.mesh_halo_offsets[gpu_id]
-        gathered = [
-            _gather(pmid_local, disp_local, conf_local, mesh_halo[..., i], 0, offset, None)
-            for i in range(mesh_halo.shape[-1])
-        ]
-        val = jnp.stack(gathered, axis=-1)
+        # _gather/_gather_bwd support arbitrary trailing channel axes, so one
+        # call computes all CIC force components and their cotangents.
+        val = _gather(
+            pmid_local, disp_local, conf_local, mesh_halo, 0, offset, None,
+            ~unused_local,
+        )
         mask = unused_local.reshape(unused_local.shape + (1,) * (val.ndim - 1))
         return jnp.where(mask, jnp.zeros_like(val), val)
 
     return _gather_stacked_local(pmid, disp, unused_index, conf, mesh_channels)
 
 
-def _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size):
+def _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size, valid_mask=None):
     """Local multilinear gather implementation, optionally chunked."""
     ptcl_num, spatial_ndim = pmid.shape
 
@@ -495,6 +507,18 @@ def _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size):
     if mesh.shape[spatial_ndim:] != val.shape[1:]:
         raise ValueError('channel shape mismatch: '
                          f'{mesh.shape[spatial_ndim:]} != {val.shape[1:]}')
+
+    if getattr(conf, "pallas_cic", True) and pallas_cic_supported(mesh.dtype):
+        return pallas_gather(
+            pmid,
+            disp,
+            mesh,
+            offset=offset,
+            particle_cell_size=conf.cell_size,
+            cell_size=cell_size,
+            global_shape=conf.mesh_shape,
+            valid_mask=valid_mask,
+        )
 
     carry = mesh, offset, cell_size, conf.cell_size, conf.mesh_shape
     if conf.chunk_size is None or conf.chunk_size >= ptcl_num:
@@ -511,9 +535,9 @@ def _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size):
 
 
 @custom_vjp
-def _gather(pmid, disp, conf, mesh, val, offset, cell_size):
+def _gather(pmid, disp, conf, mesh, val, offset, cell_size, valid_mask=None):
     """Local gather primitive with custom VJP."""
-    return _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size)
+    return _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size, valid_mask)
 
 
 def _gather_chunk(carry, chunk):
@@ -578,20 +602,34 @@ def _gather_chunk_adj(carry, chunk):
 
 
 
-def _gather_fwd(pmid, disp, conf, mesh, val, offset, cell_size):
+def _gather_fwd(pmid, disp, conf, mesh, val, offset, cell_size, valid_mask=None):
     """Forward rule for the local gather primitive."""
-    val_out = _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size)
-    return val_out, (pmid, disp, conf, mesh, offset, cell_size)
+    val_out = _gather_impl(pmid, disp, conf, mesh, val, offset, cell_size, valid_mask)
+    return val_out, (pmid, disp, conf, mesh, offset, cell_size, valid_mask)
 
 
 def _gather_bwd(res, val_cot):
     """Backward rule for the local gather primitive."""
-    pmid, disp, conf, mesh, offset, cell_size = res
+    pmid, disp, conf, mesh, offset, cell_size, valid_mask = res
 
     ptcl_num = len(pmid)
 
     mesh = jnp.asarray(mesh, dtype=conf.float_dtype)
     mesh_cot = jnp.zeros_like(mesh)
+
+    if getattr(conf, "pallas_cic", True) and pallas_cic_supported(mesh.dtype):
+        disp_cot, mesh_cot = pallas_gather_bwd(
+            pmid,
+            disp,
+            mesh,
+            val_cot,
+            offset=offset,
+            particle_cell_size=conf.cell_size,
+            cell_size=cell_size,
+            global_shape=conf.mesh_shape,
+            valid_mask=valid_mask,
+        )
+        return None, disp_cot, None, mesh_cot, None, None, None, None
 
     carry = mesh, mesh_cot, offset, cell_size, conf.cell_size, conf.mesh_shape
     if conf.chunk_size is None or conf.chunk_size >= ptcl_num:
@@ -608,7 +646,7 @@ def _gather_bwd(res, val_cot):
 
         disp_cot = _chunk_cat(disp_cot_0, disp_cot)
 
-    return None, disp_cot, None, mesh_cot, None, None, None
+    return None, disp_cot, None, mesh_cot, None, None, None, None
 
 
 _gather.defvjp(_gather_fwd, _gather_bwd)

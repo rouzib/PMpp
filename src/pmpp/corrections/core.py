@@ -39,6 +39,20 @@ from .softening import (
 )
 
 
+def _mesh_initializer_kwargs(kwargs):
+    """Map mesh-specific public options without changing radial initialization."""
+    out = dict(kwargs)
+    for public_name, initializer_name in (
+        ("mesh_channels", "channels"),
+        ("mesh_depth", "depth"),
+        ("mesh_max_residual", "max_residual"),
+        ("mesh_output_init_scale", "output_init_scale"),
+    ):
+        if public_name in out:
+            out[initializer_name] = out[public_name]
+    return out
+
+
 def init_potential_correction(key, model="neural_spline", **kwargs):
     """Construct a potential-correction pytree from a small model name.
 
@@ -54,17 +68,45 @@ def init_potential_correction(key, model="neural_spline", **kwargs):
     if model in {"neural_spline", "radial_spline", "radial", "radial_mlp"}:
         return init_radial_potential_correction(key, **kwargs)
     if model in {"mesh_cnn", "cnn"}:
-        return init_mesh_cnn_potential_correction(key, **kwargs)
+        return init_mesh_cnn_potential_correction(key, **_mesh_initializer_kwargs(kwargs))
     if model in {"combined", "hybrid", "spline_cnn", "neural_spline+mesh_cnn"}:
         radial_key, cnn_key = jax.random.split(key)
         radial = init_radial_potential_correction(radial_key, **kwargs)
-        mesh_cnn = init_mesh_cnn_potential_correction(cnn_key, **kwargs)
+        mesh_cnn = init_mesh_cnn_potential_correction(cnn_key, **_mesh_initializer_kwargs(kwargs))
         dtype = kwargs.get("dtype", getattr(radial, "dtype", jnp.float32))
         return CombinedPotentialCorrection(
             radial=radial,
             mesh_cnn=mesh_cnn,
             dtype=dtype,
         )
+    if model in {"windowed_mesh_cnn", "pm_window+mesh_cnn"}:
+        mesh_cnn = init_mesh_cnn_potential_correction(key, **_mesh_initializer_kwargs(kwargs))
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", getattr(mesh_cnn, "dtype", jnp.float32))
+        window = init_pm_window_compensation_correction(dtype=dtype, **correction_kwargs)
+        return CombinedPotentialCorrection(window=window, mesh_cnn=mesh_cnn, dtype=dtype)
+    if model in {"trainable_windowed_mesh_cnn", "trainable_pm_window+mesh_cnn"}:
+        mesh_cnn = init_mesh_cnn_potential_correction(key, **_mesh_initializer_kwargs(kwargs))
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", getattr(mesh_cnn, "dtype", jnp.float32))
+        window = init_trainable_pm_window_compensation_correction(dtype=dtype, **correction_kwargs)
+        return CombinedPotentialCorrection(window=window, mesh_cnn=mesh_cnn, dtype=dtype)
+    if model in {
+        "windowed_spline_mesh_cnn",
+        "pm_window+neural_spline+mesh_cnn",
+        "trainable_windowed_spline_mesh_cnn",
+        "trainable_pm_window+neural_spline+mesh_cnn",
+    }:
+        radial_key, cnn_key = jax.random.split(key)
+        radial = init_radial_potential_correction(radial_key, **kwargs)
+        mesh_cnn = init_mesh_cnn_potential_correction(cnn_key, **_mesh_initializer_kwargs(kwargs))
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", getattr(radial, "dtype", jnp.float32))
+        if model.startswith("trainable"):
+            window = init_trainable_pm_window_compensation_correction(dtype=dtype, **correction_kwargs)
+        else:
+            window = init_pm_window_compensation_correction(dtype=dtype, **correction_kwargs)
+        return CombinedPotentialCorrection(radial=radial, window=window, mesh_cnn=mesh_cnn, dtype=dtype)
     if model in {
         "windowed_radial",
         "windowed_spline",
@@ -128,6 +170,16 @@ def init_potential_correction(key, model="neural_spline", **kwargs):
         window = init_pm_window_compensation_correction(dtype=dtype, **correction_kwargs)
         softening = init_high_k_softening_correction(dtype=dtype, **correction_kwargs)
         return CombinedPotentialCorrection(window=window, softening=softening, dtype=dtype)
+    if model in {"fastpm_1_4", "fastpm_3_4"}:
+        correction_kwargs = dict(kwargs)
+        dtype = correction_kwargs.pop("dtype", jnp.float32)
+        correction_kwargs.update(
+            window_alpha=0.0,
+            alpha=0.0,
+            green_kernel="continuum" if model == "fastpm_1_4" else "discrete_laplacian",
+            gradient_kernel="fastpm_4point",
+        )
+        return init_pm_window_compensation_correction(dtype=dtype, **correction_kwargs)
     if model in {"pm_window", "cic_compensation", "cic_window_compensation"}:
         correction_kwargs = dict(kwargs)
         dtype = correction_kwargs.pop("dtype", jnp.float32)
@@ -395,3 +447,18 @@ def force_green_kernel(correction):
                 return kernel
         return "continuum"
     return getattr(correction, "green_kernel", "continuum")
+
+
+def force_gradient_kernel(correction):
+    """Return the Fourier force-derivative selector requested by a correction."""
+    if isinstance(correction, CombinedPotentialCorrection):
+        requested = {
+            force_gradient_kernel(child)
+            for child in (correction.window, correction.pgd, correction.softening, correction.radial, correction.mesh_cnn)
+            if child is not None
+        }
+        requested.discard("spectral")
+        if len(requested) > 1:
+            raise ValueError(f"Combined correction requests incompatible force-gradient kernels: {sorted(requested)!r}.")
+        return next(iter(requested), "spectral")
+    return getattr(correction, "gradient_kernel", "spectral")

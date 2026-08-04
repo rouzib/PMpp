@@ -14,9 +14,16 @@
 !/scripts/generate_docs_notebooks.py
 !/scripts/validate_docs_code.py
 !/scripts/validate_docs_notebooks.py
+!/scripts/build_cuda_routing.py
+!/scripts/evaluate_quijote_baselines.py
+!/scripts/train_quijote_potential_corrector.py
+!/scripts/train_quijote_trajectory_corrector.py
 /PM++_flow_h.png
 /PM++_flow_v.png
 /Quijote/
 /CAMELS/
 __pycache__/
+
+# Optional locally built CUDA FFI artifact; the portable wheel never includes it.
+/cuda/build/
 *.py[cod]

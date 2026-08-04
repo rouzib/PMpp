@@ -1,0 +1,746 @@
+// Optional PM++ CUDA routing kernels.
+//
+// This translation unit is not part of the portable pmpp wheel.  It is built
+// as a small typed-JAX-FFI shared library by cuda/CMakeLists.txt.  The handlers
+// only enqueue work on the stream supplied by XLA; they never synchronize,
+// allocate with cudaMalloc, create a private stream, or communicate with a
+// remote device.
+
+#include <cuda_runtime_api.h>
+#include <cub/cub.cuh>
+
+#include <algorithm>
+#include <cstdint>
+#include <string>
+#include <utility>
+
+#include "xla/ffi/api/c_api.h"
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
+
+namespace {
+
+constexpr int kThreads = 256;
+constexpr int kRecordWords = 8;
+
+__device__ bool InPeriodicInterval(float value, int start, int end) {
+  // This is deliberately the same comparison/order as
+  // pmpp.halo_moving.particles_in_slice_mask: [start, end), with a wrapped
+  // interval represented by start > end.
+  if (start > end) return value >= static_cast<float>(start) ||
+                            value < static_cast<float>(end);
+  return value >= static_cast<float>(start) &&
+         value < static_cast<float>(end);
+}
+
+__device__ uint32_t RaveledKeyWithX(const int32_t* pmid, int row, int mesh_x,
+                                    int mesh_y, int mesh_z) {
+  int64_t x = pmid[3 * row + 0] % mesh_x;
+  int64_t y = pmid[3 * row + 1] % mesh_y;
+  int64_t z = pmid[3 * row + 2] % mesh_z;
+  if (x < 0) x += mesh_x;
+  if (y < 0) y += mesh_y;
+  if (z < 0) z += mesh_z;
+  return static_cast<uint32_t>((x * mesh_y + y) * mesh_z + z);
+}
+
+__global__ void ClassifyKernel(const float* x_mod, const uint8_t* valid,
+                               uint8_t* classes,
+                               uint32_t* block_counts, int n, int global_nmesh,
+                               const int32_t* owned_start,
+                               const int32_t* owned_end,
+                               const int32_t* slice_width, int direction,
+                               int num_devices) {
+  __shared__ uint32_t block_count;
+  if (threadIdx.x == 0) block_count = 0;
+  __syncthreads();
+
+  int row = blockIdx.x * blockDim.x + threadIdx.x;
+
+  uint8_t result = 0;  // invalid/padding
+  bool choose = false;
+  if (row < n && valid[row] != 0) {
+    float x = x_mod[row];
+    int start = *owned_start;
+    int end = *owned_end;
+    int width = *slice_width;
+    bool stay = InPeriodicInterval(x, start, end);
+    int left_start = (start - width) % global_nmesh;
+    if (left_start < 0) left_start += global_nmesh;
+    int right_end = (end + width) % global_nmesh;
+    bool send_left = InPeriodicInterval(x, left_start, start);
+    bool send_right = num_devices == 2
+                          ? false
+                          : InPeriodicInterval(x, end, right_end);
+    if (stay) {
+      result = 1;
+    } else if (send_left) {
+      result = 2;
+      choose = direction < 0;
+    } else if (send_right) {
+      result = 3;
+      choose = direction > 0;
+    } else {
+      result = 4;  // valid but outside the one-hop routing domain
+    }
+  }
+  if (row < n) classes[row] = result;
+  if (choose) atomicAdd(&block_count, 1u);
+  __syncthreads();
+  if (threadIdx.x == 0) block_counts[blockIdx.x] = block_count;
+}
+
+__global__ void WriteRecordsKernel(const int32_t* pmid, const float* disp,
+                                   const float* vel, const uint8_t* classes,
+                                   const uint32_t* block_offsets,
+                                   uint32_t* records,
+                                   int n, int mesh_x, int mesh_y, int mesh_z,
+                                   int capacity, int direction) {
+  using BlockScan = cub::BlockScan<uint32_t, kThreads>;
+  __shared__ typename BlockScan::TempStorage scan_storage;
+
+  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  const uint8_t expected = direction < 0 ? 2 : 3;
+  uint32_t selected = row < n && classes[row] == expected ? 1u : 0u;
+  uint32_t local_rank = 0;
+  uint32_t block_total = 0;
+  BlockScan(scan_storage).ExclusiveSum(selected, local_rank, block_total);
+  if (row >= n || selected == 0) return;
+  uint32_t output = block_offsets[blockIdx.x] + local_rank;
+  if (output >= static_cast<uint32_t>(capacity)) return;
+
+  uint32_t* record = records + output * kRecordWords;
+  record[0] = RaveledKeyWithX(pmid, row, mesh_x, mesh_y, mesh_z);
+  record[1] = 1u;
+  for (int component = 0; component < 3; ++component) {
+    record[2 + component] = __float_as_uint(disp[3 * row + component]);
+    record[5 + component] = __float_as_uint(vel[3 * row + component]);
+  }
+}
+
+__global__ void WriteCountKernel(const uint32_t* block_counts,
+                                 const uint32_t* block_offsets, int32_t* count,
+                                 int num_blocks) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) return;
+  if (num_blocks == 0) {
+    count[0] = 0;
+  } else {
+    int last = num_blocks - 1;
+    count[0] = static_cast<int32_t>(block_offsets[last] + block_counts[last]);
+  }
+}
+
+__global__ void BuildStayBlockMetadataKernel(
+    const uint8_t* stay, uint8_t* local_prefix, uint32_t* block_counts,
+    int n) {
+  using BlockScan = cub::BlockScan<uint32_t, kThreads>;
+  __shared__ typename BlockScan::TempStorage scan_storage;
+
+  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  uint32_t selected = row < n && stay[row] != 0 ? 1u : 0u;
+  uint32_t local_rank = 0;
+  uint32_t block_total = 0;
+  BlockScan(scan_storage).ExclusiveSum(selected, local_rank, block_total);
+  if (row < n) local_prefix[row] = static_cast<uint8_t>(local_rank);
+  if (threadIdx.x == kThreads - 1) block_counts[blockIdx.x] = block_total;
+}
+
+__device__ int FindStayIndex(const uint32_t* block_offsets,
+                             const uint32_t* block_counts,
+                             const uint8_t* local_prefix, const uint8_t* stay,
+                             int n, int num_blocks, uint32_t rank) {
+  int block_lo = 0;
+  int block_hi = num_blocks;
+  while (block_lo < block_hi) {
+    int mid = block_lo + (block_hi - block_lo) / 2;
+    uint32_t end = block_offsets[mid] + block_counts[mid];
+    if (end > rank) block_hi = mid;
+    else block_lo = mid + 1;
+  }
+  int block = block_lo < num_blocks ? block_lo : num_blocks - 1;
+  uint32_t local_rank = rank - block_offsets[block];
+  int block_start = block * kThreads;
+  int block_end = min(block_start + kThreads, n);
+  int lo = block_start;
+  int hi = block_end;
+  while (lo < hi) {
+    int mid = lo + (hi - lo) / 2;
+    uint32_t end = static_cast<uint32_t>(local_prefix[mid]) +
+                   static_cast<uint32_t>(stay[mid] != 0);
+    if (end > local_rank) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo < block_end ? lo : block_end - 1;
+}
+
+__device__ uint32_t StayKeyAt(const int32_t* pmid,
+                              const uint32_t* block_offsets,
+                              const uint32_t* block_counts,
+                              const uint8_t* local_prefix, const uint8_t* stay,
+                              int n, int num_blocks, uint32_t rank,
+                              int mesh_x, int mesh_y, int mesh_z) {
+  int row = FindStayIndex(block_offsets, block_counts, local_prefix, stay, n,
+                          num_blocks, rank);
+  return RaveledKeyWithX(pmid, row, mesh_x, mesh_y, mesh_z);
+}
+
+__device__ uint32_t IncomingKeyAt(const uint32_t* records, uint32_t rank) {
+  return records[rank * kRecordWords];
+}
+
+__device__ uint32_t LowerBoundIncoming(const uint32_t* records, uint32_t count,
+                                       uint32_t key) {
+  uint32_t lo = 0;
+  uint32_t hi = count;
+  while (lo < hi) {
+    uint32_t mid = lo + (hi - lo) / 2;
+    if (IncomingKeyAt(records, mid) < key) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+__device__ uint32_t UpperBoundStay(
+    const int32_t* pmid, const uint32_t* block_offsets,
+    const uint32_t* block_counts, const uint8_t* local_prefix,
+    const uint8_t* stay, int n, int num_blocks, uint32_t count, uint32_t key,
+    int mesh_x, int mesh_y, int mesh_z) {
+  uint32_t lo = 0;
+  uint32_t hi = count;
+  while (lo < hi) {
+    uint32_t mid = lo + (hi - lo) / 2;
+    uint32_t candidate = StayKeyAt(
+        pmid, block_offsets, block_counts, local_prefix, stay, n, num_blocks,
+        mid, mesh_x, mesh_y, mesh_z);
+    if (candidate <= key) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+__device__ uint32_t StayOutputPosition(const int32_t* pmid,
+                                       const uint32_t* block_offsets,
+                                       const uint32_t* block_counts,
+                                       const uint8_t* local_prefix,
+                                       const uint8_t* stay, int n,
+                                       int num_blocks,
+                                       const uint32_t* records,
+                                       uint32_t incoming_count, uint32_t rank,
+                                       int mesh_x, int mesh_y, int mesh_z) {
+  uint32_t key = StayKeyAt(pmid, block_offsets, block_counts, local_prefix,
+                           stay, n, num_blocks, rank, mesh_x, mesh_y, mesh_z);
+  return rank + LowerBoundIncoming(records, incoming_count, key);
+}
+
+__device__ uint32_t IncomingOutputPosition(const int32_t* pmid,
+                                            const uint32_t* block_offsets,
+                                            const uint32_t* block_counts,
+                                            const uint8_t* local_prefix,
+                                            const uint8_t* stay, int n,
+                                            int num_blocks,
+                                            const uint32_t* records,
+                                            uint32_t incoming_count,
+                                            uint32_t stay_count, uint32_t rank,
+                                            int mesh_x, int mesh_y, int mesh_z) {
+  uint32_t key = IncomingKeyAt(records, rank);
+  return rank + UpperBoundStay(pmid, block_offsets, block_counts, local_prefix,
+                               stay, n, num_blocks, stay_count, key, mesh_x,
+                               mesh_y, mesh_z);
+}
+
+template <bool Auxiliary>
+__global__ void MergeKernel(const int32_t* pmid, const float* disp,
+                            const float* vel, const uint8_t* stay,
+                            const uint32_t* stay_block_offsets,
+                            const uint32_t* stay_block_counts,
+                            const uint8_t* stay_local_prefix, int num_blocks,
+                            const uint32_t* incoming_records,
+                            const int32_t* incoming_count, int n, int mesh_x,
+                            int mesh_y, int mesh_z, int capacity,
+                            int32_t* out_pmid, float* out_disp, float* out_vel,
+                            uint8_t* out_valid, uint8_t* out_tag,
+                            int32_t* out_index) {
+  int output = blockIdx.x * blockDim.x + threadIdx.x;
+  if (output >= capacity) return;
+  uint32_t stay_count = num_blocks == 0
+                            ? 0u
+                            : stay_block_offsets[num_blocks - 1] +
+                                  stay_block_counts[num_blocks - 1];
+  int incoming_signed = *incoming_count;
+  uint32_t incoming = incoming_signed <= 0
+                          ? 0u
+                          : min(static_cast<uint32_t>(incoming_signed),
+                                static_cast<uint32_t>(capacity));
+  uint32_t total = stay_count + incoming;
+  if (static_cast<uint32_t>(output) >= total) return;
+
+  // Find the unique source whose stable merge position is this output slot.
+  // Existing/stay entries use a strict lower-bound in the incoming stream;
+  // incoming entries use an upper-bound in the stay stream.  Consequently a
+  // tie always keeps the existing entry before the incoming entry.
+  uint32_t lo = 0;
+  uint32_t hi = stay_count;
+  while (lo < hi) {
+    uint32_t mid = lo + (hi - lo) / 2;
+    uint32_t position = StayOutputPosition(
+        pmid, stay_block_offsets, stay_block_counts, stay_local_prefix, stay, n,
+        num_blocks, incoming_records, incoming, mid, mesh_x, mesh_y, mesh_z);
+    if (position < static_cast<uint32_t>(output)) lo = mid + 1;
+    else hi = mid;
+  }
+  bool from_stay = lo < stay_count &&
+                   StayOutputPosition(
+                       pmid, stay_block_offsets, stay_block_counts,
+                       stay_local_prefix, stay, n, num_blocks, incoming_records,
+                       incoming, lo, mesh_x, mesh_y, mesh_z) ==
+                       static_cast<uint32_t>(output);
+  uint32_t source_rank = 0;
+  int source_row = -1;
+  if (from_stay) {
+    source_rank = lo;
+    source_row = FindStayIndex(stay_block_offsets, stay_block_counts,
+                               stay_local_prefix, stay, n, num_blocks,
+                               source_rank);
+    out_pmid[3 * output + 0] = pmid[3 * source_row + 0];
+    out_pmid[3 * output + 1] = pmid[3 * source_row + 1];
+    out_pmid[3 * output + 2] = pmid[3 * source_row + 2];
+    for (int component = 0; component < 3; ++component) {
+      out_disp[3 * output + component] = disp[3 * source_row + component];
+      out_vel[3 * output + component] = vel[3 * source_row + component];
+    }
+    if constexpr (Auxiliary) {
+      out_tag[output] = 0;
+      // The adjoint consumes a compact stay stream, so its index is the
+      // stream rank rather than the original authoritative slot.  The latter
+      // is supplied separately by stay_pos.
+      out_index[output] = static_cast<int32_t>(source_rank);
+    }
+  } else {
+    uint32_t blo = 0;
+    uint32_t bhi = incoming;
+    while (blo < bhi) {
+      uint32_t mid = blo + (bhi - blo) / 2;
+      uint32_t position = IncomingOutputPosition(
+          pmid, stay_block_offsets, stay_block_counts, stay_local_prefix, stay,
+          n, num_blocks, incoming_records, incoming, stay_count, mid, mesh_x,
+          mesh_y, mesh_z);
+      if (position < static_cast<uint32_t>(output)) blo = mid + 1;
+      else bhi = mid;
+    }
+    source_rank = blo < incoming ? blo : incoming - 1;
+    const uint32_t* record = incoming_records + source_rank * kRecordWords;
+    out_pmid[3 * output + 0] = static_cast<int32_t>(record[0] / (mesh_y * mesh_z));
+    uint32_t yz = record[0] % static_cast<uint32_t>(mesh_y * mesh_z);
+    out_pmid[3 * output + 1] = static_cast<int32_t>(yz / mesh_z);
+    out_pmid[3 * output + 2] = static_cast<int32_t>(yz % mesh_z);
+    for (int component = 0; component < 3; ++component) {
+      out_disp[3 * output + component] = __uint_as_float(record[2 + component]);
+      out_vel[3 * output + component] = __uint_as_float(record[5 + component]);
+    }
+    if constexpr (Auxiliary) {
+      out_tag[output] = 1;
+      out_index[output] = static_cast<int32_t>(source_rank);
+    }
+  }
+  out_valid[output] = 1;
+}
+
+template <bool Auxiliary>
+ffi::Error LaunchMerge(
+    cudaStream_t stream, ffi::ScratchAllocator scratch,
+    ffi::Buffer<ffi::S32> pmid, ffi::Buffer<ffi::F32> disp,
+    ffi::Buffer<ffi::F32> vel, ffi::Buffer<ffi::U8> stay,
+    ffi::Buffer<ffi::U32> incoming_records,
+    ffi::Buffer<ffi::S32> incoming_count, ffi::ResultBuffer<ffi::S32> out_pmid,
+    ffi::ResultBuffer<ffi::F32> out_disp, ffi::ResultBuffer<ffi::F32> out_vel,
+    ffi::ResultBuffer<ffi::U8> out_valid,
+    ffi::ResultBuffer<ffi::U8>* out_tag,
+    ffi::ResultBuffer<ffi::S32>* out_index, int mesh_x, int mesh_y, int mesh_z,
+    int capacity) {
+  int n = static_cast<int>(pmid.element_count() / 3);
+  if (n <= 0 || capacity < 0) return ffi::Error::InvalidArgument("invalid route-merge shape");
+  int num_blocks = (n + kThreads - 1) / kThreads;
+  auto local_prefix_mem = scratch.Allocate(sizeof(uint8_t) * n, alignof(uint8_t));
+  if (!local_prefix_mem) {
+    return ffi::Error::Internal("unable to allocate route-merge local-prefix scratch");
+  }
+  auto block_counts_mem = scratch.Allocate(sizeof(uint32_t) * num_blocks,
+                                           alignof(uint32_t));
+  if (!block_counts_mem) {
+    return ffi::Error::Internal("unable to allocate route-merge block-count scratch");
+  }
+  auto block_offsets_mem = scratch.Allocate(sizeof(uint32_t) * num_blocks,
+                                            alignof(uint32_t));
+  if (!block_offsets_mem) {
+    return ffi::Error::Internal("unable to allocate route-merge block-offset scratch");
+  }
+  auto* local_prefix = static_cast<uint8_t*>(*local_prefix_mem);
+  auto* block_counts = static_cast<uint32_t*>(*block_counts_mem);
+  auto* block_offsets = static_cast<uint32_t*>(*block_offsets_mem);
+  dim3 blocks((n + kThreads - 1) / kThreads);
+  BuildStayBlockMetadataKernel<<<blocks, kThreads, 0, stream>>>(
+      stay.typed_data(), local_prefix, block_counts, n);
+  if (cudaGetLastError() != cudaSuccess) {
+    return ffi::Error::Internal("route-merge metadata launch failed");
+  }
+
+  size_t temp_bytes = 0;
+  cudaError_t status = cub::DeviceScan::ExclusiveSum(
+      nullptr, temp_bytes, block_counts, block_offsets, num_blocks, stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("CUB route-merge scan query failed");
+  auto temp_mem = scratch.Allocate(temp_bytes, 1);
+  if (!temp_mem) {
+    return ffi::Error::Internal("unable to allocate CUB route-merge workspace (bytes=" +
+                                std::to_string(temp_bytes) + ")");
+  }
+  status = cub::DeviceScan::ExclusiveSum(
+      *temp_mem, temp_bytes, block_counts, block_offsets, num_blocks, stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("CUB route-merge scan failed");
+
+  status = cudaMemsetAsync(out_pmid->typed_data(), 0,
+                           sizeof(int32_t) * capacity * 3, stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("route-merge pmid clear failed");
+  status = cudaMemsetAsync(out_disp->typed_data(), 0,
+                           sizeof(float) * capacity * 3, stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("route-merge displacement clear failed");
+  status = cudaMemsetAsync(out_vel->typed_data(), 0,
+                           sizeof(float) * capacity * 3, stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("route-merge velocity clear failed");
+  status = cudaMemsetAsync(out_valid->typed_data(), 0,
+                           sizeof(uint8_t) * capacity, stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("route-merge validity clear failed");
+  if constexpr (Auxiliary) {
+    status = cudaMemsetAsync((*out_tag)->typed_data(), 0,
+                             sizeof(uint8_t) * capacity, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("route-merge tag clear failed");
+    status = cudaMemsetAsync((*out_index)->typed_data(), 0,
+                             sizeof(int32_t) * capacity, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("route-merge index clear failed");
+  }
+
+  blocks = dim3((capacity + kThreads - 1) / kThreads);
+  MergeKernel<Auxiliary><<<blocks, kThreads, 0, stream>>>(
+      pmid.typed_data(), disp.typed_data(), vel.typed_data(), stay.typed_data(),
+      block_offsets, block_counts, local_prefix, num_blocks,
+      incoming_records.typed_data(), incoming_count.typed_data(), n, mesh_x,
+      mesh_y, mesh_z, capacity, out_pmid->typed_data(),
+      out_disp->typed_data(), out_vel->typed_data(), out_valid->typed_data(),
+      Auxiliary ? (*out_tag)->typed_data() : nullptr,
+      Auxiliary ? (*out_index)->typed_data() : nullptr);
+  if (cudaGetLastError() != cudaSuccess) return ffi::Error::Internal("route-merge kernel launch failed");
+  return ffi::Error::Success();
+}
+
+__global__ void TransposeSplitKernel(const float* merged, const uint8_t* tags,
+                                     const int32_t* indices, int n,
+                                     int payload_width, int auth_size,
+                                     int share_capacity, float* stay,
+                                     float* incoming_left,
+                                     float* incoming_right) {
+  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  if (row >= n) return;
+  int tag = static_cast<int>(tags[row]);
+  int source = indices[row];
+  if (source < 0) return;
+  float* destination = nullptr;
+  int destination_size = 0;
+  if (tag == 0) {
+    destination = stay;
+    destination_size = auth_size;
+  } else if (tag == 1) {
+    destination = incoming_left;
+    destination_size = share_capacity;
+  } else if (tag == 2) {
+    destination = incoming_right;
+    destination_size = share_capacity;
+  }
+  if (destination == nullptr || source >= destination_size) return;
+  for (int component = 0; component < payload_width; ++component) {
+    destination[source * payload_width + component] =
+        merged[row * payload_width + component];
+  }
+}
+
+__global__ void TransposeScatterKernel(const float* source, const int32_t* pos,
+                                       const uint8_t* valid, int rows,
+                                       int payload_width, int auth_size,
+                                       float* output) {
+  int linear = blockIdx.x * blockDim.x + threadIdx.x;
+  int total = rows * payload_width;
+  if (linear >= total) return;
+  int row = linear / payload_width;
+  int component = linear % payload_width;
+  int destination = pos[row];
+  if (valid[row] != 0 && destination >= 0 && destination < auth_size) {
+    output[destination * payload_width + component] = source[linear];
+  }
+}
+
+}  // namespace
+
+ffi::Error RoutePackImpl(
+    cudaStream_t stream, ffi::ScratchAllocator scratch, int32_t global_nmesh,
+    int32_t mesh_x, int32_t mesh_y, int32_t mesh_z, int32_t direction,
+    int32_t num_devices, int32_t capacity, ffi::Buffer<ffi::S32> pmid,
+    ffi::Buffer<ffi::F32> disp, ffi::Buffer<ffi::F32> vel,
+    ffi::Buffer<ffi::U8> valid, ffi::Buffer<ffi::F32> x_mod,
+    ffi::Buffer<ffi::S32> owned_start_buffer,
+    ffi::Buffer<ffi::S32> owned_end_buffer,
+    ffi::Buffer<ffi::S32> slice_width_buffer,
+    ffi::ResultBuffer<ffi::U32> records, ffi::ResultBuffer<ffi::S32> count,
+    ffi::ResultBuffer<ffi::U8> classes) {
+  int n = static_cast<int>(pmid.element_count() / 3);
+  if (n <= 0 || capacity < 0 || direction == 0 || num_devices < 2) {
+    return ffi::Error::InvalidArgument("invalid route-pack shape or topology");
+  }
+  int num_blocks = (n + kThreads - 1) / kThreads;
+  auto block_counts_mem = scratch.Allocate(sizeof(uint32_t) * num_blocks,
+                                           alignof(uint32_t));
+  if (!block_counts_mem) {
+    return ffi::Error::Internal("unable to allocate route-pack block-count scratch");
+  }
+  auto block_offsets_mem = scratch.Allocate(sizeof(uint32_t) * num_blocks,
+                                            alignof(uint32_t));
+  if (!block_offsets_mem) {
+    return ffi::Error::Internal("unable to allocate route-pack block-offset scratch");
+  }
+  auto* block_counts = static_cast<uint32_t*>(*block_counts_mem);
+  auto* block_offsets = static_cast<uint32_t*>(*block_offsets_mem);
+
+  cudaError_t status = cudaMemsetAsync(
+      records->typed_data(), 0, sizeof(uint32_t) * capacity * kRecordWords,
+      stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("route-pack record clear failed");
+  dim3 blocks((n + kThreads - 1) / kThreads);
+  ClassifyKernel<<<blocks, kThreads, 0, stream>>>(
+      x_mod.typed_data(), valid.typed_data(), classes->typed_data(),
+      block_counts, n, global_nmesh,
+      owned_start_buffer.typed_data(), owned_end_buffer.typed_data(),
+      slice_width_buffer.typed_data(), direction, num_devices);
+  if (cudaGetLastError() != cudaSuccess) return ffi::Error::Internal("route-pack classify launch failed");
+
+  size_t temp_bytes = 0;
+  status = cub::DeviceScan::ExclusiveSum(
+      nullptr, temp_bytes, block_counts, block_offsets, num_blocks, stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("CUB route-pack scan query failed");
+  auto temp_mem = scratch.Allocate(temp_bytes, 1);
+  if (!temp_mem) {
+    return ffi::Error::Internal("unable to allocate CUB route-pack workspace (bytes=" +
+                                std::to_string(temp_bytes) + ")");
+  }
+  status = cub::DeviceScan::ExclusiveSum(
+      *temp_mem, temp_bytes, block_counts, block_offsets, num_blocks, stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("CUB route-pack scan failed");
+
+  WriteRecordsKernel<<<blocks, kThreads, 0, stream>>>(
+      pmid.typed_data(), disp.typed_data(), vel.typed_data(),
+      classes->typed_data(), block_offsets, records->typed_data(), n, mesh_x,
+      mesh_y, mesh_z, capacity, direction);
+  if (cudaGetLastError() != cudaSuccess) return ffi::Error::Internal("route-pack write launch failed");
+  WriteCountKernel<<<1, 1, 0, stream>>>(block_counts, block_offsets,
+                                        count->typed_data(), num_blocks);
+  if (cudaGetLastError() != cudaSuccess) return ffi::Error::Internal("route-pack count launch failed");
+  return ffi::Error::Success();
+}
+
+ffi::Error RouteMergeImpl(
+    cudaStream_t stream, ffi::ScratchAllocator scratch, int32_t mesh_x,
+    int32_t mesh_y, int32_t mesh_z, int32_t capacity,
+    ffi::Buffer<ffi::S32> pmid, ffi::Buffer<ffi::F32> disp,
+    ffi::Buffer<ffi::F32> vel, ffi::Buffer<ffi::U8> stay,
+    ffi::Buffer<ffi::U32> incoming_records,
+    ffi::Buffer<ffi::S32> incoming_count, ffi::ResultBuffer<ffi::S32> out_pmid,
+    ffi::ResultBuffer<ffi::F32> out_disp, ffi::ResultBuffer<ffi::F32> out_vel,
+    ffi::ResultBuffer<ffi::U8> out_valid) {
+  return LaunchMerge<false>(
+      stream, std::move(scratch), pmid, disp, vel, stay, incoming_records,
+      incoming_count, out_pmid, out_disp, out_vel, out_valid, nullptr, nullptr,
+      mesh_x, mesh_y, mesh_z, capacity);
+}
+
+ffi::Error RouteMergeAuxImpl(
+    cudaStream_t stream, ffi::ScratchAllocator scratch, int32_t mesh_x,
+    int32_t mesh_y, int32_t mesh_z, int32_t capacity,
+    ffi::Buffer<ffi::S32> pmid, ffi::Buffer<ffi::F32> disp,
+    ffi::Buffer<ffi::F32> vel, ffi::Buffer<ffi::U8> stay,
+    ffi::Buffer<ffi::U32> incoming_records,
+    ffi::Buffer<ffi::S32> incoming_count, ffi::ResultBuffer<ffi::S32> out_pmid,
+    ffi::ResultBuffer<ffi::F32> out_disp, ffi::ResultBuffer<ffi::F32> out_vel,
+    ffi::ResultBuffer<ffi::U8> out_valid,
+    ffi::ResultBuffer<ffi::U8> out_tag,
+    ffi::ResultBuffer<ffi::S32> out_index) {
+  return LaunchMerge<true>(
+      stream, std::move(scratch), pmid, disp, vel, stay, incoming_records,
+      incoming_count, out_pmid, out_disp, out_vel, out_valid, &out_tag,
+      &out_index, mesh_x, mesh_y, mesh_z, capacity);
+}
+
+ffi::Error RouteTransposeSplitImpl(
+    cudaStream_t stream, int32_t auth_size, int32_t share_capacity,
+    ffi::Buffer<ffi::F32> merged_cot, ffi::Buffer<ffi::U8> source_tag,
+    ffi::Buffer<ffi::S32> source_idx,
+    ffi::ResultBuffer<ffi::F32> stay_cot,
+    ffi::ResultBuffer<ffi::F32> incoming_left_cot,
+    ffi::ResultBuffer<ffi::F32> incoming_right_cot) {
+  int n = static_cast<int>(source_tag.element_count());
+  if (n <= 0 || auth_size < 0 || share_capacity < 0 ||
+      merged_cot.element_count() % n != 0) {
+    return ffi::Error::InvalidArgument("invalid route-transpose split shape");
+  }
+  int payload_width = static_cast<int>(merged_cot.element_count() / n);
+  cudaError_t status = cudaMemsetAsync(
+      stay_cot->typed_data(), 0,
+      sizeof(float) * auth_size * payload_width, stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("route-transpose stay clear failed");
+  status = cudaMemsetAsync(
+      incoming_left_cot->typed_data(), 0,
+      sizeof(float) * share_capacity * payload_width, stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("route-transpose left clear failed");
+  status = cudaMemsetAsync(
+      incoming_right_cot->typed_data(), 0,
+      sizeof(float) * share_capacity * payload_width, stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("route-transpose right clear failed");
+  dim3 blocks((n + kThreads - 1) / kThreads);
+  TransposeSplitKernel<<<blocks, kThreads, 0, stream>>>(
+      merged_cot.typed_data(), source_tag.typed_data(), source_idx.typed_data(),
+      n, payload_width, auth_size, share_capacity, stay_cot->typed_data(),
+      incoming_left_cot->typed_data(), incoming_right_cot->typed_data());
+  if (cudaGetLastError() != cudaSuccess) return ffi::Error::Internal("route-transpose split launch failed");
+  return ffi::Error::Success();
+}
+
+ffi::Error RouteTransposeScatterImpl(
+    cudaStream_t stream, int32_t auth_size, int32_t share_capacity,
+    ffi::Buffer<ffi::F32> stay_cot, ffi::Buffer<ffi::F32> send_left_cot,
+    ffi::Buffer<ffi::F32> send_right_cot, ffi::Buffer<ffi::S32> stay_pos,
+    ffi::Buffer<ffi::U8> stay_valid, ffi::Buffer<ffi::S32> send_left_pos,
+    ffi::Buffer<ffi::U8> send_left_valid,
+    ffi::Buffer<ffi::S32> send_right_pos,
+    ffi::Buffer<ffi::U8> send_right_valid,
+    ffi::ResultBuffer<ffi::F32> output) {
+  if (auth_size < 0 || share_capacity < 0 ||
+      stay_cot.element_count() % std::max(auth_size, 1) != 0) {
+    return ffi::Error::InvalidArgument("invalid route-transpose scatter shape");
+  }
+  int payload_width = auth_size == 0
+                          ? 0
+                          : static_cast<int>(stay_cot.element_count() / auth_size);
+  cudaError_t status = cudaMemsetAsync(
+      output->typed_data(), 0,
+      sizeof(float) * auth_size * payload_width, stream);
+  if (status != cudaSuccess) return ffi::Error::Internal("route-transpose output clear failed");
+  if (payload_width == 0) return ffi::Error::Success();
+  auto launch = [&](ffi::Buffer<ffi::F32> source, ffi::Buffer<ffi::S32> pos,
+                    ffi::Buffer<ffi::U8> valid, int rows) -> cudaError_t {
+    int total = rows * payload_width;
+    dim3 blocks((total + kThreads - 1) / kThreads);
+    TransposeScatterKernel<<<blocks, kThreads, 0, stream>>>(
+        source.typed_data(), pos.typed_data(), valid.typed_data(), rows,
+        payload_width, auth_size, output->typed_data());
+    return cudaGetLastError();
+  };
+  status = launch(stay_cot, stay_pos, stay_valid, auth_size);
+  if (status != cudaSuccess) return ffi::Error::Internal("route-transpose stay scatter launch failed");
+  status = launch(send_left_cot, send_left_pos, send_left_valid, share_capacity);
+  if (status != cudaSuccess) return ffi::Error::Internal("route-transpose left scatter launch failed");
+  status = launch(send_right_cot, send_right_pos, send_right_valid, share_capacity);
+  if (status != cudaSuccess) return ffi::Error::Internal("route-transpose right scatter launch failed");
+  return ffi::Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    pmpp_route_pack, RoutePackImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Ctx<ffi::ScratchAllocator>()
+        .Attr<int32_t>("global_nmesh")
+        .Attr<int32_t>("mesh_x")
+        .Attr<int32_t>("mesh_y")
+        .Attr<int32_t>("mesh_z")
+        .Attr<int32_t>("direction")
+        .Attr<int32_t>("num_devices")
+        .Attr<int32_t>("capacity")
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::U8>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::U32>>()
+        .Ret<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::U8>>());
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    pmpp_route_merge, RouteMergeImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Ctx<ffi::ScratchAllocator>()
+        .Attr<int32_t>("mesh_x")
+        .Attr<int32_t>("mesh_y")
+        .Attr<int32_t>("mesh_z")
+        .Attr<int32_t>("capacity")
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::U8>>()
+        .Arg<ffi::Buffer<ffi::U32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::U8>>());
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    pmpp_route_merge_aux, RouteMergeAuxImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Ctx<ffi::ScratchAllocator>()
+        .Attr<int32_t>("mesh_x")
+        .Attr<int32_t>("mesh_y")
+        .Attr<int32_t>("mesh_z")
+        .Attr<int32_t>("capacity")
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::U8>>()
+        .Arg<ffi::Buffer<ffi::U32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::U8>>()
+        .Ret<ffi::Buffer<ffi::U8>>()
+        .Ret<ffi::Buffer<ffi::S32>>());
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    pmpp_route_transpose_split, RouteTransposeSplitImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Attr<int32_t>("auth_size")
+        .Attr<int32_t>("share_capacity")
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::U8>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::F32>>());
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    pmpp_route_transpose_scatter, RouteTransposeScatterImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Attr<int32_t>("auth_size")
+        .Attr<int32_t>("share_capacity")
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::U8>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::U8>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::U8>>()
+        .Ret<ffi::Buffer<ffi::F32>>());

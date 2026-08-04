@@ -33,7 +33,7 @@ def test_distributed_fft_matches_reference_for_forward_and_gradients():
     gpu_devices = [device for device in jax.devices() if device.platform == "gpu"][:2]
     compute_mesh = create_compute_mesh(gpu_devices)
     sharding = NamedSharding(compute_mesh, P("gpus", None, None))
-    rfftn, irfftn, _, _, _, _ = create_ffts(compute_mesh)
+    rfftn, irfftn, _, _, rfftn_transposed, _ = create_ffts(compute_mesh)
 
     for real_shape in ((32, 32, 32), (32, 32, 33)):
         spectrum_shape = (real_shape[0], real_shape[1], real_shape[2] // 2 + 1)
@@ -71,6 +71,26 @@ def test_distributed_fft_matches_reference_for_forward_and_gradients():
         grad_rfftn_ref = np.asarray(jax.device_get(jax.grad(loss_rfftn_ref)(real_field)))
         grad_rfftn_out = np.asarray(jax.device_get(jax.grad(loss_rfftn_mgpu)(real_field_sharded)))
         assert np.allclose(grad_rfftn_out, grad_rfftn_ref, atol=1e-12, rtol=1e-12)
+
+        transposed_weights = (
+            jax.random.normal(jax.random.PRNGKey(350 + real_shape[2]), rfftn_ref.shape, dtype=jnp.float64)
+            + 1j
+            * jax.random.normal(jax.random.PRNGKey(450 + real_shape[2]), rfftn_ref.shape, dtype=jnp.float64)
+        ).astype(jnp.complex128)
+
+        def loss_rfftn_transposed_ref(inp):
+            return jnp.real(jnp.vdot(jnp.fft.rfftn(inp), transposed_weights))
+
+        def loss_rfftn_transposed_mgpu(inp):
+            return jnp.real(jnp.vdot(rfftn_transposed(inp), transposed_weights))
+
+        grad_transposed_ref = np.asarray(
+            jax.device_get(jax.grad(loss_rfftn_transposed_ref)(real_field))
+        )
+        grad_transposed_out = np.asarray(
+            jax.device_get(jax.grad(loss_rfftn_transposed_mgpu)(real_field_sharded))
+        )
+        assert np.allclose(grad_transposed_out, grad_transposed_ref, atol=1e-12, rtol=1e-12)
 
         irfftn_weights = jax.random.normal(jax.random.PRNGKey(500 + real_shape[2]), irfftn_ref.shape, dtype=jnp.float64)
 

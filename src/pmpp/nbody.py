@@ -7,12 +7,17 @@ from jax.tree_util import tree_map
 
 from .cosmo import Cosmology, add_cosmology_cotangents, zero_cosmology_param_cotangent
 from .particles import Particles
-from .corrections import add_potential_correction_cotangents, zero_potential_correction_cotangent
+from .corrections import (
+    add_nbody_correction_cotangents,
+    has_phase_space_correction,
+    phase_space_is_invertible,
+    zero_nbody_correction_cotangent,
+)
 from .steps import (
     force,
-    force_then_kick_adj,
+    force_adj,
     integrate,
-    drift_adj_from_output,
+    integrate_adj,
 )
 
 
@@ -68,23 +73,12 @@ def _nbody_scale_factors(conf, reverse):
     return conf.a_nbody[::-1] if reverse else conf.a_nbody
 
 
-def _nbody_fused_stage_schedule(a):
-    """Return drift/force/kick stages with neighboring half-kicks combined."""
-    a_prev = a[:-1]
-    a_next = a[1:]
-    a_vel = (a_prev + a_next) / 2
-    next_midpoints = (a[1:-1] + a[2:]) / 2
-    a_kick_next = jnp.concatenate((next_midpoints, a[-1:]))
-    return a_prev, a_next, a_vel, a_kick_next
-
-
-def _nbody_fused_kick_schedule(a):
-    """Return force/kick boundary scale factors for the fused schedule."""
-    a_prev, _a_next, a_vel, _a_kick_next = _nbody_fused_stage_schedule(a)
-    del a_prev, _a_next, _a_kick_next
-    kick_prev = jnp.concatenate((a[:1], a_vel))
-    kick_next = jnp.concatenate((a_vel, a[-1:]))
-    return a, kick_prev, kick_next
+def _validate_reverse_correction(reverse, correction):
+    """Reject reverse integration for a non-invertible direct phase map."""
+    if reverse and has_phase_space_correction(correction) and not phase_space_is_invertible(correction):
+        raise ValueError(
+            "reverse=True is not supported for a non-invertible phase-space correction."
+        )
 
 
 @partial(jax.jit, static_argnums=(3, 5, 6))
@@ -124,26 +118,21 @@ def nbody_collect(ptcl, cosmo, conf, collector, collector_state, reverse=False, 
     and other side-car computations that should stay outside the custom N-body
     adjoint.
     """
+    _validate_reverse_correction(reverse, correction)
     a = _nbody_scale_factors(conf, reverse)
     ptcl = nbody_init(a[0], ptcl, cosmo, conf, correction=correction)
 
     def body(carry, ab):
-        """Advance one scan body step for the enclosing N-body integration.
-
-        Parameters
-        ----------
-        carry
-            Loop-carried state for a JAX scan or while-loop body.
-        ab
-            Pair of adjacent scale factors for one scan iteration.
-        """
+        """Advance one scan body step for the enclosing N-body integration."""
         ptcl_state, state = carry
         a_prev, a_next = ab
         ptcl_state = nbody_step(a_prev, a_next, ptcl_state, cosmo, conf, correction=correction)
         state = collector(state, a_prev, a_next, ptcl_state, cosmo, conf)
         return (ptcl_state, state), None
 
-    (ptcl_final, collector_state), _ = lax.scan(body, (ptcl, collector_state), (a[:-1], a[1:]))
+    (ptcl_final, collector_state), _ = lax.scan(
+        body, (ptcl, collector_state), (a[:-1], a[1:])
+    )
     if return_final:
         return ptcl_final, collector_state
     return collector_state
@@ -185,20 +174,13 @@ def nbody_observe(ptcl, cosmo, conf, observer, reverse=False, include_start=Fals
     This helper materializes one observation tree per saved step and is meant
     for forward diagnostics such as projections or summary statistics.
     """
+    _validate_reverse_correction(reverse, correction)
     a = _nbody_scale_factors(conf, reverse)
     ptcl = nbody_init(a[0], ptcl, cosmo, conf, correction=correction)
     first_obs = observer(a[0], ptcl, cosmo, conf) if include_start else None
 
     def body(ptcl_state, ab):
-        """Advance one scan body step for the enclosing N-body integration.
-
-        Parameters
-        ----------
-        ptcl_state
-            Flattened particle-state tuple used by the custom adjoint.
-        ab
-            Pair of adjacent scale factors for one scan iteration.
-        """
+        """Advance one scan body step for the enclosing N-body integration."""
         a_prev, a_next = ab
         ptcl_state = nbody_step(a_prev, a_next, ptcl_state, cosmo, conf, correction=correction)
         obs = observer(a_next, ptcl_state, cosmo, conf)
@@ -258,6 +240,48 @@ def _nbody_impl(ptcl, cosmo, conf, reverse=False, correction=None):
         a_prev, a_next = ab
         ptcl = nbody_step(a_prev, a_next, ptcl, cosmo, conf, correction=correction)
         return ptcl, None
+
+    ptcl, _ = lax.scan(body, ptcl, (a[:-1], a[1:]))
+    return ptcl
+
+
+def _nbody_remat_impl(ptcl, cosmo, conf, reverse=False, correction=None):
+    """Run an exact autodiff path, rematerializing every macro-step.
+
+    Direct phase-space maps cannot use the reversible hand-written adjoint: the
+    final state is insufficient to reconstruct the pre-map state.  This path
+    makes every integration step a rematerialization boundary, so JAX replays
+    its exact forward arithmetic during the VJP instead of applying the
+    algebraic drift reconstruction.
+    """
+    a = _nbody_scale_factors(conf, reverse)
+
+    def initialize(ptcl_state, cosmo_state, correction_state):
+        return nbody_init(a[0], ptcl_state, cosmo_state, conf, correction=correction_state)
+
+    ptcl = jax.checkpoint(initialize)(ptcl, cosmo, correction)
+
+    def body(ptcl_state, ab):
+        a_prev, a_next = ab
+
+        def step(state, cosmo_state, correction_state, start, end):
+            return integrate(
+                start,
+                end,
+                state,
+                cosmo_state,
+                conf,
+                correction=correction_state,
+            )
+
+        ptcl_state = jax.checkpoint(step)(
+            ptcl_state,
+            cosmo,
+            correction,
+            a_prev,
+            a_next,
+        )
+        return ptcl_state, None
 
     ptcl, _ = lax.scan(body, ptcl, (a[:-1], a[1:]))
     return ptcl
@@ -382,38 +406,20 @@ def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False, correction=None):
     correction_cot : optional
         Cotangent for the correction object, if one is active.
     """
+    if has_phase_space_correction(correction):
+        raise ValueError(
+            "The reversible N-body adjoint cannot be used with a direct phase-space correction; "
+            "differentiate the public nbody() function to use exact rematerialized autodiff."
+        )
     a_nbody = conf.a_nbody[::-1] if reverse else conf.a_nbody
 
     cosmo_cot = zero_cosmology_param_cotangent(cosmo)
-    correction_cot = zero_potential_correction_cotangent(correction)
-    boundary_a, boundary_prev, boundary_next = _nbody_fused_kick_schedule(a_nbody)
-    ptcl, ptcl_cot, cosmo_cot, correction_cot = force_then_kick_adj(
-        boundary_a[-1],
-        boundary_prev[-1],
-        boundary_next[-1],
-        ptcl,
-        ptcl_cot,
-        cosmo,
-        cosmo_cot,
-        conf,
-        correction=correction,
-        correction_cot=correction_cot,
-    )
+    correction_cot = zero_nbody_correction_cotangent(correction)
 
-    def body(carry, stage):
-        """Advance one scan body step for the enclosing N-body integration.
-
-        Parameters
-        ----------
-        carry
-            Loop-carried state for a JAX scan or while-loop body.
-        stage
-            Integration-stage descriptor from the N-body schedule.
-        """
+    def body(carry, ab):
         ptcl, ptcl_cot, cosmo_cot, correction_cot = carry
-        a_prev, a_next, a_vel, a_acc, a_kick_prev, a_kick_next = stage
-        ptcl, ptcl_cot, cosmo_cot = drift_adj_from_output(
-            a_vel,
+        a_prev, a_next = ab
+        return integrate_adj(
             a_prev,
             a_next,
             ptcl,
@@ -421,35 +427,29 @@ def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False, correction=None):
             cosmo,
             cosmo_cot,
             conf,
-        )
-        carry = force_then_kick_adj(
-            a_acc,
-            a_kick_prev,
-            a_kick_next,
-            ptcl,
-            ptcl_cot,
-            cosmo,
-            cosmo_cot,
-            conf,
             correction=correction,
             correction_cot=correction_cot,
-        )
-        return carry, None
+        ), None
 
-    step_a_prev, step_a_next, step_a_vel, _ = _nbody_fused_stage_schedule(a_nbody)
-    stages = tuple(stage[::-1] for stage in (
-        step_a_prev,
-        step_a_next,
-        step_a_vel,
-        boundary_a[:-1],
-        boundary_prev[:-1],
-        boundary_next[:-1],
-    ))
+    reverse_steps = (a_nbody[:-1][::-1], a_nbody[1:][::-1])
     (ptcl, ptcl_cot, cosmo_cot, correction_cot), _ = lax.scan(
         body,
         (ptcl, ptcl_cot, cosmo_cot, correction_cot),
-        stages,
+        reverse_steps,
     )
+
+    # The forward initialization computes the acceleration at the first
+    # scale factor before the first macro-step.  Pull that force through last.
+    ptcl, ptcl_cot, cosmo_cot_force, correction_cot_force = force_adj(
+        a_nbody[0],
+        ptcl,
+        ptcl_cot,
+        cosmo,
+        conf,
+        correction=correction,
+    )
+    cosmo_cot = add_cosmology_cotangents(cosmo_cot, cosmo_cot_force)
+    correction_cot = add_nbody_correction_cotangents(correction_cot, correction_cot_force)
     return ptcl, ptcl_cot, cosmo_cot, correction_cot
 
 
@@ -587,9 +587,21 @@ def nbody(ptcl, cosmo, conf, reverse=False, correction=None):
 
     Notes
     -----
-    The backward pass is provided by a custom VJP that reconstructs the adjoint
-    sweep from the final state instead of replaying the full forward history.
+    Phase-free runs use the custom VJP that reconstructs the adjoint sweep from
+    the final state.  A direct phase-space correction instead uses exact native
+    autodiff with one rematerialization boundary per macro-step, because its
+    pre-map state cannot be reconstructed algebraically.
     """
+    _validate_reverse_correction(reverse, correction)
+    if has_phase_space_correction(correction):
+        return _nbody_remat_impl(
+            ptcl,
+            cosmo,
+            conf,
+            reverse=reverse,
+            correction=correction,
+        )
+
     cosmo_state = _cosmo_state(cosmo)
     state_out = _nbody_state(
         conf,
@@ -633,9 +645,11 @@ def nbody_static_halo_scheduled(ptcl, cosmo, confs, reverse=False, correction=No
     Notes
     -----
     This experimental helper is mainly for the static-owner mesh-halo path.
-    Differentiation still happens segment-by-segment through the public
-    ``nbody`` custom VJP.
+    Differentiation still happens segment-by-segment through public ``nbody``;
+    each segment selects the fast reversible adjoint or exact rematerialized
+    phase-space path as appropriate.
     """
+    _validate_reverse_correction(reverse, correction)
     ordered_confs = confs[::-1] if reverse else confs
     for segment_conf in ordered_confs:
         ptcl = nbody(ptcl, cosmo, segment_conf, reverse=reverse, correction=correction)

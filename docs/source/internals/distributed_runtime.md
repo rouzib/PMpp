@@ -92,9 +92,10 @@ unused slots preserve its shape, while separate fixed buffers bound migration,
 halo rebuild, and gathered-value communication.
 
 `max_ptcl_per_slice`, `max_share_ptcl`, `max_halo_share_ptcl`, and
-`max_share_gather_ptcl` size those arrays. Compaction uses fixed `size=` values,
-so exceeding a capacity prints an error and truncates the operation. This is why
-capacities are correctness constraints.
+`max_share_gather_ptcl` size those arrays. Compaction uses fixed `size=` values;
+when a capacity predicate is violated, PM++ raises through a host callback
+instead of accepting the truncated operation. This is why capacities remain
+correctness constraints even though the failure is now fail-fast.
 
 ## Equations, shapes, and units
 

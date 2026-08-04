@@ -166,9 +166,20 @@ record the resulting `conf.max_*` values after construction; they are the
 effective compiled capacities, which may be smaller than oversized constructor
 arguments.
 
-An overflow truncates a fixed-size operation after printing an error. The run
-must be discarded and repeated with a larger named capacity. See
+An overflow invokes a host callback that raises a runtime error instead of
+silently accepting a truncated fixed-size operation. The run must still be
+discarded and repeated with a larger named capacity. See
 [Multi-GPU execution](multigpu.md) and [Troubleshooting](troubleshooting.md).
+
+### CIC execution flag
+
+`Configuration.pallas_cic=True` selects the paired Pallas gather/scatter CIC
+implementation on qualified float32 GPU backends. It is enabled by default.
+Unsupported configurations emit a warning and use the portable reference JAX
+implementation. Mesh-halo routing and multi-channel force gather use their
+canonical packed/fused implementations unconditionally. See
+[Pallas CIC kernels](pallas_cic.md) for operation and qualification, and
+[Optimizations](optimizations.md) for measured recommendations.
 
 ## Record the configuration
 

@@ -76,6 +76,10 @@ The single outer `jax.jit` boundary covers cosmology setup, random modes, LPT,
 N-body evolution, and the final density scatter. The first call compiles this
 complete pipeline; block a later call before measuring steady-state execution.
 
+Mesh-halo routing always uses the packed collective and canonical sparse merge
+plan. These preserve particle ordering and adjoint provenance without exposing
+legacy routing switches.
+
 ## What each stage does
 
 1. `Configuration` fixes box/grid geometry, precision, the scale-factor

@@ -14,6 +14,8 @@ are not a stability promise.
   step, observers, and reverse-time custom VJP.
 - [Distributed runtime](distributed_runtime.md): slabs, ownership migration,
   mesh halos, transposed FFT layouts, and static buffers.
+- [Optional CUDA routing](cuda_routing.md): typed GPU FFI pack/merge kernels,
+  JAX-managed collectives, and the CUDA adjoint transpose boundary.
 
 The inherited simulation and adjoint mathematics follow
 [Li et al., *Differentiable Cosmological Simulation with the Adjoint Method*,
@@ -42,4 +44,5 @@ initial_conditions
 particle_mesh
 integration_and_adjoint
 distributed_runtime
+cuda_routing
 ```

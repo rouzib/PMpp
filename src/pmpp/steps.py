@@ -19,7 +19,31 @@ from .cosmo import (
 from .gravity import gravity, duplicate_slot_counts
 from .growth import growth
 from .particles import Particles
-from .corrections import add_potential_correction_cotangents
+from .corrections import (
+    add_nbody_correction_cotangents,
+    apply_local_pair_correction,
+    apply_phase_space_correction,
+    has_phase_space_correction,
+    local_pair_correction,
+    long_range_correction,
+    phase_space_correction,
+    prepare_phase_space_context,
+)
+from .utils import raise_error
+
+
+def _assert_halo_move_succeeded(has_failed, max_ptcl_moved):
+    """Fail closed if a particle mover reports truncated routing."""
+    _ = jax.lax.cond(
+        jnp.any(has_failed),
+        lambda _: raise_error(
+            "[ERROR] Particle migration reported a static-capacity failure. "
+            "max_particles_moved={x}.",
+            x=jnp.max(max_ptcl_moved),
+        ),
+        lambda _: None,
+        operand=None,
+    )
 
 
 def _halo_move_float_outputs(ptcl, disp, vel, acc, conf):
@@ -269,10 +293,20 @@ def drift(a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configuration):
         conf.halo_end,
         ptcl.unused_index,
     )
+    _assert_halo_move_succeeded(has_failed, max_ptcl_moved)
     return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, halo_mask=halo_mask, unused_index=unused_indexes)
 
 
-def drift_for_force(a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configuration):
+def drift_for_force(
+    a_vel,
+    a_prev,
+    a_next,
+    ptcl: Particles,
+    cosmo,
+    conf: Configuration,
+    correction=None,
+    apply_phase=False,
+):
     """Apply a drift whose output is immediately consumed by a force stage.
 
     Parameters
@@ -299,9 +333,90 @@ def drift_for_force(a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configu
     On the mesh-halo fast path this can skip preserving acceleration data when
     the next operation will overwrite ``ptcl.acc`` anyway.
     """
+    phase = phase_space_correction(correction) if apply_phase else None
+    phase_context = None
+    if phase is not None:
+        # Mesh-halo scatter/gather requires particles to reside on their owning
+        # slab.  Cache any mesh-local phase features while the pre-drift state
+        # still satisfies that invariant; the residual itself is applied only
+        # after the raw drift below.
+        phase_context = prepare_phase_space_context(
+            phase,
+            a_next,
+            ptcl,
+            cosmo,
+            conf,
+            local_pair=local_pair_correction(correction),
+        )
+
     factor = drift_factor(a_vel, a_prev, a_next, cosmo, conf)
     factor = factor.astype(conf.float_dtype)
     disp = ptcl.disp + ptcl.vel * factor
+
+    if phase is not None:
+        drifted = ptcl.replace(disp=disp)
+        drifted = apply_phase_space_correction(
+            phase,
+            a_next,
+            drifted,
+            cosmo,
+            conf,
+            factor,
+            local_pair=local_pair_correction(correction),
+            context=phase_context,
+        )
+        disp = drifted.disp
+        vel = drifted.vel
+        acc = drifted.acc
+
+        # The direct map is deliberately evaluated before this ownership
+        # operation.  Passing the pre-drift displacement and final corrected
+        # displacement to the mover handles phase-induced slab crossings once.
+        if conf.use_mGPU and (conf.replicated_mesh or conf.static_mesh_halo_width > 0):
+            return drifted
+        if not conf.use_mGPU or conf.mGPU_halo_moving is None:
+            return drifted
+
+        no_acc_move = getattr(conf, "mGPU_halo_moving_no_acc", None)
+        if no_acc_move is not None and conf.multigpu_mode == "mesh_halo":
+            pmid, disp, vel, halo_mask, unused_indexes, has_failed, max_ptcl_moved = no_acc_move(
+                ptcl.pmid,
+                ptcl.disp,
+                disp,
+                vel,
+                conf.halo_start,
+                conf.halo_end,
+                ptcl.unused_index,
+            )
+            _assert_halo_move_succeeded(has_failed, max_ptcl_moved)
+            return drifted.replace(
+                pmid=pmid,
+                disp=disp,
+                vel=vel,
+                acc=jnp.zeros_like(vel),
+                halo_mask=halo_mask,
+                unused_index=unused_indexes,
+            )
+
+        pmid, disp, vel, acc, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
+            ptcl.pmid,
+            ptcl.disp,
+            disp,
+            vel,
+            acc,
+            conf.halo_start,
+            conf.halo_end,
+            ptcl.unused_index,
+        )
+        _assert_halo_move_succeeded(has_failed, max_ptcl_moved)
+        return drifted.replace(
+            pmid=pmid,
+            disp=disp,
+            vel=vel,
+            acc=acc,
+            halo_mask=halo_mask,
+            unused_index=unused_indexes,
+        )
 
     if conf.use_mGPU and (conf.replicated_mesh or conf.static_mesh_halo_width > 0):
         return ptcl.replace(disp=disp)
@@ -319,7 +434,7 @@ def drift_for_force(a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configu
         conf.halo_end,
         ptcl.unused_index,
     )
-    del has_failed, max_ptcl_moved
+    _assert_halo_move_succeeded(has_failed, max_ptcl_moved)
     acc = jnp.zeros_like(vel)
     return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, halo_mask=halo_mask, unused_index=unused_indexes)
 
@@ -598,6 +713,21 @@ def kick_adj(a_acc, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
     return ptcl, ptcl_cot, cosmo_cot
 
 
+def force_acceleration(a, ptcl, cosmo, conf, correction=None):
+    """Evaluate long- and short-range acceleration branches."""
+    acc = gravity(
+        a,
+        ptcl,
+        cosmo,
+        conf,
+        correction=long_range_correction(correction),
+    )
+    local = local_pair_correction(correction)
+    if local is not None:
+        acc = acc + apply_local_pair_correction(local, a, ptcl, cosmo, conf)
+    return acc
+
+
 def force(a, ptcl, cosmo, conf, correction=None):
     """Overwrite ``ptcl.acc`` with gravitational acceleration at scale factor ``a``.
 
@@ -619,7 +749,7 @@ def force(a, ptcl, cosmo, conf, correction=None):
     Particles
         Particle state with refreshed acceleration.
     """
-    acc = gravity(a, ptcl, cosmo, conf, correction=correction)
+    acc = force_acceleration(a, ptcl, cosmo, conf, correction=correction)
     return ptcl.replace(acc=acc)
 
 
@@ -648,14 +778,14 @@ def force_adj(a, ptcl, ptcl_cot, cosmo, conf, correction=None):
     """
     if correction is None:
         if conf.nbody_cosmo_grad:
-            acc, gravity_vjp = vjp(gravity, a, ptcl, cosmo, conf)
+            acc, gravity_vjp = vjp(force_acceleration, a, ptcl, cosmo, conf)
         else:
-            acc, gravity_vjp = vjp(lambda ptcl_in: gravity(a, ptcl_in, cosmo, conf), ptcl)
+            acc, gravity_vjp = vjp(lambda ptcl_in: force_acceleration(a, ptcl_in, cosmo, conf), ptcl)
         correction_cot_force = None
     else:
         if conf.nbody_cosmo_grad:
             acc, gravity_vjp = vjp(
-                lambda ptcl_in, cosmo_in, correction_in: gravity(
+                lambda ptcl_in, cosmo_in, correction_in: force_acceleration(
                     a, ptcl_in, cosmo_in, conf, correction=correction_in
                 ),
                 ptcl,
@@ -664,7 +794,7 @@ def force_adj(a, ptcl, ptcl_cot, cosmo, conf, correction=None):
             )
         else:
             acc, gravity_vjp = vjp(
-                lambda ptcl_in, correction_in: gravity(
+                lambda ptcl_in, correction_in: force_acceleration(
                     a, ptcl_in, cosmo, conf, correction=correction_in
                 ),
                 ptcl,
@@ -699,112 +829,6 @@ def force_adj(a, ptcl, ptcl_cot, cosmo, conf, correction=None):
     return ptcl, ptcl_cot, cosmo_cot_force, correction_cot_force
 
 
-def force_then_kick_adj(
-    a_acc,
-    a_prev,
-    a_next,
-    ptcl,
-    ptcl_cot,
-    cosmo,
-    cosmo_cot,
-    conf,
-    correction=None,
-    correction_cot=None,
-):
-    """Differentiate a force immediately followed by a kick.
-
-    Parameters
-    ----------
-    a_acc : float
-        Scale factor at which acceleration is evaluated.
-    a_prev, a_next : float
-        Start and end scale factors of the fused kick.
-    ptcl : Particles
-        Post-force/post-kick particle state.
-    ptcl_cot : Particles
-        Cotangent with respect to that state.
-    cosmo : Cosmology
-        Cosmology used in the forward solve.
-    cosmo_cot : Cosmology
-        Incoming cosmology cotangent accumulator.
-    conf : Configuration
-        Active simulation configuration.
-    correction : optional
-        Potential-correction object used in the forward solve.
-    correction_cot : optional
-        Incoming correction cotangent accumulator.
-
-    Returns
-    -------
-    tuple
-        ``(ptcl_in, ptcl_cot_out, cosmo_cot_out, correction_cot_out)``.
-
-    Notes
-    -----
-    This fused adjoint reuses one gravity forward/VJP pair across the two
-    coupled substeps.
-    """
-    correction_cot = add_potential_correction_cotangents(None, correction_cot)
-    if correction is None:
-        if conf.nbody_cosmo_grad:
-            acc, gravity_vjp = vjp(gravity, a_acc, ptcl, cosmo, conf)
-        else:
-            acc, gravity_vjp = vjp(lambda ptcl_in: gravity(a_acc, ptcl_in, cosmo, conf), ptcl)
-        correction_cot_force = None
-    else:
-        if conf.nbody_cosmo_grad:
-            acc, gravity_vjp = vjp(
-                lambda ptcl_in, cosmo_in, correction_in: gravity(
-                    a_acc, ptcl_in, cosmo_in, conf, correction=correction_in
-                ),
-                ptcl,
-                cosmo,
-                correction,
-            )
-        else:
-            acc, gravity_vjp = vjp(
-                lambda ptcl_in, correction_in: gravity(
-                    a_acc, ptcl_in, cosmo, conf, correction=correction_in
-                ),
-                ptcl,
-                correction,
-            )
-
-    ptcl = ptcl.replace(acc=acc)
-    ptcl, ptcl_cot, cosmo_cot = kick_adj(
-        a_acc,
-        a_prev,
-        a_next,
-        ptcl,
-        ptcl_cot,
-        cosmo,
-        cosmo_cot,
-        conf,
-    )
-
-    acc_out_cot = ptcl_cot.acc
-    if correction is None:
-        if conf.nbody_cosmo_grad:
-            _, ptcl_cot_force, cosmo_cot_force, _ = gravity_vjp(acc_out_cot)
-        else:
-            (ptcl_cot_force,) = gravity_vjp(acc_out_cot)
-            cosmo_cot_force = zero_cosmology_param_cotangent(cosmo)
-    else:
-        if conf.nbody_cosmo_grad:
-            ptcl_cot_force, cosmo_cot_force, correction_cot_force = gravity_vjp(acc_out_cot)
-        else:
-            ptcl_cot_force, correction_cot_force = gravity_vjp(acc_out_cot)
-            cosmo_cot_force = zero_cosmology_param_cotangent(cosmo)
-
-    ptcl_cot = ptcl_cot.replace(
-        disp=ptcl_cot.disp + ptcl_cot_force.disp,
-        vel=ptcl_cot.vel,
-        acc=jnp.zeros_like(ptcl.acc),
-    )
-    cosmo_cot_force = project_cosmology_param_cotangent(cosmo_cot_force)
-    cosmo_cot = add_cosmology_cotangents(cosmo_cot, cosmo_cot_force)
-    correction_cot = add_potential_correction_cotangents(correction_cot, correction_cot_force)
-    return ptcl, ptcl_cot, cosmo_cot, correction_cot
 
 
 def integrate(a_prev, a_next, ptcl, cosmo, conf, correction=None):
@@ -830,11 +854,21 @@ def integrate(a_prev, a_next, ptcl, cosmo, conf, correction=None):
     """
     D = K = 0
     a_disp = a_vel = a_acc = a_prev
-    for d, k in conf.symp_splits:
+    last_drift_index = max(i for i, (d, _k) in enumerate(conf.symp_splits) if d != 0)
+    for split_index, (d, k) in enumerate(conf.symp_splits):
         if d != 0:
             D += d
             a_disp_next = a_prev * (1 - D) + a_next * D
-            ptcl = drift_for_force(a_vel, a_disp, a_disp_next, ptcl, cosmo, conf)
+            ptcl = drift_for_force(
+                a_vel,
+                a_disp,
+                a_disp_next,
+                ptcl,
+                cosmo,
+                conf,
+                correction=correction,
+                apply_phase=split_index == last_drift_index,
+            )
             a_disp = a_disp_next
             ptcl = force(a_disp, ptcl, cosmo, conf, correction=correction)
             a_acc = a_disp
@@ -848,34 +882,6 @@ def integrate(a_prev, a_next, ptcl, cosmo, conf, correction=None):
     return ptcl
 
 
-def integrate_fused_kick_step(a_prev, a_next, a_vel, a_kick_next, ptcl, cosmo, conf, correction=None):
-    """Advance one macro-step after adjacent half-kicks have been fused.
-
-    Parameters
-    ----------
-    a_prev, a_next : float
-        Start and end scale factors of the drift portion.
-    a_vel : float
-        Velocity midpoint scale factor.
-    a_kick_next : float
-        End scale factor of the fused kick.
-    ptcl : Particles
-        Input particle state.
-    cosmo : Cosmology
-        Cosmology used by the substeps.
-    conf : Configuration
-        Active simulation configuration.
-    correction : optional
-        Potential-correction object applied in the force stage.
-
-    Returns
-    -------
-    Particles
-        Post-step particle state.
-    """
-    ptcl = drift_for_force(a_vel, a_prev, a_next, ptcl, cosmo, conf)
-    ptcl = force(a_next, ptcl, cosmo, conf, correction=correction)
-    return kick(a_next, a_vel, a_kick_next, ptcl, cosmo, conf)
 
 
 def _integrate_stage_schedule(a_prev, a_next, conf):
@@ -936,7 +942,12 @@ def integrate_adj(
     tuple
         ``(ptcl_in, ptcl_cot_out, cosmo_cot_out, correction_cot_out)``.
     """
-    correction_cot = add_potential_correction_cotangents(None, correction_cot)
+    if has_phase_space_correction(correction):
+        raise ValueError(
+            "integrate_adj cannot reconstruct a direct phase-space map; "
+            "differentiate nbody() to use exact rematerialized autodiff."
+        )
+    correction_cot = add_nbody_correction_cotangents(None, correction_cot)
 
     for stage in reversed(_integrate_stage_schedule(a_prev, a_next, conf)):
         if stage[0] == "kick":
@@ -963,7 +974,7 @@ def integrate_adj(
             correction=correction,
         )
         cosmo_cot = add_cosmology_cotangents(cosmo_cot, cosmo_cot_force_stage)
-        correction_cot = add_potential_correction_cotangents(correction_cot, correction_cot_force_stage)
+        correction_cot = add_nbody_correction_cotangents(correction_cot, correction_cot_force_stage)
         ptcl, ptcl_cot, cosmo_cot = drift_adj_from_output(
             a_vel_stage,
             a_disp_stage,
@@ -979,82 +990,4 @@ def integrate_adj(
         # acceleration field before any earlier kick adjoint consumes it.
         ptcl = force(a_acc_in, ptcl, cosmo, conf, correction=correction)
 
-    return ptcl, ptcl_cot, cosmo_cot, correction_cot
-
-
-def integrate_fused_kick_step_adj(
-    a_prev,
-    a_next,
-    a_vel,
-    a_kick_next,
-    ptcl,
-    ptcl_cot,
-    cosmo,
-    cosmo_cot,
-    conf,
-    correction=None,
-    correction_cot=None,
-):
-    """Reverse one macro-step from the fused-kick N-body schedule.
-
-    Parameters
-    ----------
-    a_prev, a_next : float
-        Start and end scale factors of the drift portion.
-    a_vel : float
-        Velocity midpoint scale factor.
-    a_kick_next : float
-        End scale factor of the fused kick.
-    ptcl : Particles
-        Post-step particle state.
-    ptcl_cot : Particles
-        Cotangent with respect to the post-step state.
-    cosmo : Cosmology
-        Cosmology used in the forward step.
-    cosmo_cot : Cosmology
-        Incoming cosmology cotangent accumulator.
-    conf : Configuration
-        Active simulation configuration.
-    correction : optional
-        Potential-correction object used in the forward step.
-    correction_cot : optional
-        Incoming correction cotangent accumulator.
-
-    Returns
-    -------
-    tuple
-        ``(ptcl_in, ptcl_cot_out, cosmo_cot_out, correction_cot_out)``.
-    """
-    correction_cot = add_potential_correction_cotangents(None, correction_cot)
-    ptcl, ptcl_cot, cosmo_cot = kick_adj(
-        a_next,
-        a_vel,
-        a_kick_next,
-        ptcl,
-        ptcl_cot,
-        cosmo,
-        cosmo_cot,
-        conf,
-    )
-    ptcl, ptcl_cot, cosmo_cot_force, correction_cot_force = force_adj(
-        a_next,
-        ptcl,
-        ptcl_cot,
-        cosmo,
-        conf,
-        correction=correction,
-    )
-    cosmo_cot = add_cosmology_cotangents(cosmo_cot, cosmo_cot_force)
-    correction_cot = add_potential_correction_cotangents(correction_cot, correction_cot_force)
-    ptcl, ptcl_cot, cosmo_cot = drift_adj_from_output(
-        a_vel,
-        a_prev,
-        a_next,
-        ptcl,
-        ptcl_cot,
-        cosmo,
-        cosmo_cot,
-        conf,
-    )
-    ptcl = force(a_prev, ptcl, cosmo, conf, correction=correction)
     return ptcl, ptcl_cot, cosmo_cot, correction_cot

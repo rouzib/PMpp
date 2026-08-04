@@ -7,7 +7,12 @@ from jax.experimental.shard_map import shard_map
 from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .configuration import Configuration
-from .corrections import apply_potential_correction, force_green_kernel, force_uses_interlacing
+from .corrections import (
+    apply_potential_correction,
+    force_gradient_kernel,
+    force_green_kernel,
+    force_uses_interlacing,
+)
 from .gather import _gather, gather, gather_stacked_mesh_halo
 from .scatter import scatter, reduce_grad_across_gpus
 from .utils import AXIS_NAME
@@ -362,7 +367,7 @@ def laplace_transposed_with_kernel(kvec, src, conf, kernel="continuum"):
     return jnp.where(k2 != 0, pot, jnp.zeros_like(pot))
 
 
-def neg_grad(k, pot, spacing):
+def neg_grad(k, pot, spacing, kernel="spectral"):
     """Return the Fourier-space negative gradient component ``-i k pot``.
 
     Parameters
@@ -385,20 +390,27 @@ def neg_grad(k, pot, spacing):
     conjugate, so an imaginary derivative there would violate the Hermitian
     structure required by the inverse rFFT.
     """
-    nyquist = jnp.pi / spacing
-    eps = nyquist * jnp.finfo(k.dtype).eps
-    neg_ik = jnp.where(jnp.abs(jnp.abs(k) - nyquist) <= eps, 0, -1j * k)
+    if kernel == "spectral":
+        nyquist = jnp.pi / spacing
+        eps = nyquist * jnp.finfo(k.dtype).eps
+        derivative_k = jnp.where(jnp.abs(jnp.abs(k) - nyquist) <= eps, 0, k)
+    elif kernel == "fastpm_4point":
+        phase = k * spacing
+        derivative_k = (8.0 * jnp.sin(phase) - jnp.sin(2.0 * phase)) / (6.0 * spacing)
+    else:
+        raise ValueError(f"Unsupported force-gradient kernel {kernel!r}.")
+    neg_ik = -1j * derivative_k
 
     grad = jnp.multiply(neg_ik, pot)
 
     return grad
 
 
-def _spectral_gradient_components_from_potential(pot, conf: Configuration):
+def _spectral_gradient_components_from_potential(pot, conf: Configuration, gradient_kernel="spectral"):
     """Stack Fourier-space force components using cached derivative factors."""
-    neg_ik = getattr(conf, "neg_ik", None)
+    neg_ik = getattr(conf, "neg_ik", None) if gradient_kernel == "spectral" else None
     if neg_ik is None:
-        return jnp.stack([neg_grad(k, pot, conf.cell_size) for k in conf.kvec], axis=0)
+        return jnp.stack([neg_grad(k, pot, conf.cell_size, gradient_kernel) for k in conf.kvec], axis=0)
     return jnp.stack([factor * pot for factor in neg_ik], axis=0)
 
 
@@ -464,9 +476,9 @@ def _gravity_potential_interlaced(ptcl, omega_m, conf: Configuration, a=None, co
     return apply_potential_correction(pot, a, cosmo, conf, correction, source_real=dens0)
 
 
-def _spectral_gradient_components(pot, conf: Configuration):
+def _spectral_gradient_components(pot, conf: Configuration, gradient_kernel="spectral"):
     """Stack the three Fourier-space force components for batched iFFTs."""
-    return _spectral_gradient_components_from_potential(pot, conf)
+    return _spectral_gradient_components_from_potential(pot, conf, gradient_kernel)
 
 
 def _can_use_batched_gradient_fft(conf: Configuration):
@@ -474,9 +486,9 @@ def _can_use_batched_gradient_fft(conf: Configuration):
     return conf.compute_mesh is not None and conf.mGPU_irfftn_transposed_batched is not None
 
 
-def _batched_gradient_meshes_from_potential(pot, conf: Configuration):
+def _batched_gradient_meshes_from_potential(pot, conf: Configuration, gradient_kernel="spectral"):
     """Transform all three force components with one batched distributed iRFFT."""
-    spectral_grads = _spectral_gradient_components(pot, conf)
+    spectral_grads = _spectral_gradient_components(pot, conf, gradient_kernel)
     return conf.mGPU_irfftn_transposed_batched(spectral_grads).astype(conf.float_dtype)
 
 
@@ -496,15 +508,15 @@ def _gradient_meshes_from_spectral_components(spectral_grads, conf: Configuratio
     return tuple(grad_meshes)
 
 
-def _gradient_meshes_from_potential(pot, conf: Configuration, use_batched=True):
+def _gradient_meshes_from_potential(pot, conf: Configuration, use_batched=True, gradient_kernel="spectral"):
     """Return real-space force meshes, optionally using the batched FFT path."""
     if use_batched and _can_use_batched_gradient_fft(conf):
-        grad_meshes = _batched_gradient_meshes_from_potential(pot, conf)
+        grad_meshes = _batched_gradient_meshes_from_potential(pot, conf, gradient_kernel)
         return tuple(grad_meshes[i] for i in range(grad_meshes.shape[0]))
 
     grad_meshes = []
     for k in conf.kvec:
-        grad = neg_grad(k, pot, conf.cell_size)
+        grad = neg_grad(k, pot, conf.cell_size, gradient_kernel)
         if conf.compute_mesh is None:
             grad = jnp.fft.irfftn(grad)
         else:
@@ -513,13 +525,25 @@ def _gradient_meshes_from_potential(pot, conf: Configuration, use_batched=True):
     return tuple(grad_meshes)
 
 
-def _acceleration_from_potential(pot, ptcl, conf: Configuration, use_batched=True, use_vmap_gather=False):
+def _acceleration_from_potential(
+    pot,
+    ptcl,
+    conf: Configuration,
+    use_batched=True,
+    use_vmap_gather=False,
+    gradient_kernel="spectral",
+):
     """Gather force-mesh components at particle positions."""
     if use_batched and _can_use_batched_gradient_fft(conf):
-        grad_meshes = _batched_gradient_meshes_from_potential(pot, conf)
+        grad_meshes = _batched_gradient_meshes_from_potential(pot, conf, gradient_kernel)
         return gather_stacked_mesh_halo(ptcl, conf, jnp.moveaxis(grad_meshes, 0, -1))
 
-    grad_meshes = _gradient_meshes_from_potential(pot, conf, use_batched=False)
+    grad_meshes = _gradient_meshes_from_potential(
+        pot,
+        conf,
+        use_batched=False,
+        gradient_kernel=gradient_kernel,
+    )
 
     if use_vmap_gather:
         stacked_grad_meshes = jnp.stack(grad_meshes, axis=0)
@@ -569,13 +593,14 @@ def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration, a=None, correc
         conf,
         use_batched=use_batched,
         use_vmap_gather=correction is not None and not use_batched,
+        gradient_kernel=force_gradient_kernel(correction),
     )
 
 
 def _gravity_mesh_fields_from_density(dens, omega_m, conf: Configuration, a=None, cosmo=None, correction=None):
     """Return the real-space force meshes generated by a density field."""
     pot = _gravity_potential_from_density(dens, omega_m, conf, a=a, cosmo=cosmo, correction=correction)
-    return _gradient_meshes_from_potential(pot, conf)
+    return _gradient_meshes_from_potential(pot, conf, gradient_kernel=force_gradient_kernel(correction))
 
 
 def _reduce_gather_disp_cot(pmid, disp, unused_index, disp_cot, conf: Configuration):
@@ -741,7 +766,12 @@ def gravity(a, ptcl, cosmo, conf: Configuration, correction=None):
     """
     if force_uses_interlacing(correction):
         pot = _gravity_potential_interlaced(ptcl, cosmo.Omega_m, conf, a=a, cosmo=cosmo, correction=correction)
-        return _acceleration_from_potential(pot, ptcl, conf)
+        return _acceleration_from_potential(
+            pot,
+            ptcl,
+            conf,
+            gradient_kernel=force_gradient_kernel(correction),
+        )
 
     dens = scatter(ptcl, conf)
     return _gravity_from_density(dens, ptcl, cosmo, conf, a=a, correction=correction)

@@ -9,6 +9,7 @@ import jax.numpy as jnp
 from jax.sharding import Mesh
 
 from .FFT_distributed import create_batched_transposed_real_ffts, create_ffts
+from .cuda_routing import supported_configuration as cuda_routing_supported
 from .gather import initialize_mGPU_gather
 from .halo_moving import (
     initialize_mGPU_compute_halo_mask,
@@ -40,8 +41,10 @@ class MultiGPUConfiguration:
     initialized sharded helper functions.
 
     In normal user code this object is usually only a seed carrying
-    ``compute_mesh`` and an optional ``mode``. The remaining topology arrays and
-    helper callables are filled in during ``Configuration`` initialization.
+    ``compute_mesh``, an optional ``mode``, and optional CUDA routing.
+    ``cuda_routing`` requests the optional typed CUDA FFI route-pack/merge
+    implementation.  It is resolved to ``False`` automatically unless the
+    qualified GPU/JAX/library combination is present.
     """
 
     compute_mesh: Mesh = None
@@ -53,6 +56,7 @@ class MultiGPUConfiguration:
     local_mesh_with_halo_shape: tuple[int, ...] = ()
 
     mode: str | None = "mesh_halo"
+    cuda_routing: bool | None = None
     store_particle_halos: bool = False
     ptcl_halo_width: int = 0
     mesh_halo_width: int = 0
@@ -103,7 +107,7 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
 
     Parameters
     ----------
-    conf : Configuration
+    conf : :class:`~pmpp.configuration.Configuration`
         User-facing configuration whose mesh, particle layout, and capacity
         limits define the distributed topology.
     runtime_seed : MultiGPUConfiguration or None, optional
@@ -139,6 +143,18 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
     )
     if mode not in {"particle_halo", "mesh_halo"}:
         raise ValueError(f"Unsupported multigpu_mode={mode!r}. Expected 'particle_halo' or 'mesh_halo'.")
+    requested_cuda_routing = (
+        runtime_seed.cuda_routing
+        if runtime_seed is not None and runtime_seed.cuda_routing is not None
+        else True
+    )
+    # Qualification is evaluated once while the static configuration is being
+    # built. A missing/incompatible optional library simply resolves to False;
+    # the portable JAX routing path remains the automatic fallback.
+    cuda_routing = bool(
+        requested_cuda_routing
+        and cuda_routing_supported(conf, num_devices=num_devices, mode=mode)
+    )
 
     local_mesh_shape = (conf.mesh_shape[0] // num_devices, conf.mesh_shape[1], conf.mesh_shape[2])
     global_nMesh = conf.mesh_shape[0]
@@ -208,6 +224,7 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
         local_mesh_shape=local_mesh_shape,
         local_mesh_with_halo_shape=local_mesh_with_halo_shape,
         mode=mode,
+        cuda_routing=cuda_routing,
         store_particle_halos=store_particle_halos,
         ptcl_halo_width=ptcl_halo_width,
         mesh_halo_width=mesh_halo_width,
@@ -234,7 +251,7 @@ def initialize_multigpu_runtime(conf: "Configuration", runtime: MultiGPUConfigur
 
     Parameters
     ----------
-    conf : Configuration
+    conf : :class:`~pmpp.configuration.Configuration`
         Configuration whose derived topology is being finalized.
     runtime : MultiGPUConfiguration
         Topology object returned by ``build_multigpu_configuration``.
@@ -244,8 +261,12 @@ def initialize_multigpu_runtime(conf: "Configuration", runtime: MultiGPUConfigur
     MultiGPUConfiguration
         Runtime object augmented with compiled distributed helper callables.
     """
-    rfftn_jit, irfftn_jit, _, _, rfftn_transposed_jit, irfftn_transposed_jit = create_ffts(runtime.compute_mesh)
-    _, irfftn_transposed_batched_jit = create_batched_transposed_real_ffts(runtime.compute_mesh)
+    rfftn_jit, irfftn_jit, _, _, rfftn_transposed_jit, irfftn_transposed_jit = create_ffts(
+        runtime.compute_mesh,
+    )
+    _, irfftn_transposed_batched_jit = create_batched_transposed_real_ffts(
+        runtime.compute_mesh,
+    )
     return runtime.replace(
         rfftn=rfftn_jit,
         irfftn=irfftn_jit,
