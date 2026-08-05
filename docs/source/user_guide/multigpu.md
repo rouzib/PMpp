@@ -17,10 +17,9 @@ from pmpp.utils import create_compute_mesh
 devices = [d for d in jax.devices() if d.platform == "gpu"]
 if len(devices) < 2:
     raise RuntimeError("This run requires at least two GPUs")
-selected_devices = devices[:2]
 
 n = 256
-compute_mesh = create_compute_mesh(selected_devices)
+compute_mesh = create_compute_mesh(devices)
 conf = Configuration(
     ptcl_spacing=1000.0 / n,
     ptcl_grid_shape=(n,) * 3,
@@ -29,7 +28,7 @@ conf = Configuration(
         compute_mesh=compute_mesh,
         mode="mesh_halo",
     ),
-    max_ptcl_per_slice=int((n**3 / len(selected_devices)) * 1.20),
+    max_ptcl_per_slice=int((n**3 / len(devices)) * 1.20),
     max_share_ptcl=50_000,
     max_halo_share_ptcl=50_000,
     max_share_gather_ptcl=200_000,
@@ -52,23 +51,31 @@ transpose. Inspect `conf.owned_slice_start`,
 `conf.owned_slice_end`, and `conf.local_mesh_shape` rather than inferring a
 layout from physical device IDs. Stored slice endpoints are periodic: an end
 value of `0` on the final slab represents the wrapped boundary at $N_x$, not an
-empty interval. The examples select two devices explicitly; the formulas retain
-$D$ so the same constraints can be applied to larger meshes.
+empty interval. The examples use every visible GPU, and the formulas retain
+$D$ so the same constraints apply to any supported device mesh.
 
 ## Why `mesh_halo`
 
-In `mesh_halo` mode:
+`particle_halo` and `mesh_halo` differ in how they provide the neighboring data
+needed by CIC scatter and gather near a slab boundary.
 
-- each valid particle is authoritative on the slab containing its position;
-- a drift can transfer ownership, so particles still migrate;
-- scatter writes into an owned mesh plus edge halos and reduces halo
-  contributions to the neighbor's owned slab;
-- gather exchanges owned edge cells and interpolates from the extended local
-  mesh;
-- custom VJPs reverse those exchanges for gradients.
+In `particle_halo` mode, each GPU stores the particles owned by its slab and
+duplicate copies of particles near neighboring slab boundaries. Those halo
+particles must be exchanged and rebuilt as particles move. This increases
+particle storage and makes boundary work depend on the number of particles in
+the halo region.
 
-`particle_halo` retains duplicated particle records and exists for compatibility
-and validation. It is not the recommended production mode.
+In `mesh_halo` mode, every physical particle has one authoritative record on
+the GPU that owns its current slab. Particles still migrate when they cross a
+slab boundary. For scatter and gather, PM++ exchanges narrow edge regions of
+the mesh instead of keeping duplicate particle records. Scatter contributions
+in mesh halos are reduced into the neighboring owned slab, while gather extends
+the local mesh with neighboring edge cells. The custom VJPs reverse these
+exchanges when gradients are computed.
+
+`mesh_halo` avoids duplicated particle storage and usually reduces particle
+routing and boundary bookkeeping. It is the preferred mode and is typically
+faster than `particle_halo` for both smaller and larger simulation boxes.
 
 ## Static capacity planning
 
@@ -80,7 +87,7 @@ C_\mathrm{slice}=\left\lceil f\,N_p/D\right\rceil,
 $$
 
 where $f>1$ allows clustering imbalance. The correct factor is experiment
-dependent; monitor actual occupancy and migration over representative seeds and
+dependent. Monitor actual occupancy and migration over representative seeds and
 the full schedule. The four capacity fields are described in
 [Configuration](configuration.md).
 
@@ -92,36 +99,10 @@ result.
 ## Distributed FFTs
 
 The real density begins in x slabs. A distributed rFFT performs local transforms
-and a collective transpose so a later axis is local; the spectral array is
+and a collective transpose so a later axis is local. The spectral array is
 therefore in a transposed sharded layout. Use PM++'s `conf.mGPU_*fftn*` helpers
 inside solver extensions rather than applying a local FFT independently to each
 slab.
-
-## Operational checklist
-
-- expose only the intended GPUs before Python starts;
-- set `XLA_PYTHON_CLIENT_PREALLOCATE=false` when appropriate;
-- run one heavy multi-GPU process at a time;
-- create a fresh process after changing imported code;
-- record device order/model and every capacity;
-- treat all overflow/error prints as failed runs;
-- warm up and block results before timing;
-- check density mean/mass and boundary-visible projections.
-
-## Cluster and Narval jobs
-
-Request GPU nodes through the scheduler and verify `jax.devices()` inside the
-allocated job, never from the login node. Load a CUDA/JAX-compatible module or
-environment, activate the project environment, and print the visible devices,
-PM++ commit, scheduler resources, mesh/device layout, seed, and capacities into
-the run log before starting the simulation.
-
-Narval module names, account names, scratch paths, and allocation policy change
-with the site and research group. Keep those details in a private runbook or job
-template; the portable contract is the same: the allocated GPUs must be visible
-to the CUDA-enabled JAX build, particle x and mesh x/y dimensions must divide
-their count, and a small `mesh_halo` smoke run must pass before a production
-launch.
 
 For the communication design and diagrams, read
 [Distributed runtime](../internals/distributed_runtime.md).

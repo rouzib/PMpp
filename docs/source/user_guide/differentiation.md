@@ -5,14 +5,13 @@ forward calculation. Scatter, gather, gravity, distributed FFTs, ownership
 movement, and full N-body evolution have explicit reverse-mode rules where the
 runtime requires them.
 
-```{warning}
-**Current tested limitations (2026-07-26 worktree based on `161dc9b21a7a`):**
-tracing through `boltzmann` table construction into cosmology leaves produced
-NaN cotangents. For current cosmology-sensitivity work, reuse cached
-transfer/growth tables, differentiate the N-body portion on the validated
-two-GPU `mesh_halo` path, and validate it independently. This observation
-describes the tested revision/environment, not a broader mathematical
-limitation.
+```{important}
+Repeatable output is not by itself evidence of an accurate gradient. Long
+float32 multi-GPU adjoints can accumulate reconstruction error even when XLA's
+deterministic GPU mode makes every repetition bitwise identical. Read
+[Precision, reproducibility, and gradients](precision_reproducibility.md)
+before choosing float32, float64, or deterministic execution for a simulation
+gradient.
 ```
 
 ## Start with initial modes
@@ -43,7 +42,7 @@ conf = Configuration(
     ptcl_grid_shape=(n,) * 3,
     mesh_shape=1,
     multigpu=MultiGPUConfiguration(
-        compute_mesh=create_compute_mesh(gpu_devices[:2]),
+        compute_mesh=create_compute_mesh(gpu_devices),
         mode="mesh_halo",
     ),
     max_ptcl_per_slice=4_096,
@@ -78,15 +77,15 @@ assert bool(jnp.isfinite(noise_grad).all())
 ```
 
 Keep `conf` static, choose a tiny grid and short schedule first, and block the
-result before reporting timing or success. The gradient must match `modes.shape`
-and contain only finite values.
+result before reporting timing or success. The gradient must match the input
+noise shape and contain only finite values.
 
 ## Cosmological parameters
 
 `Cosmology` is a PyTree whose core parameter arrays can receive gradients. The
 N-body custom adjoint includes cosmology cotangents when
 `conf.nbody_cosmo_grad=True` (the default). Set it to `False` only when the loss
-requires displacement/mode gradients but not N-body cosmology gradients; this
+requires displacement or mode gradients but not N-body cosmology gradients. This
 is a computational choice that changes the returned cotangent.
 
 Use `cosmology_param_names`, `cosmology_param_values`, and
@@ -97,7 +96,7 @@ differentiable only when their underscored fields are not `None`.
 ## What is not the gradient path
 
 - `nbody_observe` and `nbody_collect` are forward diagnostic interfaces.
-- `nbody(reverse=True)` integrates the equations over a reversed schedule; it
+- `nbody(reverse=True)` integrates the equations over a reversed schedule. It
   does not compute a VJP.
 - A gradient of a truncated capacity-overflow run is invalid even if every
   returned array is finite.
@@ -113,24 +112,25 @@ $$
 $$
 
 Choose $\epsilon$ large enough to exceed float32 round-off but small enough to
-remain in the local linear regime; repeat at multiple values. For array-valued
+remain in the local linear regime. Repeat at multiple values. For array-valued
 inputs, test a directional derivative $\nabla L\cdot v$ rather than perturbing
 every element.
 
 Validation order:
 
-1. finite primal loss and gradient;
-2. centered finite difference on a tiny case;
-3. invariance/mass checks in the differentiated forward path;
-4. focused gradient tests for the modified operator;
+1. finite primal loss and gradient.
+2. centered finite difference on a tiny case.
+3. invariance and mass checks in the differentiated forward path.
+4. focused gradient tests for the modified operator.
 5. end-to-end gradient test at the intended runtime mode.
 
 The pre-executed differentiation notebook uses the currently validated
-two-GPU initial-mode $\rightarrow$ LPT $\rightarrow$ N-body adjoint. Its
-directional finite-difference case matched at about $1.7\times10^{-10}$ relative
-error; that number documents one test case and is not a universal tolerance.
-The notebook's cosmology example is deliberately N-body-only with cached
-transfer/growth data because of the limitation above.
+multi-GPU initial-mode $\rightarrow$ LPT $\rightarrow$ N-body adjoint. Its
+float64 directional finite-difference case has a relative error of order
+$10^{-10}$.
+That result documents one test case and is not a universal tolerance. The
+notebook's cosmology example differentiates N-body evolution with cached
+transfer and growth data.
 
 The custom recurrence is described in
 [Integration and discrete adjoint](../internals/integration_and_adjoint.md).

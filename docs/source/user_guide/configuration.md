@@ -1,7 +1,7 @@
 # Configuration
 
 `pmpp.configuration.Configuration` is a frozen dataclass and a static JAX
-PyTree. It combines the scientific definition of a run with the shapes and
+PyTree. It combines the simulation definition with the shapes and
 callables needed by the runtime. Treat a configuration as immutable; use
 `conf.replace(...)` to make a related configuration.
 
@@ -20,14 +20,13 @@ box_size = 250.0
 gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
 if len(gpu_devices) < 2:
     raise RuntimeError("This PM++ example requires at least two GPUs")
-selected_devices = gpu_devices[:2]
 
 conf = Configuration(
     ptcl_spacing=box_size / n,
     ptcl_grid_shape=(n, n, n),
     mesh_shape=1,
     multigpu=MultiGPUConfiguration(
-        compute_mesh=create_compute_mesh(selected_devices),
+        compute_mesh=create_compute_mesh(gpu_devices),
         mode="mesh_halo",
     ),
     float_dtype=jnp.float32,
@@ -59,8 +58,8 @@ Configuration construction does not currently reject every incompatible shape
 up front, so check these rules explicitly rather than relying on integer
 division or a later collective failure.
 
-Choose the smallest particle/mesh resolution that answers the scientific
-question. The committed simulation notebooks use $256^3$ particles; smaller
+Choose the smallest particle and mesh resolution that suits the simulation.
+The committed simulation notebooks use $256^3$ particles; smaller
 grids remain useful for private debugging and smoke tests, not evidence of
 production accuracy.
 Increasing the force mesh raises FFT memory/traffic and can increase boundary
@@ -88,6 +87,11 @@ a different precision policy, and construct the configuration only after the
 JAX precision setting is final. `pmid_dtype` must represent every mesh index
 safely; do not use `int16` for an axis that can exceed its range.
 
+For the distinction between higher numerical precision, bitwise repeatability,
+and gradient accuracy, including the runtime and memory costs of float64 and
+deterministic GPU operations, see
+[Precision, reproducibility, and gradients](precision_reproducibility.md).
+
 ## Time schedule and LPT order
 
 `a_start`, `a_stop`, and `a_nbody_maxstep` define a linearly spaced default
@@ -102,10 +106,6 @@ Operational LPT choices are:
 | 0 | unperturbed grid | supported |
 | 1 | Zel'dovich approximation | supported |
 | 2 | second-order LPT | supported, default |
-| 3 | third-order LPT | **not implemented** |
-
-Although the configuration validator accepts `3`, `pmpp.lpt.lpt` raises
-`NotImplementedError`. Do not use it in a production configuration.
 
 `lpt_cache_strains=True` avoids repeated inverse FFTs during 2LPT at the cost of
 keeping diagonal strain arrays live. Set it to `False` only when that memory
@@ -134,13 +134,12 @@ for the intended run:
 gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
 if len(gpu_devices) < 2:
     raise RuntimeError("This PM++ example requires at least two GPUs")
-selected_devices = gpu_devices[:2]
 
 conf = Configuration(
     ptcl_spacing=<particle spacing>,
     ptcl_grid_shape=<particle shape>,
     multigpu=MultiGPUConfiguration(
-        compute_mesh=create_compute_mesh(selected_devices),
+        compute_mesh=create_compute_mesh(gpu_devices),
         mode="mesh_halo",
     ),
     max_ptcl_per_slice=<particle slots per device>,
@@ -181,12 +180,33 @@ canonical packed/fused implementations unconditionally. See
 [Pallas CIC kernels](pallas_cic.md) for operation and qualification, and
 [Optimizations](optimizations.md) for measured recommendations.
 
+### CUDA routing flag
+
+`MultiGPUConfiguration(cuda_routing=True)` requests the optional CUDA FFI
+route-pack and route-merge implementation. CUDA routing remains opt-in. If the
+extension or runtime is not qualified, PM++ keeps the portable JAX router.
+
+```python
+cuda_conf = conf.replace(
+    multigpu=MultiGPUConfiguration(
+        compute_mesh=create_compute_mesh(gpu_devices),
+        mode="mesh_halo",
+        cuda_routing=True,
+    )
+)
+
+print("CUDA routing enabled:", cuda_conf.cuda_routing)
+```
+
+See [CUDA routing](cuda_routing.md) for compiler requirements, installation,
+status checks, and measured performance.
+
 ## Record the configuration
 
 At minimum, persist box size, particle and mesh shapes, all three dtypes,
 cosmology, seed/noise scheme, LPT order, the complete scale-factor schedule,
 device count, multi-GPU mode, and all capacity values. Store the PM++ commit and
-JAX version alongside them; static behavior is not recoverable from a final
+JAX version alongside them. Static behavior is not recoverable from a final
 density field alone.
 
 See the [configuration API](../api/core.rst) and the configuration

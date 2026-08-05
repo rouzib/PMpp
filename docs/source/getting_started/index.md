@@ -1,8 +1,8 @@
 # Getting Started
 
 This section takes you from an empty Python environment to a checked PM++
-density field. The simulation is intentionally small but uses exactly two GPUs
-so it follows the same distributed path as larger PM++ runs.
+density field using a multi-GPU simulation. Before installing PM++, make sure
+the machine has multiple compatible GPUs available.
 
 1. [Install PM++ and verify JAX](installation.md).
 2. [Run a first simulation](first_simulation.md).

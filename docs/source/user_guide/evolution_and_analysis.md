@@ -1,5 +1,10 @@
 # Evolution and analysis
 
+This section follows a simulation after its initial particle state has been
+created. It shows how to evolve the particles, construct density and projected
+maps, collect forward diagnostics, and compute power spectra or
+cross-correlations.
+
 ## Evolve particles
 
 `nbody` advances an LPT particle state over `conf.a_nbody`:
@@ -28,7 +33,7 @@ conf = Configuration(
     ptcl_grid_shape=(n,) * 3,
     mesh_shape=1,
     multigpu=MultiGPUConfiguration(
-        compute_mesh=create_compute_mesh(gpu_devices[:2]),
+        compute_mesh=create_compute_mesh(gpu_devices),
         mode="mesh_halo",
     ),
     max_ptcl_per_slice=32_768,
@@ -56,7 +61,7 @@ assert bool(jnp.isfinite(density).all())
 ```
 
 `reverse=False` follows the scale-factor schedule from `a_start` to `a_stop`.
-`reverse=True` traverses it in reverse; it is not a substitute for the custom
+`reverse=True` traverses it in reverse. It is not a substitute for the custom
 reverse-mode adjoint used by `jax.grad`.
 
 ## Particle and density products
@@ -105,7 +110,7 @@ final_particles, images = observe(particles)
 `nbody_observe` stacks `observer(a, particles, cosmo, conf)` once per integration
 boundary. `nbody_collect` instead updates a caller-provided PyTree with a pure
 function of the previous state and current step. Both are forward-only
-diagnostic interfaces; use `nbody` when differentiating the simulation.
+diagnostic interfaces. Use `nbody` when differentiating the simulation.
 
 Large per-step images can dominate memory. Prefer a collector when only a
 running statistic or selected outputs are required.
@@ -122,7 +127,7 @@ k2, pk2, nmodes2 = analyze_particles(final_particles)
 ```
 
 The `mas` argument describes the mass-assignment scheme and controls Fourier
-window deconvolution; it must match how the field was constructed. Use `None`
+window deconvolution. It must match how the field was constructed. Use `None`
 to disable deconvolution. PM++ also provides density/particle cross-correlation
 functions that return $r(k)$, the cross spectrum, both auto spectra, and mode
 counts.

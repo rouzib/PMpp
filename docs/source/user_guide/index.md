@@ -1,14 +1,17 @@
 # User Guide
 
-The user guide explains the scientific and runtime choices that define a PM++
+The user guide explains the runtime choices that define a PM++
 experiment. Start with configuration and initial conditions, then add evolution,
 analysis, gradients, or multiple devices as needed.
 
-The examples use exactly two GPUs, which is the smallest topology that exercises
-PM++'s distributed ownership, communication, and FFT paths.
+The examples run on multiple GPUs and exercise PM++'s distributed ownership,
+communication, and FFT paths.
 
 - [Configuration](configuration.md): geometry, units, precision, schedules,
   compilation, and static capacities.
+- [Precision, reproducibility, and gradients](precision_reproducibility.md):
+  float32 atomic variation, float64 guidance, deterministic execution, and
+  adjoint validation.
 - [Initial conditions](initial_conditions.md): Gaussian, phase-only, and nested
   noise; transfer functions; and LPT.
 - [Evolution and analysis](evolution_and_analysis.md): N-body runs, observers,
@@ -34,6 +37,7 @@ pre-executed examples.
 :hidden:
 
 configuration
+precision_reproducibility
 initial_conditions
 evolution_and_analysis
 differentiation

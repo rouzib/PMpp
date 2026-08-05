@@ -1,3 +1,10 @@
+```{image} _static/pmpp-logo.svg
+:alt: PM++ logo
+:width: 360px
+:align: center
+:class: pmpp-landing-logo
+```
+
 # PM++ documentation
 
 PM++ is a differentiable particle-mesh cosmology simulator built with JAX. It
@@ -6,16 +13,11 @@ perturbation theory (LPT), N-body evolution, density fields, summary statistics,
 and gradients. Its distributed runtime scales the same model across a
 one-dimensional mesh of accelerators.
 
-```{important}
-For real single-GPU science, use upstream
-[PMWD](https://github.com/eelregit/pmwd): with matched inputs and numerical
-settings, it should produce the same scientific output within the validated
-tolerance. A one-device PM++ mesh is for troubleshooting only.
-```
-
-```{warning}
-PM++ is research software. Record the package revision, complete configuration,
-random seed, JAX version, and hardware with scientific results.
+```{note}
+PM++ is designed primarily for multi-accelerator simulations. For single-GPU
+work, [PMWD](https://github.com/eelregit/pmwd) is a closely related alternative.
+With matched inputs and numerical settings, the two should agree within
+validated tolerances.
 ```
 
 ::::{grid} 1 2 2 3
@@ -41,8 +43,7 @@ adjoints used by PM++.
 :link: notebooks/index
 :link-type: doc
 
-Study pre-executed, reproducible examples without requiring Read the Docs to
-provide GPUs.
+Study reproducible examples pre-executed on multiple GPUs.
 :::
 
 ::::
@@ -55,7 +56,6 @@ provide GPUs.
   initial conditions, schedules, analysis products, and gradient targets.
 - **Method developer:** read [How PM++ works](internals/index.md), then consult
   the [API reference](api/index.rst).
-- **Contributor:** begin with [development and reference](development/index.md).
 
 ```{toctree}
 :maxdepth: 4

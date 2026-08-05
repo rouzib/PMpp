@@ -105,7 +105,9 @@ html_logo = "_static/pmpp-logo.svg"
 html_favicon = "_static/pmpp-logo.png"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
-html_js_files = [("mermaid-pan-zoom.js", {"defer": "defer"})]
+html_js_files = [
+    ("mermaid-pan-zoom.js", {"defer": "defer"}),
+]
 html_sidebars = {
     # The PyData theme's stock sidebar starts below the current top-level
     # section.  PM++ uses a persistent master tree instead so readers can move
@@ -134,8 +136,20 @@ html_show_sourcelink = True
 html_last_updated_fmt = "%Y-%m-%d"
 
 # Sphinx defaults to a MathJax CDN. Keep equation rendering available in local
-# and offline builds by shipping the matching MathJax 3 component and fonts.
+# and offline builds by shipping the matching MathJax 3 component, fonts, and
+# any auto-loaded TeX extensions used by the documentation.
 mathjax_path = "vendor/mathjax/tex-mml-chtml.js"
+mathjax3_config = {
+    "options": {
+        # Sphinx marks the document section as ``mathjax_ignore`` and relies on
+        # nested ``math`` classes to opt equations back in.  The vendored
+        # MathJax component does not reliably cross that ignored ancestor, so
+        # let it scan the document normally.  MathJax still skips code, pre,
+        # script, style, textarea, and other protected elements by default.
+        "ignoreHtmlClass": "mathjax_ignore_disabled",
+        "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area",
+    },
+}
 
 # sphinxcontrib-mermaid 2.x expects an ES module with a default export.  The
 # tiny local adapter wraps the vendored self-contained Mermaid browser bundle,

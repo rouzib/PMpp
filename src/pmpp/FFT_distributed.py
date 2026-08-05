@@ -56,22 +56,29 @@ def split_array_for_gpus(array: np.ndarray, num_gpus: int, axis: int = 1) -> Arr
 
 def distribute_array_on_gpus_old(array: np.ndarray, compute_mesh: Mesh, partition: P,
                                  axis_name: str = "gpus") -> jnp.ndarray:
-    """
-    Distributes the given array across multiple GPUs for computation. The distribution follows a partition configuration
-    and an axis along which the array should be split for distribution.
-ea
-    Args:
-    array (np.ndarray): The input array to be distributed.
-    compute_mesh (Mesh): The compute mesh that defines the layout of GPUs.
-    partition (P): The partition configuration for distributing the array.
-    axis_name (str): The axis along which the array needs to be split for distribution. Defaults to "gpus".
+    """Distribute an array with the original host-splitting implementation.
 
-    Returns:
-    jnp.ndarray: A Jax array distributed across multiple GPUs.
+    Parameters
+    ----------
+    array : numpy.ndarray
+        Input host array.
+    compute_mesh : Mesh
+        Device mesh that receives the array chunks.
+    partition : PartitionSpec
+        Partition specification containing ``axis_name``.
+    axis_name : str, optional
+        Mesh axis along which the array is split.
 
-    Note:
-    The function 'split_array_for_gpus' is used to split the array equally for each GPU before distributing. Ensure that
-    the number of GPUs evenly divides the dimension corresponding to `axis_name` of `array` which is governed by the 'partition' configuration.
+    Returns
+    -------
+    jax.Array
+        Array distributed across ``compute_mesh``.
+
+    Notes
+    -----
+    This compatibility helper predates
+    :func:`distribute_array_on_gpus`. The selected array dimension must divide
+    evenly across the devices.
     """
     # Get the number of GPUs
     num_gpus = len(compute_mesh.devices)
@@ -774,31 +781,31 @@ def create_ffts(
 
 def test_functions(distributed_func_jit: Callable, reference_func: Callable, array: np.ndarray, mesh: Mesh) -> Tuple[
     bool, float, float]:
-    """
-    Tests the accuracy and computational performance of two functions. It does this by comparing the output of
-    a distributed function (that's been Just-in-Time compiled) provided as "distributed_func_jit" and a reference function.
-    It reports whether the outputs of both functions are close (within a certain tolerance), the maximum absolute difference
-    in their outputs, and the value at which the maximum absolute difference occurs in the reference function output.
+    """Compare a distributed FFT helper with a reference implementation.
 
-    Args:
-        distributed_func_jit (Callable): A function that distributes its computations across multiple devices and has
-            been Just-In-Time compiled. This is the function being tested.
-        reference_func (Callable): A reference function that is used to compare the accuracy and performance of the
-            distributed function.
-        array (np.ndarray): The input numpy array that both functions will use to compute their outputs.
-        mesh (Mesh) : The compute mesh that defines the layout of devices for distributed computation.
+    Parameters
+    ----------
+    distributed_func_jit : callable
+        Compiled distributed function under test.
+    reference_func : callable
+        Reference function evaluated on the host input.
+    array : numpy.ndarray
+        Input supplied to both functions.
+    mesh : Mesh
+        Device mesh used by the distributed function.
 
-    Returns:
-        tuple: A tuple containing the following elements:
-            - all_close (bool): A boolean indicating if the outputs of both functions are close within a relative tolerance of
-                1.e-2 and absolute tolerance of 1.e-4.
-            - max_diff (float): The maximum absolute difference in the outputs of both functions.
-            - max_diff_value_ref_func (float): The value in the output of the reference function at which the maximum absolute
-                difference occurs.
+    Returns
+    -------
+    all_close : bool
+        Whether the outputs satisfy the comparison tolerances.
+    max_diff : float
+        Maximum absolute difference.
+    max_diff_value_ref : float
+        Reference value at the location of the maximum difference.
 
-    Note:
-        If the maximum absolute difference is non-zero, also prints the maximum relative difference and the corresponding value
-        in the output of the reference function.
+    Notes
+    -----
+    The helper prints additional absolute and relative error diagnostics.
     """
     print(f"\nTests for function: {reference_func.__name__}.\n")
     array_distributed = distribute_array_on_gpus(array, mesh, P(None, "gpus", None))

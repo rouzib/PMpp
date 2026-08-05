@@ -16,6 +16,19 @@ Regeneration and validation helpers are maintained locally by project
 developers and are not distributed as part of the repository.
 ```
 
+## Open the notebooks locally
+
+After installing PM++ and Jupyter, clone the repository and open the gallery:
+
+```bash
+git clone https://github.com/rouzib/PMpp.git
+cd PMpp
+jupyter lab docs/source/notebooks
+```
+
+The checkout supplies the notebook sources. The notebooks import the PM++
+package installed in the active environment.
+
 ::::{grid} 1 1 2 2
 :gutter: 3
 

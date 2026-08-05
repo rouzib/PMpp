@@ -93,6 +93,7 @@ def main() -> int:
             str(build_dir),
             "-DCMAKE_BUILD_TYPE=Release",
             f"-DPython3_EXECUTABLE={args.python}",
+            f"-DCMAKE_CUDA_ARCHITECTURES={args.cuda_architectures}",
             f"-DPMPP_CUDA_ARCHITECTURES={args.cuda_architectures}",
         ],
         check=True,

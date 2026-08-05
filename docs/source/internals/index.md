@@ -1,39 +1,54 @@
 # How PM++ Works
 
-These pages connect the mathematical model to the active implementation in
-`src/pmpp`. They explain mechanisms and design trade-offs; private helper names
-are not a stability promise.
+This section describes the algorithm implemented in `src/pmpp`, from the
+cosmological parameters and random modes to a differentiable, distributed
+particle-mesh simulation. It develops the equations together with the array
+layouts and discrete operators that evaluate them.
 
-- [System architecture](architecture.md): the end-to-end dataflow and the
-  separation between scientific state and static runtime metadata.
-- [Initial modes and LPT](initial_conditions.md): Gaussian modes, transfer and
-  growth, exact nested low-frequency matching, and particle initialization.
-- [Particle-mesh force](particle_mesh.md): CIC scatter/gather, Poisson solve,
-  spectral differentiation, shapes, and adjoints.
-- [Integration and discrete adjoint](integration_and_adjoint.md): the symplectic
-  step, observers, and reverse-time custom VJP.
-- [Distributed runtime](distributed_runtime.md): slabs, ownership migration,
-  mesh halos, transposed FFT layouts, and static buffers.
-- [Optional CUDA routing](cuda_routing.md): typed GPU FFI pack/merge kernels,
-  JAX-managed collectives, and the CUDA adjoint transpose boundary.
+The chapters follow the forward simulation and then its reverse pass:
 
-The inherited simulation and adjoint mathematics follow
+1. [System architecture](architecture.md) defines the state, units, JAX
+   program structure, and end-to-end dataflow.
+2. [Initial modes and LPT](initial_conditions.md) constructs the transfer and
+   growth tables, Gaussian density modes, and first- or second-order particle
+   initial conditions.
+3. [Particle-mesh force](particle_mesh.md) derives CIC assignment, the
+   periodic Poisson solve, spectral forces, the Pallas kernels, and their
+   transposes.
+4. [Distributed runtime](distributed_runtime.md) explains slab ownership,
+   mesh halos, particle migration, distributed real FFTs, and static-capacity
+   invariants.
+5. [Integration and discrete adjoint](integration_and_adjoint.md) derives the
+   growth-matched drift and kick factors and the reverse-time custom VJP.
+6. [Optional CUDA routing](cuda_routing.md) documents the typed FFI boundary,
+   route records, stable merge, and route transpose.
+
+The underlying PM and discrete-adjoint formulation follows
 [Li et al., *Differentiable Cosmological Simulation with the Adjoint Method*,
-arXiv:2211.09815v2](https://arxiv.org/abs/2211.09815v2). PM++ extends that
-foundation with the distributed data structures and communication paths
-described here. The paper is linked rather than copied into the documentation.
+arXiv:2211.09815v2](https://arxiv.org/abs/2211.09815v2). PM++ keeps those
+mathematical operators while adding distributed particle ownership, mesh-halo
+communication, distributed FFT layouts, and optional local CUDA routing.
 
-## Diagram legend
+## Conventions
 
-All diagrams read left to right. Green nodes are scientific state, amber nodes
-are numerical operators, indigo nodes are cross-device layout/communication,
-and red nodes are validation or loss products. A textual equivalent follows
-every diagram for accessibility and non-JavaScript builds.
+The simulation is periodic. Bold lower-case symbols denote vectors, hats
+denote Fourier coefficients, and a prime denotes differentiation with respect
+to $\ln a$. The discrete Fourier transforms use JAX's default normalization:
+the forward transform is unnormalized and the inverse transform carries
+$1/N_\mathrm{mesh}$.
 
-Every Mermaid diagram is interactive: drag to pan, use the mouse wheel or
-trackpad to zoom, use the arrow keys to pan while the diagram is focused, and
-press `+`, `-`, or `0` to zoom in, zoom out, or reset. The visible controls and
-fullscreen viewer provide the same actions.
+PM++ separates three kinds of quantities:
+
+- **physical state**, such as cosmological parameters, particle displacement,
+  velocity, and acceleration
+- **discrete representation**, such as mesh indices, Fourier layouts, masks,
+  and padded particle slots
+- **static program structure**, such as shapes, the device mesh, capacities,
+  and selected kernels.
+
+Keeping these distinctions explicit is important. A mathematical field may be
+unchanged while its sharding changes, and a particle may change owner while
+its physical trajectory remains continuous.
 
 ```{toctree}
 :maxdepth: 1
@@ -42,7 +57,7 @@ fullscreen viewer provide the same actions.
 architecture
 initial_conditions
 particle_mesh
-integration_and_adjoint
 distributed_runtime
+integration_and_adjoint
 cuda_routing
 ```

@@ -1,88 +1,269 @@
 # Particle-mesh force
 
-## Purpose
-
-The PM force maps particle positions to acceleration with two uses of the same
-CIC stencil around a spectral Poisson solve. Time dependence is separated into
-the kick/drift factors, so the gravity kernel computes the scaled spatial force.
-
-## Force solve
+The force operator maps particle displacement to particle acceleration through
+a mesh. It uses cloud-in-cell assignment twice: scatter deposits normalized
+particle mass, while gather interpolates the force field back to the same
+particle positions.
 
 ```{mermaid}
 flowchart LR
-  classDef state fill:#E8F5E9,stroke:#2E7D32,color:#111;
-  classDef op fill:#FFF3CD,stroke:#B7791F,color:#111;
-  classDef comm fill:#E8EAFB,stroke:#3949AB,color:#111;
-  classDef check fill:#FCE8E6,stroke:#C62828,color:#111;
-  A["Particle positions"]:::state --> B["CIC scatter"]:::op --> C["Overdensity source"]:::state --> D["Distributed rFFT"]:::comm --> E["Poisson + spectral gradient"]:::op --> F["Inverse FFT force mesh"]:::comm --> G["CIC gather acceleration"]:::state
+  A["Authoritative particles"] --> B["CIC scatter"]
+  B --> C["Density contrast"]
+  C --> D["Real FFT"]
+  D --> E["Poisson solve"]
+  E --> F["Three spectral derivatives"]
+  F --> G["Inverse real FFT"]
+  G --> H["CIC gather"]
+  H --> I["Particle acceleration"]
 ```
 
-**Text equivalent:** particles deposit normalized mass with CIC; subtracting
-one gives overdensity; a distributed rFFT, Poisson kernel, spectral derivative,
-and inverse FFT create force meshes; CIC interpolates them to particles.
+## Cloud-in-cell stencil
 
-## Equations
-
-For grid cell $g$, particle $p$, and CIC weight $W_{gp}$,
+Let $\ell_m$ be the mesh-cell size. For a particle at $\mathbf x_p$ and a mesh
+vertex at $\mathbf x_g$, define the periodic, cell-normalized separation
 
 $$
-\rho_g=\frac{N_\mathrm{mesh\ cells}}{N_\mathrm{particles}}
-\sum_p W_{gp}(\mathbf x_p),\qquad
+u_{gp,i}=\frac{x_{p,i}-x_{g,i}}{\ell_m}.
+$$
+
+The three-dimensional CIC weight is
+
+$$
+W_{gp}=\prod_{i=1}^{3}\max(1-|u_{gp,i}|,0).
+$$
+
+Only the two adjacent vertices on each axis have nonzero weight, so a particle
+touches $2^3=8$ mesh vertices. Within a stencil cell,
+
+$$
+\frac{\partial W_{gp}}{\partial x_{p,i}}
+=-\frac{\operatorname{sign}(u_{gp,i})}{\ell_m}
+\prod_{j\ne i}(1-|u_{gp,j}|).
+$$
+
+At an exact vertex the implemented sign is zero. The piecewise-linear map is
+continuous, while its derivative is defined by this selected subgradient at
+the knot.
+
+`enmesh` computes the eight indices, the weights, and the weight derivatives.
+Offsets allow the same routine to address a local slab whose physical origin
+is not zero. All index construction is periodic before local bounds are
+applied.
+
+## Scatter and density normalization
+
+For a particle value $v_p$ and an optional input mesh $M_g^\mathrm{in}$,
+scatter computes
+
+$$
+M_g=M_g^\mathrm{in}+\sum_p v_pW_{gp}.
+$$
+
+The gravity path uses the scalar value
+
+$$
+v_p=\frac{N_m}{N_p},
+$$
+
+where $N_m$ is the number of mesh cells and $N_p$ is the number of physical
+particles. Since the CIC weights for each valid particle sum to one, the
+result has mean one:
+
+$$
+\rho_g=\frac{N_m}{N_p}\sum_pW_{gp},
+\qquad
+\frac1{N_m}\sum_g\rho_g=1.
+$$
+
+The mesh density contrast is therefore
+
+$$
 \delta_g=\rho_g-1.
 $$
 
-The uncorrected solver forms $S=\tfrac32\Omega_m\delta$ and solves
+Padding and inactive particle slots have zero value and make no contribution.
+
+## Periodic Poisson solve
+
+PM++ stores the time-independent scaled potential
 
 $$
-\hat\phi(\mathbf k)=-\frac{\hat S(\mathbf k)}{k^2},
-\qquad \hat\phi(\mathbf 0)=0,
+\varphi=a\phi,
 $$
 
-then applies the negative spectral gradient,
+which satisfies
 
 $$
-\hat a_i(\mathbf k)=-i k_i\hat\phi(\mathbf k),\qquad
-a_{p,i}=\sum_g W_{gp}(\mathbf x_p)a_{g,i}.
+\nabla^2\varphi
+=\frac32\Omega_mH_0^2\delta.
 $$
 
-Nyquist derivatives are zeroed to preserve the Hermitian structure required by
-the inverse rFFT. Optional correction objects may replace the continuum
-$k^2$ symbol or alter the potential; they are part of the scientific model.
+With the default internal time unit, the numerical $H_0^2$ factor is one. The
+gravity code therefore forms
 
-## Shapes and units
+$$
+S_g=\frac32\Omega_m\delta_g.
+$$
 
-- normalized density/source: global real shape `mesh_shape`, mean density one;
-- rFFT potential: global $(N_x,N_y,N_z/2+1)$ in the natural transposed spectral
-  sharding on multiple devices;
-- force meshes: three real fields of global `mesh_shape`;
-- particle acceleration: padded logical shape $(N_\mathrm{slots},3)$ in PM++'s
-  scaled acceleration convention.
+For every nonzero Fourier mode,
+
+$$
+\widehat\varphi(\mathbf k)
+=-\frac{\widehat S(\mathbf k)}{k^2},
+\qquad
+k^2=k_x^2+k_y^2+k_z^2.
+$$
+
+The zero mode is explicitly zero. This fixes the arbitrary additive constant
+in the potential and avoids division by zero. The Poisson operator is real,
+diagonal, and self-adjoint under the discrete inner product. Its custom VJP is
+therefore the same Poisson solve applied to the potential cotangent.
+
+## Spectral force
+
+The stored acceleration is
+
+$$
+\mathbf a=-\nabla\varphi.
+$$
+
+Each Fourier component is
+
+$$
+\widehat a_i(\mathbf k)
+=-ik_i\widehat\varphi(\mathbf k).
+$$
+
+On an even grid, a Nyquist mode is its own negative. A first derivative at
+that frequency cannot simultaneously retain the ordinary $ik$ value and the
+Hermitian symmetry needed for a real inverse transform. PM++ sets the
+corresponding derivative component to zero.
+
+When the force mesh is finer than the particle lattice, the density spectrum
+also contains modes above the particle Nyquist limit. PM++ applies the
+separable mask
+
+$$
+|k_i|\leq\frac{\pi}{\ell_p}
+\quad\text{for every axis }i
+$$
+
+before the Poisson solve. The separable representation avoids constructing a
+second dense three-dimensional mask and is compatible with the sharded
+spectral layout.
+
+The three force components are transformed back to real space. A batched
+inverse-transform path keeps the component axis unsharded, then a stacked CIC
+gather interpolates all three components in one particle pass when the active
+distributed layout supports it.
+
+## Gather
+
+For any mesh field $F_g$, gather computes
+
+$$
+f_p=\sum_gW_{gp}F_g.
+$$
+
+Using the same stencil for deposition and interpolation gives a matched PM
+pair. It also makes the discrete transposes particularly direct.
+
+For gather output cotangent $\bar f_p$,
+
+$$
+\bar F_g\mathrel{+}=W_{gp}\bar f_p,
+$$
+
+$$
+\bar x_{p,i}\mathrel{+}=
+\bar f_p\sum_gF_g
+\frac{\partial W_{gp}}{\partial x_{p,i}}.
+$$
+
+The first equation is a scatter. The second contracts the mesh values with the
+derivative of the interpolation stencil.
+
+For scatter output cotangent $\bar M_g$,
+
+$$
+\bar v_p=\sum_gW_{gp}\bar M_g,
+$$
+
+$$
+\bar x_{p,i}\mathrel{+}=
+v_p\sum_g\bar M_g
+\frac{\partial W_{gp}}{\partial x_{p,i}}.
+$$
+
+The displacement derivative returned by the implementation divides the
+normalized coordinate derivative by the actual mesh-cell size, as required by
+the chain rule.
+
+## Reference JAX kernels
+
+The reference CIC implementation materializes the eight neighbors for a chunk
+of particles, then uses indexed JAX gather or scatter operations. `lax.scan`
+can process multiple fixed-size chunks, which bounds the size of intermediate
+arrays without changing the operator.
+
+Custom VJPs implement the equations above directly. This avoids asking JAX to
+differentiate through index construction and makes the intended derivative at
+CIC knots explicit.
+
+## Pallas CIC kernels
+
+When the selected dtype and JAX backend satisfy the Pallas kernel contract,
+PM++ can evaluate the same CIC maps with tiled Pallas kernels. A program tile
+handles up to 128 particle lanes. The final partial tile is padded, and a
+validity mask prevents padded lanes from loading a mesh value, issuing an
+atomic update, or writing a gradient.
+
+The coordinate helper statically unrolls the eight neighbors. Gather performs
+eight masked loads per particle and accumulates the weighted result. Scatter
+uses atomic additions because multiple particles can contribute to one mesh
+cell.
+
+The backward kernels are also explicit:
+
+- gather backward atomically scatters value cotangents to the mesh and writes
+  one displacement cotangent per particle
+- scatter backward gathers the mesh cotangent to particle values and writes
+  the displacement cotangent
+- a scalar scatter value uses a tile reduction followed by a scalar atomic
+  addition for its cotangent.
+
+The Pallas and reference paths share the same positions, weights, masking,
+periodicity, output shapes, and VJP contract. Kernel selection does not change
+the PM equations.
+
+## Mesh-halo form of CIC
+
+In `mesh_halo` mode, every device stores authoritative particles for one
+x-slab and an owned mesh slab. CIC support can cross a slab boundary, so local
+scatter and gather use a mesh with one edge cell from each neighbor.
+
+For scatter:
+
+1. allocate a zero local mesh with left and right halo cells
+2. deposit all authoritative local particles into it
+3. send the halo-cell contributions to the device that owns those cells
+4. add the received values to the owned edge cells.
+
+For gather:
+
+1. copy owned edge cells to the neighboring mesh halos
+2. gather locally from the extended mesh.
+
+The copy used by gather and the reduction used by scatter are transposes. Their
+custom VJPs apply the opposite operation, so the distributed CIC derivative is
+the transpose of the complete distributed forward map.
 
 ## Implementation anchors
 
-`src/pmpp/scatter.py` and `src/pmpp/gather.py` implement CIC and their custom
-VJPs. `src/pmpp/gravity.py` normalizes density, applies the particle-Nyquist
-filter when particle and mesh grids differ, solves Poisson, differentiates, and
-gathers. Distributed transforms come from `src/pmpp/FFT_distributed.py`.
-
-The gather transpose is scatter-like on mesh cotangents; the scatter transpose
-also differentiates the CIC weights with respect to particle displacement. In
-`mesh_halo` mode, those VJPs include the transpose of edge exchange/reduction.
-
-## Design trade-offs
-
-- CIC is compact and differentiable but suppresses mesh-scale power; spectrum
-  estimators must state/deconvolve the assignment window deliberately.
-- Spectral Poisson/gradient operators are accurate and simple on a periodic
-  mesh but require global transposes in distributed execution.
-- A finer force mesh can resolve more modes but increases FFT memory/traffic;
-  modes beyond the particle Nyquist limit are filtered.
-- Correction models can improve a calibrated target while adding FFTs, memory,
-  parameters, and generalization risk.
-
-## Validation
-
-Check mean density and total normalized mass, the zero mode, serial/distributed
-FFT parity on small meshes, translation/periodicity, and focused scatter,
-gather, and gravity gradients. A force test is not complete until the selected
-runtime mode and halo boundaries are included.
+- `enmesh.py`: periodic neighbor indices, CIC weights, and weight derivatives
+- `scatter.py`: reference and distributed scatter plus custom VJPs
+- `gather.py`: reference, stacked, and distributed gather plus custom VJPs
+- `pallas_cic.py`: tiled forward and backward CIC kernels
+- `gravity.py`: density normalization, Nyquist filtering, Poisson solve,
+  spectral differentiation, inverse transforms, and force gather
+- `mesh_halo.py`: edge copy and edge reduction

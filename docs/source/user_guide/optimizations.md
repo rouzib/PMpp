@@ -1,30 +1,31 @@
 # Optimizations
 
-PM++ keeps one canonical mesh-halo routing implementation: packed migration
-collectives, sparse canonical merge, and fused multi-channel force gather.
-Those implementation choices are not user switches because the alternatives
-were slower, consumed more memory, or could not differentiate.
-
-The remaining settings are deliberately few. The recommendations below come
-from a fresh-process `512^3`, 63-step, float32 benchmark on four H100 80 GiB
-GPUs (five steady-state samples; no capacity warnings). They are useful
-defaults, not a substitute for measuring a different topology or resolution.
+PM++ keeps one optimized implementation for its core multi-GPU path. It is the
+best implementation tested, providing the fastest execution and the lowest
+memory use.
 
 ## Recommended configurations
 
 For a full forward simulation, use:
 
 ```python
+import jax
+
 from pmpp.configuration import Configuration
 from pmpp.multigpu_configuration import MultiGPUConfiguration
+from pmpp.utils import create_compute_mesh
+
+gpu_devices = jax.devices("gpu")
+n = 64
 
 conf = Configuration(
-    ptcl_spacing,
-    ptcl_grid_shape,
+    ptcl_spacing=1.0,
+    ptcl_grid_shape=(n, n, n),
     mesh_shape=1,
     multigpu=MultiGPUConfiguration(
-        compute_mesh=compute_mesh,
+        compute_mesh=create_compute_mesh(gpu_devices),
         mode="mesh_halo",
+        cuda_routing=True,
     ),
     pallas_cic=True,
     lpt_cache_strains=True,
@@ -32,64 +33,27 @@ conf = Configuration(
 )
 ```
 
-For a full AD run, use the same configuration. In particular, keep
+For a full AD run, use the same configuration. Keep
 `nbody_cosmo_grad=True` whenever derivatives with respect to cosmological
 parameters are part of the objective. Set it to `False` only for an explicitly
-displacement-only objective; in the benchmark it did not provide a meaningful
-full-AD gain.
+displacement-only objective.
 
-Omitting `cuda_routing` selects it automatically: a qualified CUDA FFI build
-is used when available, while missing or incompatible CUDA support falls back
-to the portable JAX router. Set `cuda_routing=False` only for diagnosis or a
-controlled comparison. See [CUDA routing](cuda_routing.md) for the optional
-build and qualification details.
+```{note}
+CUDA routing is much faster and should be used whenever the compiled extension
+is available. Set `cuda_routing=True`. PM++ uses the portable JAX router if the
+extension or runtime is unavailable. See [CUDA routing](cuda_routing.md) for
+installation and status checks.
+```
 
-## Measured result
+## Optimization flags
 
-| Setting | Full forward | Full AD | Peak memory per GPU (forward / AD) |
-| --- | ---: | ---: | ---: |
-| Portable canonical path | 4.792 s | 28.955 s | 6.076 / 11.613 GiB |
-| CUDA routing | 4.707 s | 22.005 s | 6.076 / 11.613 GiB |
-| CUDA routing + Pallas CIC | 4.644 s | 21.938 s | 6.301 / 11.567 GiB |
+| Flag | Accepted values | Guidance |
+| --- | --- | --- |
+| `MultiGPUConfiguration.mode` | `"mesh_halo"`, `"particle_halo"`, or `None` | Use `"mesh_halo"`. `"particle_halo"` enables the compatibility path. `None` uses the legacy `Configuration.multigpu_mode` value. |
+| `MultiGPUConfiguration.cuda_routing` | `True`, `False`, or `None` | Use `True` when the compiled extension is available. `False` or `None` uses the portable JAX router. An unavailable requested extension also falls back to JAX. |
+| `Configuration.pallas_cic` | `True` or `False` | `True` selects Pallas CIC and is the default. Unsupported configurations fall back to reference JAX CIC. `False` selects the reference implementation explicitly. |
+| `Configuration.lpt_cache_strains` | `True` or `False` | `True` caches LPT strain arrays and is the default. `False` recomputes them to reduce retained memory. |
+| `Configuration.nbody_cosmo_grad` | `True` or `False` | `True` includes cosmology cotangents and is the default. `False` omits them for objectives that need only particle or mode gradients. |
+| `Configuration.chunk_size` | Any positive integer | Controls the JAX fallback chunk size. The default is `2**24`. |
 
-The Pallas-CIC configuration was the fastest measured full forward and was
-statistically tied for the fastest full AD. Its forward memory cost was about
-0.225 GiB per GPU relative to the portable baseline; the AD peak was slightly
-lower. The current implementation masks and internally pads an incomplete
-final tile only as needed for correctness; this is not a user setting. See
-[Pallas CIC kernels](pallas_cic.md) for its runtime requirements.
-
-## Remaining flags
-
-- `MultiGPUConfiguration.mode="mesh_halo"` is the preferred distributed path.
-  It keeps only authoritative particles on each slab and exchanges mesh halos.
-- `MultiGPUConfiguration.cuda_routing` enables the optional CUDA FFI
-  route-pack/merge implementation. It gives the large AD reduction above when
-  qualified and otherwise automatically falls back.
-- `Configuration.pallas_cic` selects Pallas for both CIC gather and scatter.
-  It is `True` by default. On unsupported dtype, backend, or JAX versions, PM++
-  warns before JIT and uses reference JAX CIC instead.
-- `Configuration.lpt_cache_strains=True` avoids redundant LPT FFT work at the
-  cost of retaining strain arrays. The benchmark found no meaningful full-run
-  runtime difference, so choose it according to whether the additional retained
-  arrays fit your memory budget.
-- `Configuration.nbody_cosmo_grad=True` retains complete cosmology cotangents.
-  This is required for a full scientific AD result.
-- `Configuration.chunk_size` controls the ordinary JAX scatter/gather chunk
-  size used by the portable fallback. The default `2**24` was adequate in the
-  benchmark; altering it did not improve the tested full pipeline.
-
-## Removed choices
-
-The following are intentionally not configuration options:
-
-- compact particle merge: slower forward and AD and much higher AD memory;
-- chunked migration exchange: no forward benefit and its dynamic loop cannot
-  be reverse-mode differentiated;
-- unpacked mesh-halo exchange: no material speed benefit and higher memory;
-- separate Pallas gather and scatter controls: using both is the useful path;
-- non-fused mesh gather: no speed benefit and substantially higher AD memory.
-
-Any result with a capacity overflow warning is invalid. Increase the named
-capacity and rerun before treating timing, memory, density, or gradients as a
-comparison.
+See [Pallas CIC kernels](pallas_cic.md) for the CIC backend requirements.

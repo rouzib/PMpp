@@ -41,6 +41,8 @@ Forward evolution
 
 .. autofunction:: pmpp.nbody_observers.density_projection_observer
 
+.. autofunction:: pmpp.nbody_observers.nbody_kappa
+
 Particle--mesh operators
 ------------------------
 

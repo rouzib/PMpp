@@ -31,9 +31,8 @@ local x slab. Recreate the configuration after changing visible devices.
 Check inside the allocation: scheduler GPU resources, loaded CUDA module,
 driver/JAX compatibility, and `CUDA_VISIBLE_DEVICES`. Print `jax.devices()` at
 job start. A login-node device check does not describe the compute node. On
-Narval or another managed cluster, keep current module/account/path commands in
-a site-specific private runbook rather than hard-coding them in portable PM++
-examples.
+managed clusters, keep site-specific module, account, and path commands out of
+portable PM++ examples.
 
 ## Unexpected recompilation
 
@@ -77,14 +76,8 @@ the mismatch before the full N-body test.
 
 ## Cosmology gradient through `boltzmann` is NaN
 
-The same tested worktree produced NaN cosmology cotangents when reverse mode
-included transfer/growth table construction in `boltzmann`. Cache those tables,
-differentiate the N-body sensitivity separately, and verify it with a directional
-finite difference. Do not report that narrower check as an end-to-end gradient
-through Boltzmann initialization.
-
-## A notebook shows stale behavior
-
-Restart the kernel after code changes and rerun all cells in a clean temporary
-copy. The documentation renders committed outputs and never executes notebooks
-on Read the Docs, so provenance metadata and a clean execution are essential.
+NaN cosmology cotangents can occur when reverse mode includes transfer and
+growth table construction in `boltzmann`. Cache those tables, differentiate the
+N-body sensitivity separately, and verify it with a directional finite
+difference. Do not report that narrower check as an end-to-end gradient through
+Boltzmann initialization.

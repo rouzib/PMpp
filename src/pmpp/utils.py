@@ -73,7 +73,7 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
         https://flax.readthedocs.io/en/latest/flax.struct.html
 
     .. _JAX Issue #2371:
-        https://github.com/google/jax/issues/2371
+        https://github.com/jax-ml/jax/issues/2371
 
     """
     if dataclasses.is_dataclass(cls):

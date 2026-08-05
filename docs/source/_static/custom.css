@@ -181,6 +181,10 @@ html[data-theme="dark"] .pmpp-mermaid-controls button {
   margin-top: 2.5rem;
 }
 
+.pmpp-landing-logo {
+  background: transparent !important;
+}
+
 .ethical-rtd,
 .ethical-sidebar,
 .ethical-footer,

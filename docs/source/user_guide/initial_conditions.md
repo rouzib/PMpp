@@ -25,7 +25,7 @@ conf = Configuration(
     ptcl_grid_shape=(n,) * 3,
     mesh_shape=1,
     multigpu=MultiGPUConfiguration(
-        compute_mesh=create_compute_mesh(gpu_devices[:2]),
+        compute_mesh=create_compute_mesh(gpu_devices),
         mode="mesh_halo",
     ),
     max_ptcl_per_slice=32_768,
@@ -117,8 +117,7 @@ fit; record changes such as `transfer_fit_nowiggle` as part of the model.
 `lpt(modes, cosmo, conf)` constructs a uniform particle grid and adds the
 configured perturbative displacement and canonical velocity at `a_start`.
 Order 1 is the Zel'dovich approximation and order 2 adds the quadratic tidal
-source. Order 0 leaves the grid unperturbed. Order 3 is not implemented and
-raises at runtime.
+source. Order 0 leaves the grid unperturbed.
 
 On a device mesh, LPT returns particles already routed into the runtime's
 authoritative ownership layout. Capacity errors during this stage invalidate
