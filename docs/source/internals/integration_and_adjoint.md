@@ -311,18 +311,6 @@ stored particle state independent of the number of time steps. More steps
 increase reverse computation, but do not require a tape containing every
 particle state.
 
-## Why the adjoint is discrete
-
-The derivative target is the numerical map actually evaluated by PM++,
-including its finite time steps, CIC assignment, Fourier conventions, particle
-routing, and halo communication. Applying the transpose of each discrete map
-keeps the gradient on that exact discrete trajectory.
-
-This differs from deriving a continuous adjoint ODE and discretizing it
-separately. A separately discretized reverse equation can follow a different
-trajectory. PM++ instead follows the discretize-then-differentiate approach
-described by [Li et al.](https://arxiv.org/abs/2211.09815v2).
-
 ## Implementation anchors
 
 - `steps.py`: growth-matched factors, drift, force, kick, reconstruction, and

@@ -111,8 +111,8 @@ physical particle count is therefore not inferred from the allocated shape.
 
 ## Cosmology as differentiable data
 
-`Cosmology` holds the parameters that may receive gradients. For a CPL dark
-energy model,
+`Cosmology` holds the parameters that may receive gradients. For a
+Chevallier-Polarski-Linder (CPL) dark-energy model,
 
 $$
 E^2(a)=\frac{H^2(a)}{H_0^2}

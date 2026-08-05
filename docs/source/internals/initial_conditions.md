@@ -244,13 +244,6 @@ Finally, the LPT output passes through the same ownership map as an N-body
 drift. The custom VJP attached to this step applies the transpose of that route
 when gradients flow back to the LPT fields.
 
-## Supported scope
-
-The active implementation supports LPT orders 0, 1, and 2. Order 0 returns the
-unperturbed particle lattice. First- and second-order initial conditions use
-the equations above. Higher-order source terms are not part of the current
-implementation.
-
 ## Implementation anchors
 
 - `cosmo.py`: $E^2(a)$, $d\ln H/d\ln a$, and differentiable parameters
