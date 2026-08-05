@@ -276,6 +276,7 @@ def evaluate_phase_space_residual(
     drift_scale,
     local_pair=None,
     context=None,
+    reduction_backend="separate",
 ):
     """Evaluate bounded displacement and velocity residuals without applying them."""
     if correction is None:
@@ -297,6 +298,20 @@ def evaluate_phase_space_residual(
         head_context,
     )
     disp_bound = jnp.asarray(correction.max_displacement_cells * conf.ptcl_spacing, dtype=ptcl.disp.dtype)
+    if reduction_backend == "fused":
+        return evaluate_phase_space_residual_fused(
+            correction,
+            a,
+            ptcl,
+            cosmo,
+            conf,
+            drift_scale,
+            local_pair=local_pair,
+            context=context,
+        )
+    if reduction_backend != "separate":
+        raise ValueError("reduction_backend must be 'separate' or 'fused'")
+
     disp_delta = _mean_free_bounded_vectors(
         raw_disp,
         ptcl,
@@ -314,6 +329,60 @@ def evaluate_phase_space_residual(
         correction.mean_free,
     )
     return disp_delta, vel_delta
+
+
+def evaluate_phase_space_residual_fused(
+    correction,
+    a,
+    ptcl,
+    cosmo,
+    conf,
+    drift_scale,
+    local_pair=None,
+    context=None,
+):
+    """Evaluate both phase-space heads with one stacked reduction.
+
+    The separate helper remains available for regression comparisons.  This
+    candidate shares the authoritative count, mean, and peak-norm reduction for
+    displacement and velocity while preserving the exact mean-free and bound
+    semantics.
+    """
+    if correction is None:
+        zeros = jnp.zeros_like(ptcl.disp)
+        return zeros, zeros
+    if not isinstance(correction, BoundedPhaseSpaceCorrection):
+        raise TypeError("phase_space must be a BoundedPhaseSpaceCorrection.")
+    head_context = local_pair if context is None else context
+    raw_disp, raw_vel = correction.apply_fn(
+        correction.params, a, ptcl, cosmo, conf, head_context
+    )
+    raw = jnp.stack([jnp.asarray(raw_disp, dtype=ptcl.disp.dtype), jnp.asarray(raw_vel, dtype=ptcl.disp.dtype)], axis=0)
+    if raw.shape[1:] != ptcl.disp.shape:
+        raise ValueError("phase-space residual heads must match particle displacement shape")
+    active, authoritative = _particle_masks(ptcl)
+    vectors = jnp.tanh(raw)
+    particle_axes = tuple(range(1, vectors.ndim - 1))
+    count = jnp.maximum(jnp.sum(authoritative.astype(vectors.dtype)), jnp.asarray(1, dtype=vectors.dtype))
+    if correction.mean_free:
+        mean = jnp.sum(vectors * authoritative.astype(vectors.dtype)[None, ..., None], axis=particle_axes) / count
+        mean_shape = (2,) + (1,) * (vectors.ndim - 2) + (vectors.shape[-1],)
+        vectors = vectors - mean.reshape(mean_shape)
+    norm_sq = jnp.sum(jnp.square(jnp.where(active[None, ..., None], vectors, 0)), axis=-1)
+    peak_sq = jnp.max(norm_sq, axis=tuple(range(1, norm_sq.ndim)), initial=jnp.asarray(0, dtype=norm_sq.dtype))
+    drift_scale = jnp.asarray(drift_scale, dtype=ptcl.disp.dtype)
+    tiny = jnp.asarray(jnp.finfo(ptcl.disp.dtype).tiny, dtype=ptcl.disp.dtype)
+    bounds = jnp.asarray(
+        [
+            correction.max_displacement_cells * conf.ptcl_spacing,
+            correction.max_velocity_cells * conf.ptcl_spacing / jnp.maximum(jnp.abs(drift_scale), tiny),
+        ],
+        dtype=vectors.dtype,
+    )
+    scale = jax.lax.rsqrt(jnp.maximum(peak_sq, jnp.asarray(1, dtype=peak_sq.dtype)))
+    output = vectors * scale.reshape((2,) + (1,) * (vectors.ndim - 2) + (1,)) * bounds.reshape((2,) + (1,) * (vectors.ndim - 2) + (1,))
+    output = jnp.where(active[None, ..., None], output, 0)
+    return output[0], output[1]
 
 
 def apply_phase_space_correction(

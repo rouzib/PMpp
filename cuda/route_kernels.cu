@@ -10,6 +10,7 @@
 #include <cub/cub.cuh>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -128,6 +129,123 @@ __global__ void WriteCountKernel(const uint32_t* block_counts,
   } else {
     int last = num_blocks - 1;
     count[0] = static_cast<int32_t>(block_offsets[last] + block_counts[last]);
+  }
+}
+
+// The bidirectional path classifies each authoritative slot exactly once.
+// Three block-count arrays are then scanned and consumed by one stable write
+// kernel, so the left/right payloads and compact stay descriptors all retain
+// authoritative input order.
+__global__ void ClassifyBidirKernel(
+    const float* x_mod, const uint8_t* valid, uint8_t* classes,
+    uint32_t* left_block_counts, uint32_t* right_block_counts,
+    uint32_t* stay_block_counts, int n, int global_nmesh,
+    const int32_t* owned_start_buffer, const int32_t* owned_end_buffer,
+    int slice_width, int num_devices) {
+  __shared__ uint32_t left_count;
+  __shared__ uint32_t right_count;
+  __shared__ uint32_t stay_count;
+  if (threadIdx.x == 0) {
+    left_count = 0;
+    right_count = 0;
+    stay_count = 0;
+  }
+  __syncthreads();
+
+  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  uint8_t result = 0;
+  if (row < n && valid[row] != 0) {
+    float x = fmodf(x_mod[row], static_cast<float>(global_nmesh));
+    if (x < 0.0f) x += static_cast<float>(global_nmesh);
+    const int owned_start = *owned_start_buffer;
+    const int owned_end = *owned_end_buffer;
+    int left_start = (owned_start - slice_width) % global_nmesh;
+    if (left_start < 0) left_start += global_nmesh;
+    int right_end = (owned_end + slice_width) % global_nmesh;
+    bool stay = InPeriodicInterval(x, owned_start, owned_end);
+    bool send_left = InPeriodicInterval(x, left_start, owned_start);
+    bool send_right = num_devices == 2
+                          ? false
+                          : InPeriodicInterval(x, owned_end, right_end);
+    if (stay) {
+      result = 1;
+      atomicAdd(&stay_count, 1u);
+    } else if (send_left) {
+      result = 2;
+      atomicAdd(&left_count, 1u);
+    } else if (send_right) {
+      result = 3;
+      atomicAdd(&right_count, 1u);
+    } else {
+      result = 4;
+    }
+  }
+  if (row < n) classes[row] = result;
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    left_block_counts[blockIdx.x] = left_count;
+    right_block_counts[blockIdx.x] = right_count;
+    stay_block_counts[blockIdx.x] = stay_count;
+  }
+}
+
+__device__ void WriteRouteRecord(const int32_t* pmid, const float* disp,
+                                 const float* vel, int row, int mesh_x,
+                                 int mesh_y, int mesh_z, uint32_t* records,
+                                 uint32_t output) {
+  uint32_t* record = records + output * kRecordWords;
+  record[0] = RaveledKeyWithX(pmid, row, mesh_x, mesh_y, mesh_z);
+  record[1] = 1u;
+  for (int component = 0; component < 3; ++component) {
+    record[2 + component] = __float_as_uint(disp[3 * row + component]);
+    record[5 + component] = __float_as_uint(vel[3 * row + component]);
+  }
+}
+
+__global__ void WriteBidirRecordsKernel(
+    const int32_t* pmid, const float* disp, const float* vel,
+    const uint8_t* classes, const uint32_t* left_offsets,
+    const uint32_t* right_offsets, const uint32_t* stay_offsets,
+    uint32_t* left_records, uint32_t* right_records, uint32_t* stay_keys,
+    int32_t* stay_indices, int n, int mesh_x, int mesh_y, int mesh_z,
+    int record_capacity, int stay_capacity) {
+  using BlockScan = cub::BlockScan<uint32_t, kThreads>;
+  __shared__ typename BlockScan::TempStorage left_scan_storage;
+  __shared__ typename BlockScan::TempStorage right_scan_storage;
+  __shared__ typename BlockScan::TempStorage stay_scan_storage;
+
+  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  uint32_t left_rank = 0;
+  uint32_t right_rank = 0;
+  uint32_t stay_rank = 0;
+  uint32_t block_total = 0;
+  uint32_t selected = row < n && classes[row] == 2 ? 1u : 0u;
+  BlockScan(left_scan_storage).ExclusiveSum(selected, left_rank, block_total);
+  selected = row < n && classes[row] == 3 ? 1u : 0u;
+  BlockScan(right_scan_storage).ExclusiveSum(selected, right_rank, block_total);
+  selected = row < n && classes[row] == 1 ? 1u : 0u;
+  BlockScan(stay_scan_storage).ExclusiveSum(selected, stay_rank, block_total);
+
+  if (row >= n) return;
+  uint8_t classification = classes[row];
+  if (classification == 2) {
+    uint32_t output = left_offsets[blockIdx.x] + left_rank;
+    if (output < static_cast<uint32_t>(record_capacity)) {
+      WriteRouteRecord(pmid, disp, vel, row, mesh_x, mesh_y, mesh_z,
+                       left_records, output);
+    }
+  } else if (classification == 3) {
+    uint32_t output = right_offsets[blockIdx.x] + right_rank;
+    if (output < static_cast<uint32_t>(record_capacity)) {
+      WriteRouteRecord(pmid, disp, vel, row, mesh_x, mesh_y, mesh_z,
+                       right_records, output);
+    }
+  } else if (classification == 1) {
+    uint32_t output = stay_offsets[blockIdx.x] + stay_rank;
+    if (output < static_cast<uint32_t>(stay_capacity)) {
+      stay_keys[output] = RaveledKeyWithX(pmid, row, mesh_x, mesh_y, mesh_z);
+      stay_indices[output] = row;
+    }
   }
 }
 
@@ -414,7 +532,10 @@ ffi::Error LaunchMerge(
     status = cudaMemsetAsync((*out_tag)->typed_data(), 0,
                              sizeof(uint8_t) * capacity, stream);
     if (status != cudaSuccess) return ffi::Error::Internal("route-merge tag clear failed");
-    status = cudaMemsetAsync((*out_index)->typed_data(), 0,
+    // Invalid/padded merge rows must carry a negative provenance index. The
+    // transpose kernel rejects negative indices; clearing to zero aliases
+    // every padded row onto valid compact-stay slot zero.
+    status = cudaMemsetAsync((*out_index)->typed_data(), 0xff,
                              sizeof(int32_t) * capacity, stream);
     if (status != cudaSuccess) return ffi::Error::Internal("route-merge index clear failed");
   }
@@ -430,6 +551,242 @@ ffi::Error LaunchMerge(
       Auxiliary ? (*out_index)->typed_data() : nullptr);
   if (cudaGetLastError() != cudaSuccess) return ffi::Error::Internal("route-merge kernel launch failed");
   return ffi::Error::Success();
+}
+
+__device__ uint32_t LowerBoundKeys(const uint32_t* keys, uint32_t count,
+                                   uint32_t key) {
+  uint32_t lo = 0;
+  uint32_t hi = count;
+  while (lo < hi) {
+    uint32_t mid = lo + (hi - lo) / 2;
+    if (keys[mid] < key) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+__device__ uint32_t UpperBoundKeys(const uint32_t* keys, uint32_t count,
+                                   uint32_t key) {
+  uint32_t lo = 0;
+  uint32_t hi = count;
+  while (lo < hi) {
+    uint32_t mid = lo + (hi - lo) / 2;
+    if (keys[mid] <= key) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+__device__ uint32_t RecordKeyAt(const uint32_t* records, uint32_t rank) {
+  return records[rank * kRecordWords];
+}
+
+// Route records are eight words wide.  The merge-path searches below must use
+// their first word (the raveled particle key), not consecutive payload words.
+// In particular, records[1] is a validity flag and records[2:8] are float
+// bit-patterns, none of which form a sorted key stream.
+__device__ uint32_t LowerBoundRecordKeys(const uint32_t* records,
+                                         uint32_t count, uint32_t key) {
+  uint32_t lo = 0;
+  uint32_t hi = count;
+  while (lo < hi) {
+    uint32_t mid = lo + (hi - lo) / 2;
+    if (RecordKeyAt(records, mid) < key) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+__device__ uint32_t UpperBoundRecordKeys(const uint32_t* records,
+                                         uint32_t count, uint32_t key) {
+  uint32_t lo = 0;
+  uint32_t hi = count;
+  while (lo < hi) {
+    uint32_t mid = lo + (hi - lo) / 2;
+    if (RecordKeyAt(records, mid) <= key) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+__device__ uint32_t StayPosition(const uint32_t* stay_keys, uint32_t stay_count,
+                                 const uint32_t* left_records,
+                                 uint32_t left_count,
+                                 const uint32_t* right_records,
+                                 uint32_t right_count, uint32_t rank) {
+  uint32_t key = stay_keys[rank];
+  return rank + LowerBoundRecordKeys(left_records, left_count, key) +
+         LowerBoundRecordKeys(right_records, right_count, key);
+}
+
+__device__ uint32_t LeftPosition(const uint32_t* stay_keys, uint32_t stay_count,
+                                const uint32_t* left_records,
+                                uint32_t left_count,
+                                const uint32_t* right_records,
+                                uint32_t right_count, uint32_t rank) {
+  uint32_t key = RecordKeyAt(left_records, rank);
+  return rank + UpperBoundKeys(stay_keys, stay_count, key) +
+         LowerBoundRecordKeys(right_records, right_count, key);
+}
+
+__device__ uint32_t RightPosition(const uint32_t* stay_keys, uint32_t stay_count,
+                                 const uint32_t* left_records,
+                                 uint32_t left_count,
+                                 const uint32_t* right_records,
+                                 uint32_t right_count, uint32_t rank) {
+  uint32_t key = RecordKeyAt(right_records, rank);
+  return rank + UpperBoundKeys(stay_keys, stay_count, key) +
+         UpperBoundRecordKeys(left_records, left_count, key);
+}
+
+// Each output thread computes the co-rank of its output diagonal in the three
+// sorted streams.  The strict/lower and non-strict/upper bounds encode the
+// canonical tie order stay < left < right without materializing a concatenated
+// candidate array.
+__global__ void MergePathBidirKernel(
+    const int32_t* pmid, const float* disp, const float* vel,
+    const uint32_t* stay_keys, const int32_t* stay_indices,
+    const uint32_t* left_records, const uint32_t* right_records,
+    const int32_t* stay_count_value, const int32_t* left_count_value,
+    const int32_t* right_count_value,
+    int mesh_x, int mesh_y, int mesh_z, int capacity, int32_t* out_pmid,
+    float* out_disp, float* out_vel, uint8_t* out_valid, uint8_t* out_tag,
+    int32_t* out_index, uint32_t* out_key) {
+  int output = blockIdx.x * blockDim.x + threadIdx.x;
+  if (output >= capacity) return;
+  int stay_signed = *stay_count_value;
+  int left_signed = *left_count_value;
+  int right_signed = *right_count_value;
+  uint32_t stay_count = stay_signed <= 0
+                            ? 0u
+                            : min(static_cast<uint32_t>(stay_signed),
+                                  static_cast<uint32_t>(capacity));
+  uint32_t left_count = left_signed <= 0
+                            ? 0u
+                            : min(static_cast<uint32_t>(left_signed),
+                                  static_cast<uint32_t>(capacity));
+  uint32_t right_count = right_signed <= 0
+                             ? 0u
+                             : min(static_cast<uint32_t>(right_signed),
+                                   static_cast<uint32_t>(capacity));
+  uint32_t total = stay_count + left_count + right_count;
+  if (static_cast<uint32_t>(output) >= total) return;
+
+  uint32_t source_rank = 0;
+  uint8_t source_tag = 0;
+  bool found = false;
+
+  // Find a stay source on the output diagonal.
+  uint32_t lo = 0;
+  uint32_t hi = stay_count;
+  while (lo < hi) {
+    uint32_t mid = lo + (hi - lo) / 2;
+    uint32_t position = StayPosition(
+        stay_keys, stay_count, left_records, left_count, right_records,
+        right_count, mid);
+    if (position < static_cast<uint32_t>(output)) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo < stay_count &&
+      StayPosition(stay_keys, stay_count, left_records, left_count,
+                   right_records, right_count, lo) ==
+          static_cast<uint32_t>(output)) {
+    source_rank = lo;
+    source_tag = 0;
+    found = true;
+  }
+
+  // If no stay source owns the diagonal, locate a left source.
+  if (!found) {
+    lo = 0;
+    hi = left_count;
+    while (lo < hi) {
+      uint32_t mid = lo + (hi - lo) / 2;
+      uint32_t position = LeftPosition(
+          stay_keys, stay_count, left_records, left_count, right_records,
+          right_count, mid);
+      if (position < static_cast<uint32_t>(output)) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo < left_count &&
+        LeftPosition(stay_keys, stay_count, left_records, left_count,
+                     right_records, right_count, lo) ==
+            static_cast<uint32_t>(output)) {
+      source_rank = lo;
+      source_tag = 1;
+      found = true;
+    }
+  }
+
+  // Remaining diagonals belong to the right stream.
+  if (!found) {
+    lo = 0;
+    hi = right_count;
+    while (lo < hi) {
+      uint32_t mid = lo + (hi - lo) / 2;
+      uint32_t position = RightPosition(
+          stay_keys, stay_count, left_records, left_count, right_records,
+          right_count, mid);
+      if (position < static_cast<uint32_t>(output)) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo >= right_count ||
+        RightPosition(stay_keys, stay_count, left_records, left_count,
+                      right_records, right_count, lo) !=
+            static_cast<uint32_t>(output)) {
+      return;
+    }
+    source_rank = lo;
+    source_tag = 2;
+  }
+
+  const uint32_t* record = nullptr;
+  uint32_t key = 0;
+  if (source_tag == 0) {
+    int source_row = stay_indices[source_rank];
+    if (source_row < 0) return;
+    key = stay_keys[source_rank];
+    out_pmid[3 * output + 0] = pmid[3 * source_row + 0];
+    out_pmid[3 * output + 1] = pmid[3 * source_row + 1];
+    out_pmid[3 * output + 2] = pmid[3 * source_row + 2];
+    for (int component = 0; component < 3; ++component) {
+      out_disp[3 * output + component] = disp[3 * source_row + component];
+      out_vel[3 * output + component] = vel[3 * source_row + component];
+    }
+    // The transpose path indexes the compact stay stream.  The original
+    // authoritative slot is carried by stay_indices and is used by the
+    // forward copy above; keep provenance indices in the existing compact
+    // stream convention used by pmpp_route_merge_aux.
+    out_index[output] = static_cast<int32_t>(source_rank);
+  } else {
+    record = source_tag == 1
+                 ? left_records + source_rank * kRecordWords
+                 : right_records + source_rank * kRecordWords;
+    key = record[0];
+    out_pmid[3 * output + 0] = static_cast<int32_t>(key / (mesh_y * mesh_z));
+    uint32_t yz = key % static_cast<uint32_t>(mesh_y * mesh_z);
+    out_pmid[3 * output + 1] = static_cast<int32_t>(yz / mesh_z);
+    out_pmid[3 * output + 2] = static_cast<int32_t>(yz % mesh_z);
+    for (int component = 0; component < 3; ++component) {
+      out_disp[3 * output + component] = __uint_as_float(record[2 + component]);
+      out_vel[3 * output + component] = __uint_as_float(record[5 + component]);
+    }
+    out_index[output] = static_cast<int32_t>(source_rank);
+  }
+  out_key[output] = key;
+  out_tag[output] = source_tag;
+  out_valid[output] = 1;
+}
+
+__global__ void WriteBidirCountKernel(const int32_t* stay_count,
+                                      const int32_t* left_count,
+                                      const int32_t* right_count,
+                                      int32_t* output) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) return;
+  int64_t total = static_cast<int64_t>(max(*stay_count, 0)) +
+                  static_cast<int64_t>(max(*left_count, 0)) +
+                  static_cast<int64_t>(max(*right_count, 0));
+  *output = static_cast<int32_t>(total);
 }
 
 __global__ void TransposeSplitKernel(const float* merged, const uint8_t* tags,
@@ -541,6 +898,190 @@ ffi::Error RoutePackImpl(
   WriteCountKernel<<<1, 1, 0, stream>>>(block_counts, block_offsets,
                                         count->typed_data(), num_blocks);
   if (cudaGetLastError() != cudaSuccess) return ffi::Error::Internal("route-pack count launch failed");
+  return ffi::Error::Success();
+}
+
+ffi::Error RouteBidirPackImpl(
+    cudaStream_t stream, ffi::ScratchAllocator scratch, int32_t global_nmesh,
+    int32_t mesh_x, int32_t mesh_y, int32_t mesh_z, int32_t slice_width,
+    int32_t num_devices, int32_t capacity, int32_t stay_capacity,
+    ffi::Buffer<ffi::S32> pmid,
+    ffi::Buffer<ffi::F32> disp, ffi::Buffer<ffi::F32> vel,
+    ffi::Buffer<ffi::U8> valid, ffi::Buffer<ffi::F32> x_mod,
+    ffi::Buffer<ffi::S32> owned_start,
+    ffi::Buffer<ffi::S32> owned_end,
+    ffi::ResultBuffer<ffi::U32> left_records,
+    ffi::ResultBuffer<ffi::U32> right_records,
+    ffi::ResultBuffer<ffi::S32> left_count,
+    ffi::ResultBuffer<ffi::S32> right_count,
+    ffi::ResultBuffer<ffi::U8> classes,
+    ffi::ResultBuffer<ffi::U32> stay_keys,
+    ffi::ResultBuffer<ffi::S32> stay_indices,
+    ffi::ResultBuffer<ffi::S32> stay_count) {
+  int n = static_cast<int>(pmid.element_count() / 3);
+  if (n <= 0 || global_nmesh <= 0 || capacity < 0 || stay_capacity < 0 ||
+      num_devices < 2) {
+    return ffi::Error::InvalidArgument("invalid bidirectional route-pack shape or topology");
+  }
+  int num_blocks = (n + kThreads - 1) / kThreads;
+  auto left_counts_mem = scratch.Allocate(sizeof(uint32_t) * num_blocks,
+                                          alignof(uint32_t));
+  auto right_counts_mem = scratch.Allocate(sizeof(uint32_t) * num_blocks,
+                                           alignof(uint32_t));
+  auto stay_counts_mem = scratch.Allocate(sizeof(uint32_t) * num_blocks,
+                                          alignof(uint32_t));
+  auto left_offsets_mem = scratch.Allocate(sizeof(uint32_t) * num_blocks,
+                                           alignof(uint32_t));
+  auto right_offsets_mem = scratch.Allocate(sizeof(uint32_t) * num_blocks,
+                                            alignof(uint32_t));
+  auto stay_offsets_mem = scratch.Allocate(sizeof(uint32_t) * num_blocks,
+                                           alignof(uint32_t));
+  if (!left_counts_mem || !right_counts_mem || !stay_counts_mem ||
+      !left_offsets_mem || !right_offsets_mem || !stay_offsets_mem) {
+    return ffi::Error::Internal("unable to allocate bidirectional route metadata");
+  }
+  auto* left_counts = static_cast<uint32_t*>(*left_counts_mem);
+  auto* right_counts = static_cast<uint32_t*>(*right_counts_mem);
+  auto* stay_counts = static_cast<uint32_t*>(*stay_counts_mem);
+  auto* left_offsets = static_cast<uint32_t*>(*left_offsets_mem);
+  auto* right_offsets = static_cast<uint32_t*>(*right_offsets_mem);
+  auto* stay_offsets = static_cast<uint32_t*>(*stay_offsets_mem);
+
+  dim3 blocks(num_blocks);
+  ClassifyBidirKernel<<<blocks, kThreads, 0, stream>>>(
+      x_mod.typed_data(), valid.typed_data(), classes->typed_data(),
+      left_counts, right_counts, stay_counts, n, global_nmesh,
+      owned_start.typed_data(), owned_end.typed_data(), slice_width,
+      num_devices);
+  if (cudaGetLastError() != cudaSuccess) {
+    return ffi::Error::Internal("bidirectional route classification launch failed");
+  }
+
+  size_t temp_bytes = 0;
+  cudaError_t status = cub::DeviceScan::ExclusiveSum(
+      nullptr, temp_bytes, left_counts, left_offsets, num_blocks, stream);
+  if (status != cudaSuccess) {
+    return ffi::Error::Internal("CUB bidirectional route scan query failed");
+  }
+  auto temp_mem = scratch.Allocate(temp_bytes, 1);
+  if (!temp_mem) {
+    return ffi::Error::Internal("unable to allocate CUB bidirectional route workspace");
+  }
+  auto scan = [&](const uint32_t* counts, uint32_t* offsets) -> cudaError_t {
+    return cub::DeviceScan::ExclusiveSum(
+        *temp_mem, temp_bytes, counts, offsets, num_blocks, stream);
+  };
+  status = scan(left_counts, left_offsets);
+  if (status != cudaSuccess) return ffi::Error::Internal("CUB left route scan failed");
+  status = scan(right_counts, right_offsets);
+  if (status != cudaSuccess) return ffi::Error::Internal("CUB right route scan failed");
+  status = scan(stay_counts, stay_offsets);
+  if (status != cudaSuccess) return ffi::Error::Internal("CUB stay route scan failed");
+
+  if (capacity > 0) {
+    status = cudaMemsetAsync(left_records->typed_data(), 0,
+                             sizeof(uint32_t) * capacity * kRecordWords, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("left route record clear failed");
+    status = cudaMemsetAsync(right_records->typed_data(), 0,
+                             sizeof(uint32_t) * capacity * kRecordWords, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("right route record clear failed");
+  }
+  if (stay_capacity > 0) {
+    status = cudaMemsetAsync(stay_keys->typed_data(), 0,
+                             sizeof(uint32_t) * stay_capacity, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("stay key clear failed");
+    status = cudaMemsetAsync(stay_indices->typed_data(), 0,
+                             sizeof(int32_t) * stay_capacity, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("stay index clear failed");
+  }
+  blocks = dim3(num_blocks);
+  WriteBidirRecordsKernel<<<blocks, kThreads, 0, stream>>>(
+      pmid.typed_data(), disp.typed_data(), vel.typed_data(),
+      classes->typed_data(), left_offsets, right_offsets, stay_offsets,
+      left_records->typed_data(), right_records->typed_data(),
+      stay_keys->typed_data(), stay_indices->typed_data(), n, mesh_x, mesh_y,
+      mesh_z, capacity, stay_capacity);
+  if (cudaGetLastError() != cudaSuccess) {
+    return ffi::Error::Internal("bidirectional route write launch failed");
+  }
+  WriteCountKernel<<<1, 1, 0, stream>>>(left_counts, left_offsets,
+                                        left_count->typed_data(), num_blocks);
+  WriteCountKernel<<<1, 1, 0, stream>>>(right_counts, right_offsets,
+                                        right_count->typed_data(), num_blocks);
+  WriteCountKernel<<<1, 1, 0, stream>>>(stay_counts, stay_offsets,
+                                        stay_count->typed_data(), num_blocks);
+  if (cudaGetLastError() != cudaSuccess) {
+    return ffi::Error::Internal("bidirectional route count launch failed");
+  }
+  return ffi::Error::Success();
+}
+
+ffi::Error RouteMergeBidirImpl(
+    cudaStream_t stream, int32_t mesh_x, int32_t mesh_y, int32_t mesh_z,
+    int32_t capacity, ffi::Buffer<ffi::S32> pmid,
+    ffi::Buffer<ffi::F32> disp, ffi::Buffer<ffi::F32> vel,
+    ffi::Buffer<ffi::U32> stay_keys, ffi::Buffer<ffi::S32> stay_indices,
+    ffi::Buffer<ffi::S32> stay_count,
+    ffi::Buffer<ffi::U32> left_records, ffi::Buffer<ffi::S32> left_count,
+    ffi::Buffer<ffi::U32> right_records, ffi::Buffer<ffi::S32> right_count,
+    ffi::ResultBuffer<ffi::S32> out_pmid,
+    ffi::ResultBuffer<ffi::F32> out_disp,
+    ffi::ResultBuffer<ffi::F32> out_vel,
+    ffi::ResultBuffer<ffi::U8> out_valid,
+    ffi::ResultBuffer<ffi::U8> out_tag,
+    ffi::ResultBuffer<ffi::S32> out_index,
+    ffi::ResultBuffer<ffi::U32> out_key,
+    ffi::ResultBuffer<ffi::S32> out_count) {
+  int n = static_cast<int>(pmid.element_count() / 3);
+  if (n <= 0 || capacity < 0 || mesh_x <= 0 || mesh_y <= 0 || mesh_z <= 0) {
+    return ffi::Error::InvalidArgument("invalid bidirectional route-merge shape");
+  }
+  cudaError_t status = cudaSuccess;
+  if (capacity > 0) {
+    status = cudaMemsetAsync(out_pmid->typed_data(), 0,
+                             sizeof(int32_t) * capacity * 3, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge pmid clear failed");
+    status = cudaMemsetAsync(out_disp->typed_data(), 0,
+                             sizeof(float) * capacity * 3, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge displacement clear failed");
+    status = cudaMemsetAsync(out_vel->typed_data(), 0,
+                             sizeof(float) * capacity * 3, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge velocity clear failed");
+    status = cudaMemsetAsync(out_valid->typed_data(), 0,
+                             sizeof(uint8_t) * capacity, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge validity clear failed");
+    status = cudaMemsetAsync(out_tag->typed_data(), 0,
+                             sizeof(uint8_t) * capacity, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge tag clear failed");
+    status = cudaMemsetAsync(out_index->typed_data(), 0xff,
+                             sizeof(int32_t) * capacity, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge index clear failed");
+    status = cudaMemsetAsync(out_key->typed_data(), 0,
+                             sizeof(uint32_t) * capacity, stream);
+    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge key clear failed");
+
+    // Counts are device scalars.  The kernel clamps them to the fixed-
+    // capacity payloads; the uncapped total is written separately below by a
+    // tiny kernel. Avoiding a host read keeps the FFI handler asynchronous.
+    dim3 blocks((capacity + kThreads - 1) / kThreads);
+    MergePathBidirKernel<<<blocks, kThreads, 0, stream>>>(
+        pmid.typed_data(), disp.typed_data(), vel.typed_data(),
+        stay_keys.typed_data(), stay_indices.typed_data(), left_records.typed_data(),
+        right_records.typed_data(), stay_count.typed_data(), left_count.typed_data(),
+        right_count.typed_data(), mesh_x, mesh_y, mesh_z, capacity,
+        out_pmid->typed_data(), out_disp->typed_data(), out_vel->typed_data(),
+        out_valid->typed_data(), out_tag->typed_data(), out_index->typed_data(),
+        out_key->typed_data());
+    if (cudaGetLastError() != cudaSuccess) {
+      return ffi::Error::Internal("bidir merge launch failed");
+    }
+  }
+  WriteBidirCountKernel<<<1, 1, 0, stream>>>(
+      stay_count.typed_data(), left_count.typed_data(), right_count.typed_data(),
+      out_count->typed_data());
+  if (cudaGetLastError() != cudaSuccess) {
+    return ffi::Error::Internal("bidir merge count launch failed");
+  }
   return ffi::Error::Success();
 }
 
@@ -674,6 +1215,35 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<ffi::Buffer<ffi::U8>>());
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    pmpp_route_bidir_pack, RouteBidirPackImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Ctx<ffi::ScratchAllocator>()
+        .Attr<int32_t>("global_nmesh")
+        .Attr<int32_t>("mesh_x")
+        .Attr<int32_t>("mesh_y")
+        .Attr<int32_t>("mesh_z")
+        .Attr<int32_t>("slice_width")
+        .Attr<int32_t>("num_devices")
+        .Attr<int32_t>("capacity")
+        .Attr<int32_t>("stay_capacity")
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::U8>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::U32>>()
+        .Ret<ffi::Buffer<ffi::U32>>()
+        .Ret<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::U8>>()
+        .Ret<ffi::Buffer<ffi::U32>>()
+        .Ret<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::S32>>());
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
     pmpp_route_merge, RouteMergeImpl,
     ffi::Ffi::Bind()
         .Ctx<ffi::PlatformStream<cudaStream_t>>()
@@ -713,6 +1283,33 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<ffi::Buffer<ffi::F32>>()
         .Ret<ffi::Buffer<ffi::U8>>()
         .Ret<ffi::Buffer<ffi::U8>>()
+        .Ret<ffi::Buffer<ffi::S32>>());
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    pmpp_route_merge_bidir, RouteMergeBidirImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Attr<int32_t>("mesh_x")
+        .Attr<int32_t>("mesh_y")
+        .Attr<int32_t>("mesh_z")
+        .Attr<int32_t>("capacity")
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::U32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::U32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::U32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::U8>>()
+        .Ret<ffi::Buffer<ffi::U8>>()
+        .Ret<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::U32>>()
         .Ret<ffi::Buffer<ffi::S32>>());
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(

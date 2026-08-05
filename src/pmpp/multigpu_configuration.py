@@ -146,7 +146,7 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
     requested_cuda_routing = (
         runtime_seed.cuda_routing
         if runtime_seed is not None and runtime_seed.cuda_routing is not None
-        else True
+        else False
     )
     # Qualification is evaluated once while the static configuration is being
     # built. A missing/incompatible optional library simply resolves to False;

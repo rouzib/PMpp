@@ -15,6 +15,7 @@ compact buffers by position instead of doing expensive per-step hash lookups.
 """
 
 from functools import partial
+import os
 
 import jax
 import jax.numpy as jnp
@@ -23,10 +24,26 @@ from jax.sharding import PartitionSpec as P
 
 from .utils import AXIS_NAME, pmid_to_idx, raise_error
 from .cuda_routing import enabled_for_configuration as cuda_routing_enabled
+from .cuda_routing import requested_backend as cuda_routing_backend
 from .cuda_routing import route_merge as cuda_route_merge
+from .cuda_routing import route_merge_bidir_cuda
 from .cuda_routing import route_pack as cuda_route_pack
+from .cuda_routing import route_pack_bidir_cuda
 from .cuda_routing import route_transpose_scatter as cuda_route_transpose_scatter
 from .cuda_routing import route_transpose_split as cuda_route_transpose_split
+
+
+# Debug-only oracle for the native bidirectional route. This is read at
+# import time so it remains a static JIT decision. It must never be enabled
+# for timing runs: it executes the canonical JAX route in addition to the FFI
+# route and emits one line per shard per move.
+_DEBUG_BIDIR_ROUTE = os.environ.get("PMPP_BIDIR_DEBUG_ROUTE", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+
+
+def _use_bidir_cuda_routing(conf):
+    return cuda_routing_enabled(conf) and cuda_routing_backend() == "bidir_mergepath"
 
 
 @jax.jit
@@ -1046,6 +1063,203 @@ def _canonical_route_authoritative_no_acc(
     max_particles_moved = jnp.maximum(jnp.sum(send_left[-1]), jnp.sum(send_right[-1]))
     return merged, max_particles_moved
 
+def _canonical_route_authoritative_no_acc_bidir_cuda(
+    keys,
+    pmid,
+    disp,
+    vel,
+    valid,
+    global_nMesh,
+    max_values_to_share,
+    left_perm,
+    right_perm,
+    num_gpus,
+    disp_size,
+    offsets,
+    conf,
+):
+    """Fused bidirectional CUDA route used by the full production pipeline."""
+    if not _DEBUG_BIDIR_ROUTE:
+        del keys
+    owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
+    mesh_shape = tuple(int(value) for value in conf.mesh_shape)
+    x_mod = _x_mod_from_disp(pmid, disp, global_nMesh, disp_size)
+    (
+        send_left_records,
+        send_right_records,
+        send_left_count,
+        send_right_count,
+        classes,
+        stay_keys,
+        stay_indices,
+        stay_count,
+    ) = route_pack_bidir_cuda(
+        pmid,
+        disp,
+        vel,
+        valid,
+        x_mod,
+        global_nmesh=global_nMesh,
+        mesh_shape=mesh_shape,
+        owned_start=owned_start,
+        owned_end=owned_end,
+        slice_width=global_nMesh // num_gpus,
+        num_devices=num_gpus,
+        capacity=max_values_to_share,
+        stay_capacity=pmid.shape[0],
+    )
+    _synchronized_nonzero_check(
+        jnp.sum(classes == 4),
+        "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
+        "particles_outside_neighbor_range={x}.",
+    )
+    _synchronized_capacity_check(
+        jnp.maximum(send_left_count, send_right_count),
+        max_values_to_share,
+        "[ERROR] Exceeded migration share capacity. "
+        "particles_to_share={x}, max_share_ptcl={y}.",
+    )
+    incoming_from_left = jax.lax.ppermute(
+        send_right_records, axis_name=AXIS_NAME, perm=right_perm
+    )
+    incoming_from_left_count = jax.lax.ppermute(
+        send_right_count, axis_name=AXIS_NAME, perm=right_perm
+    )
+    incoming_from_right = jax.lax.ppermute(
+        send_left_records, axis_name=AXIS_NAME, perm=left_perm
+    )
+    incoming_from_right_count = jax.lax.ppermute(
+        send_left_count, axis_name=AXIS_NAME, perm=left_perm
+    )
+    _synchronized_capacity_check(
+        stay_count + incoming_from_left_count + incoming_from_right_count,
+        pmid.shape[0],
+        "[ERROR] Exceeded canonical authoritative capacity after migration. "
+        "required_particles={x}, max_ptcl_per_slice={y}.",
+    )
+    (
+        merged_pmid,
+        merged_disp,
+        merged_vel,
+        merged_valid,
+        _merged_tag,
+        _merged_idx,
+        _merged_key,
+        _merged_count,
+    ) = route_merge_bidir_cuda(
+        pmid,
+        disp,
+        vel,
+        stay_keys,
+        stay_indices,
+        stay_count,
+        incoming_from_left,
+        incoming_from_left_count,
+        incoming_from_right,
+        incoming_from_right_count,
+        mesh_shape=mesh_shape,
+        capacity=pmid.shape[0],
+    )
+    merged_valid = merged_valid != 0
+    merged_keys = pmid_to_idx(merged_pmid, conf)
+    merged_keys = jnp.where(merged_valid, merged_keys, _key_fill_value(conf))
+    if _DEBUG_BIDIR_ROUTE:
+        left_start = (owned_start - global_nMesh // num_gpus) % global_nMesh
+        right_end = (owned_end + global_nMesh // num_gpus) % global_nMesh
+        expected_stay = valid & particles_in_slice_mask(x_mod, owned_start, owned_end)
+        expected_left = valid & particles_in_slice_mask(x_mod, left_start, owned_start)
+        expected_right = valid & particles_in_slice_mask(x_mod, owned_end, right_end)
+        if num_gpus == 2:
+            expected_right = jnp.zeros_like(expected_right)
+        expected_classes = jnp.where(
+            expected_stay,
+            jnp.uint8(1),
+            jnp.where(
+                expected_left,
+                jnp.uint8(2),
+                jnp.where(expected_right, jnp.uint8(3), jnp.where(valid, jnp.uint8(4), jnp.uint8(0))),
+            ),
+        )
+        # `_canonical_route_authoritative` is the established JAX reference;
+        # it deliberately does not dispatch to the CUDA implementation.
+        reference, _ = _canonical_route_authoritative(
+            keys,
+            pmid,
+            disp,
+            vel,
+            jnp.zeros_like(disp),
+            valid,
+            global_nMesh,
+            max_values_to_share,
+            left_perm,
+            right_perm,
+            num_gpus,
+            disp_size,
+            offsets,
+            conf,
+        )
+        reference_keys, reference_pmid, reference_disp, reference_vel, _, reference_valid = reference
+        active = merged_valid | reference_valid
+        row_mismatch = (
+            (merged_valid != reference_valid)
+            | (active & (merged_keys != reference_keys))
+            | (active & jnp.any(merged_pmid != reference_pmid, axis=1))
+            | (active & jnp.any(merged_disp != reference_disp, axis=1))
+            | (active & jnp.any(merged_vel != reference_vel, axis=1))
+        )
+        first_mismatch = jnp.min(
+            jnp.where(row_mismatch, jnp.arange(pmid.shape[0], dtype=jnp.int32), pmid.shape[0])
+        )
+        safe_first = jnp.minimum(first_mismatch, pmid.shape[0] - 1)
+        active_2d = active.reshape((-1, 1))
+        disp_max_error = jnp.max(
+            jnp.where(active_2d, jnp.abs(merged_disp - reference_disp), 0.0)
+        )
+        vel_max_error = jnp.max(
+            jnp.where(active_2d, jnp.abs(merged_vel - reference_vel), 0.0)
+        )
+        # Keep the oracle semantically live even when a JAX debug callback is
+        # not emitted by the surrounding custom-VJP lowering.  A native route
+        # must reproduce canonical validity, ordering, ids and payload bits
+        # exactly; tiny density agreement is not an adequate substitute.
+        _synchronized_nonzero_check(
+            jnp.sum(row_mismatch),
+            "[ERROR] Native bidirectional route disagrees with the canonical route. "
+            "mismatched_output_rows={x}.",
+        )
+        jax.debug.print(
+            "PM++ bidir route oracle gpu={gpu}: class_mismatch={class_mismatch}; "
+            "pack L/R/S native=({native_left},{native_right},{native_stay}) "
+            "expected=({expected_left},{expected_right},{expected_stay}); "
+            "merge valid native/reference=({native_valid},{reference_valid}); "
+            "row_mismatch={row_mismatch}; first={first}; key native/reference=({native_key},{reference_key}); "
+            "pmid native/reference=({native_pmid},{reference_pmid}); "
+            "max|disp|={disp_max}; max|vel|={vel_max}",
+            gpu=jax.lax.axis_index(AXIS_NAME),
+            class_mismatch=jnp.sum(classes != expected_classes),
+            native_left=send_left_count,
+            native_right=send_right_count,
+            native_stay=stay_count,
+            expected_left=jnp.sum(expected_left),
+            expected_right=jnp.sum(expected_right),
+            expected_stay=jnp.sum(expected_stay),
+            native_valid=jnp.sum(merged_valid),
+            reference_valid=jnp.sum(reference_valid),
+            row_mismatch=jnp.sum(row_mismatch),
+            first=first_mismatch,
+            native_key=merged_keys[safe_first],
+            reference_key=reference_keys[safe_first],
+            native_pmid=merged_pmid[safe_first],
+            reference_pmid=reference_pmid[safe_first],
+            disp_max=disp_max_error,
+            vel_max=vel_max_error,
+        )
+    return (
+        (merged_keys, merged_pmid.astype(pmid.dtype), merged_disp, merged_vel, merged_valid),
+        jnp.maximum(send_left_count, send_right_count),
+    )
+
+
 def _canonical_route_authoritative_no_acc_cuda(
     keys,
     pmid,
@@ -1068,6 +1282,11 @@ def _canonical_route_authoritative_no_acc_cuda(
     ordering remain visible in JAX, which keeps the operation compatible with
     XLA's collective scheduler and with the existing hand-written adjoint.
     """
+    if _use_bidir_cuda_routing(conf):
+        return _canonical_route_authoritative_no_acc_bidir_cuda(
+            keys, pmid, disp, vel, valid, global_nMesh, max_values_to_share,
+            left_perm, right_perm, num_gpus, disp_size, offsets, conf,
+        )
     del keys
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
     slice_width = global_nMesh // num_gpus
@@ -1208,6 +1427,137 @@ def _canonical_route_authoritative_no_acc_cuda(
     )
 
 
+def _canonical_route_authoritative_with_aux_bidir_cuda(
+    keys,
+    pmid,
+    disp,
+    vel,
+    acc,
+    valid,
+    global_nMesh,
+    max_values_to_share,
+    left_perm,
+    right_perm,
+    num_gpus,
+    disp_size,
+    offsets,
+    conf,
+):
+    """Fused bidirectional route and provenance plan for full AD."""
+    del keys
+    owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
+    mesh_shape = tuple(int(value) for value in conf.mesh_shape)
+    x_mod = _x_mod_from_disp(pmid, disp, global_nMesh, disp_size)
+    (
+        send_left_records,
+        send_right_records,
+        send_left_count,
+        send_right_count,
+        classes,
+        stay_keys,
+        stay_indices,
+        stay_count,
+    ) = route_pack_bidir_cuda(
+        pmid, disp, vel, valid, x_mod,
+        global_nmesh=global_nMesh, mesh_shape=mesh_shape,
+        owned_start=owned_start, owned_end=owned_end,
+        slice_width=global_nMesh // num_gpus, num_devices=num_gpus,
+        capacity=max_values_to_share,
+        stay_capacity=pmid.shape[0],
+    )
+    stay_mask = classes == 1
+    send_left_mask = classes == 2
+    send_right_mask = classes == 3
+    _synchronized_nonzero_check(
+        jnp.sum(classes == 4),
+        "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
+        "particles_outside_neighbor_range={x}.",
+    )
+    _synchronized_capacity_check(
+        jnp.maximum(send_left_count, send_right_count), max_values_to_share,
+        "[ERROR] Exceeded migration share capacity. particles_to_share={x}, max_share_ptcl={y}.",
+    )
+
+    auth_size = pmid.shape[0]
+    auth_slots = jnp.arange(auth_size, dtype=jnp.int32)
+    stay_pos = jnp.compress(
+        stay_mask, auth_slots, axis=0, size=auth_size,
+        fill_value=jnp.asarray(-1, dtype=jnp.int32),
+    )
+    stay_valid = jnp.arange(auth_size, dtype=jnp.int32) < stay_count
+    send_left_pos = jnp.compress(
+        send_left_mask, auth_slots, axis=0, size=max_values_to_share,
+        fill_value=jnp.asarray(-1, dtype=jnp.int32),
+    )
+    send_right_pos = jnp.compress(
+        send_right_mask, auth_slots, axis=0, size=max_values_to_share,
+        fill_value=jnp.asarray(-1, dtype=jnp.int32),
+    )
+    send_left_valid = jnp.arange(max_values_to_share, dtype=jnp.int32) < send_left_count
+    send_right_valid = jnp.arange(max_values_to_share, dtype=jnp.int32) < send_right_count
+
+    stay_acc = jnp.compress(
+        stay_mask, acc, axis=0, size=auth_size,
+        fill_value=jnp.asarray(0, dtype=acc.dtype),
+    )
+    send_left_acc = jnp.compress(
+        send_left_mask, acc, axis=0, size=max_values_to_share,
+        fill_value=jnp.asarray(0, dtype=acc.dtype),
+    )
+    send_right_acc = jnp.compress(
+        send_right_mask, acc, axis=0, size=max_values_to_share,
+        fill_value=jnp.asarray(0, dtype=acc.dtype),
+    )
+    incoming_from_left = jax.lax.ppermute(send_right_records, axis_name=AXIS_NAME, perm=right_perm)
+    incoming_from_left_count = jax.lax.ppermute(send_right_count, axis_name=AXIS_NAME, perm=right_perm)
+    incoming_from_left_acc = jax.lax.ppermute(send_right_acc, axis_name=AXIS_NAME, perm=right_perm)
+    incoming_from_right = jax.lax.ppermute(send_left_records, axis_name=AXIS_NAME, perm=left_perm)
+    incoming_from_right_count = jax.lax.ppermute(send_left_count, axis_name=AXIS_NAME, perm=left_perm)
+    incoming_from_right_acc = jax.lax.ppermute(send_left_acc, axis_name=AXIS_NAME, perm=left_perm)
+    _synchronized_capacity_check(
+        stay_count + incoming_from_left_count + incoming_from_right_count,
+        auth_size,
+        "[ERROR] Exceeded canonical authoritative capacity after migration. required_particles={x}, max_ptcl_per_slice={y}.",
+    )
+    (
+        merged_pmid, merged_disp, merged_vel, merged_valid,
+        merged_tag, merged_idx, _merged_key, _merged_count,
+    ) = route_merge_bidir_cuda(
+        pmid, disp, vel, stay_keys, stay_indices, stay_count,
+        incoming_from_left, incoming_from_left_count,
+        incoming_from_right, incoming_from_right_count,
+        mesh_shape=mesh_shape, capacity=auth_size,
+    )
+    merged_valid = merged_valid != 0
+    merged_idx = jnp.where(merged_valid, merged_idx, jnp.int32(-1))
+    safe_auth_idx = jnp.clip(merged_idx, 0, max(auth_size, 1) - 1)
+    safe_share_idx = jnp.clip(merged_idx, 0, max(max_values_to_share, 1) - 1)
+    zero_acc = jnp.zeros_like(acc)
+    merged_acc = jnp.where(
+        (merged_tag == 0).reshape((-1, 1)),
+        stay_acc[safe_auth_idx],
+        jnp.where(
+            (merged_tag == 1).reshape((-1, 1)),
+            incoming_from_left_acc[safe_share_idx],
+            jnp.where(
+                (merged_tag == 2).reshape((-1, 1)),
+                incoming_from_right_acc[safe_share_idx],
+                zero_acc[:auth_size],
+            ),
+        ),
+    )
+    merged_keys = pmid_to_idx(merged_pmid, conf)
+    merged_keys = jnp.where(merged_valid, merged_keys, _key_fill_value(conf))
+    route_aux = (
+        stay_pos, stay_valid, send_left_pos, send_left_valid,
+        send_right_pos, send_right_valid, merged_tag, merged_idx,
+    )
+    return (
+        merged_keys, merged_pmid.astype(pmid.dtype), merged_disp,
+        merged_vel, merged_acc, merged_valid,
+    ), route_aux
+
+
 def _canonical_route_authoritative_with_aux_cuda(
     keys,
     pmid,
@@ -1231,6 +1581,12 @@ def _canonical_route_authoritative_with_aux_cuda(
     separately here solely to preserve this helper's existing internal return
     contract; the FFI record remains the fixed 32-byte displacement/velocity
     record used by forward routing.
+
+    The experimental bidirectional merge-path kernel is deliberately not used
+    here. Its primal route is safe to use in the forward simulation, but its
+    three-stream provenance reconstruction has not qualified against the
+    production full gradient. The existing two-pass CUDA route below has the
+    established transpose contract and reconstructs the same canonical route.
     """
     del keys
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)

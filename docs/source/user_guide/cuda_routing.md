@@ -58,8 +58,10 @@ also looks in `cuda/build/` automatically, but setting
 `PMPP_CUDA_ROUTING_LIBRARY` is useful when the library is built elsewhere or
 when an installed package is used.
 
-Request automatic selection in the normal configuration by leaving
-`cuda_routing` unset (its default), or request it explicitly after building:
+CUDA routing is experimental and remains opt-in until its differentiated
+four-H100 qualification is complete. Leaving `cuda_routing` unset keeps the
+portable JAX route. Request it explicitly only after building and validating
+the matching artifact:
 
 ```python
 from pmpp.multigpu_configuration import MultiGPUConfiguration

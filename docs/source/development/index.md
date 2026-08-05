@@ -11,6 +11,8 @@ to reproduce validation or performance claims.
   policy.
 - [Benchmark methodology](benchmarking.md): full-pipeline versus focused timing,
   synchronization, capacities, and reporting.
+- [Experimental optimization backends](optimization_backends.md): opt-in
+  routing, CIC, local-pair, reduction, FFI, and four-H100 qualification rules.
 - [Release checklist](release_checklist.md): distribution and documentation
   gates.
 - [Glossary](../glossary.md), [citation](../citation.md),
@@ -27,6 +29,7 @@ testing
 contributing
 documentation
 benchmarking
+optimization_backends
 release_checklist
 ../glossary
 ../citation

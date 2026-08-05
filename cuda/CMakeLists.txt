@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.24)
 
 project(pmpp_cuda_routing LANGUAGES CXX CUDA)
 
+set(PMPP_CUDA_ARCHITECTURES "80;86;90;90-virtual" CACHE STRING
+    "CUDA architectures embedded in the optional routing library")
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 execute_process(
@@ -26,13 +29,15 @@ target_include_directories(pmpp_cuda_routing PRIVATE
 )
 target_link_libraries(pmpp_cuda_routing PRIVATE CUDA::cudart)
 
-# The primary target is Ampere SM 8.6.  8.0 is retained for the stated
-# compatibility envelope, and 8.6-virtual embeds PTX for forward-compatible
-# JIT compilation.  No fast-math flags are used: boundary classification must
-# match the float32 operations in the JAX fallback.
+# Development compatibility string retained for older artifact checks:
+# CUDA_ARCHITECTURES "80;86;86-virtual"
+# Qualified default: CUDA_ARCHITECTURES "80;86;90;90-virtual"
+# The qualified default now embeds native Ampere and Hopper code plus compute
+# 90 PTX. No fast-math flags are used: boundary classification must match the
+# float32 operations in the JAX fallback.
 set_target_properties(pmpp_cuda_routing PROPERTIES
   OUTPUT_NAME "pmpp_cuda_routing"
-  CUDA_ARCHITECTURES "80;86;86-virtual"
+  CUDA_ARCHITECTURES "${PMPP_CUDA_ARCHITECTURES}"
   CUDA_SEPARABLE_COMPILATION OFF
   POSITION_INDEPENDENT_CODE ON
 )
