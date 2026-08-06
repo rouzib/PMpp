@@ -54,7 +54,7 @@ docs = [
 ]
 dev = [
   "build",
-  "dm-haiku",
+  "dm-haiku>=0.0.17",
   "twine",
   "pytest",
   "hdf5plugin",
@@ -64,6 +64,13 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+filterwarnings = [
+  "error::DeprecationWarning",
+  "error::RuntimeWarning",
+  # Haiku 0.0.17 uses these deprecated aliases only for JAX < 0.10.  They are
+  # removed from Haiku's import path on JAX 0.10 and are not emitted by PM++.
+  'ignore:jax\.core\.(take_current_trace|set_current_trace) is deprecated\.:DeprecationWarning:haiku\._src\.dot',
+]
 markers = [
   "gpu: requires one visible GPU",
   "gpu2: requires two visible GPUs",
