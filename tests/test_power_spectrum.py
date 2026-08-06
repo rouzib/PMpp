@@ -1,6 +1,11 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
+
+# Pylians imports h5py before loading its HDF5 compression filters unless the
+# plugin is initialized first.  Other test modules may already have imported
+# h5py by the time this module is collected, so make the ordering explicit.
+import hdf5plugin  # noqa: F401
 import Pk_library as PKL
 import MAS_library as MASL
 

@@ -56,8 +56,19 @@ dev = [
   "build",
   "twine",
   "pytest",
+  "hdf5plugin",
   "Pylians",
   "yapf==0.43.0",
+]
+
+[tool.pytest.ini_options]
+markers = [
+  "gpu: requires one visible GPU",
+  "gpu2: requires two visible GPUs",
+  "logical4: validates four-device topology semantics",
+  "hopper: requires a Hopper GPU and native sm_90 artifact",
+  "gpu4: requires four H100 GPUs",
+  "slow: production-scale scientific test",
 ]
 
 [tool.yapf]
