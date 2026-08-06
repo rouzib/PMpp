@@ -123,10 +123,10 @@ def _tree_max_abs_diff(ref_tree, got_tree):
 
 
 def test_drift_matches_pmwd_for_forward_and_adjoint():
-    if GPU_COUNT < 1:
+    if GPU_COUNT < 2:
         if pytest is not None:
-            pytest.skip("drift gradient test requires at least 1 GPU")
-        raise SystemExit("drift gradient test requires at least 1 GPU")
+            pytest.skip("drift gradient test requires at least 2 GPUs")
+        raise SystemExit("drift gradient test requires at least 2 GPUs")
 
     conf, conf_pmwd, cosmo_pmpp, cosmo_pmwd, ptcl_pmpp, ptcl_pmwd, a_vel, a_prev, a_next = _build_crossing_state()
 
@@ -180,7 +180,7 @@ def test_drift_matches_pmwd_for_forward_and_adjoint():
 
 if pytest is not None:
     test_drift_matches_pmwd_for_forward_and_adjoint = pytest.mark.skipif(
-        GPU_COUNT < 1, reason="drift gradient test requires at least 1 GPU",
+        GPU_COUNT < 2, reason="drift gradient test requires at least 2 GPUs",
     )(test_drift_matches_pmwd_for_forward_and_adjoint)
 
 if __name__ == "__main__":

@@ -80,10 +80,10 @@ def _dens_pmpp(modes_real, base_cosmo, conf):
 
 
 def test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients():
-    if GPU_COUNT < 1:
+    if GPU_COUNT < 2:
         if pytest is not None:
-            pytest.skip("LPT gradient test requires at least 1 GPU")
-        raise SystemExit("LPT gradient test requires at least 1 GPU")
+            pytest.skip("LPT gradient test requires at least 2 GPUs")
+        raise SystemExit("LPT gradient test requires at least 2 GPUs")
 
     for lpt_order in (1, 2):
         conf_pmpp, conf_pmwd = _init_confs(lpt_order=lpt_order)
@@ -136,7 +136,7 @@ def test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients():
 
 if pytest is not None:
     test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients = pytest.mark.skipif(
-        GPU_COUNT < 1, reason="LPT gradient test requires at least 1 GPU",
+        GPU_COUNT < 2, reason="LPT gradient test requires at least 2 GPUs",
     )(test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients)
 
 if __name__ == "__main__":

@@ -15,10 +15,10 @@ def init_conf(
     ptcl_grid_shape = (num_ptcl, ) * 3
     ptcl_spacing = box_size / ptcl_grid_shape[0]
 
-    if num_devices:
-        num_devices = min(num_devices, len(jax.devices()))
-    else:
+    if num_devices is None:
         num_devices = len(jax.devices())
+    elif not 1 <= num_devices <= len(jax.devices()):
+        raise ValueError(f"Requested exactly {num_devices} devices, but only {len(jax.devices())} are available")
 
     compute_mesh = create_compute_mesh(jax.devices()[:num_devices])
     conf_mGPU = Configuration(

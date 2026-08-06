@@ -66,10 +66,10 @@ def _sum_duplicate_slot_gradients(grad_pmpp_slots, pid_slots, valid_slots, ptcl_
 
 
 def test_gravity_matches_pmwd_for_forward_and_gradients():
-    if GPU_COUNT < 1:
+    if GPU_COUNT < 2:
         if pytest is not None:
-            pytest.skip("gravity gradient test requires at least 1 GPU")
-        raise SystemExit("gravity gradient test requires at least 1 GPU")
+            pytest.skip("gravity gradient test requires at least 2 GPUs")
+        raise SystemExit("gravity gradient test requires at least 2 GPUs")
 
     conf = init_conf(
         num_ptcl=4, mesh_shape=1, box_size=100.0, num_devices=2, max_ptcl_per_slice=1.8, max_share_ptcl=20000,
@@ -122,7 +122,7 @@ def test_gravity_matches_pmwd_for_forward_and_gradients():
 
 if pytest is not None:
     test_gravity_matches_pmwd_for_forward_and_gradients = pytest.mark.skipif(
-        GPU_COUNT < 1, reason="gravity gradient test requires at least 1 GPU",
+        GPU_COUNT < 2, reason="gravity gradient test requires at least 2 GPUs",
     )(test_gravity_matches_pmwd_for_forward_and_gradients)
 
 if __name__ == "__main__":

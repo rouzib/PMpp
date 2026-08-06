@@ -46,7 +46,7 @@ except ImportError:
 
 GPU_COUNT = len([d for d in jax.devices() if d.platform == "gpu"])
 
-REQUIRE_2GPU = (pytest.mark.skipif(GPU_COUNT < 1, reason="requires at least 1 GPU") if pytest else lambda f: f)
+REQUIRE_2GPU = (pytest.mark.skipif(GPU_COUNT < 2, reason="requires at least 2 GPUs") if pytest else lambda f: f)
 
 # ═══════════════════════════ helpers ═══════════════════════════
 
@@ -126,8 +126,8 @@ def _check_fd(loss_fn, x, mask=None, eps=5e-4, rtol=1e-4, atol=1e-5, seed=42, fd
 def _base_setup(num_ptcl=8, seed=42):
     """2-GPU conf + cosmo + particles with small random perturbations."""
     conf = init_conf(
-        num_ptcl=num_ptcl, mesh_shape=1, box_size=100.0, num_devices=jax.device_count(), max_ptcl_per_slice=1.8,
-        max_share_ptcl=20000, max_share_gather_ptcl=50000,
+        num_ptcl=num_ptcl, mesh_shape=1, box_size=100.0, num_devices=2, max_ptcl_per_slice=1.8, max_share_ptcl=20000,
+        max_share_gather_ptcl=50000,
     )
     cosmo = SimpleLCDM(conf)
     cosmo = boltzmann(cosmo, conf)
@@ -168,13 +168,13 @@ def _base_setup_x64(num_ptcl=8):
 def _particle_fd_setup_x64(num_ptcl=4, seed=42):
     """Small float64 2-GPU setup for particle/mesh FD checks."""
     with enable_x64():
-        devices = [d for d in jax.devices() if d.platform == "gpu"]
-        compute_mesh = create_compute_mesh(devices)
+        gpu_devices = [d for d in jax.devices() if d.platform == "gpu"][:2]
+        compute_mesh = create_compute_mesh(gpu_devices)
         conf = Configuration(
             ptcl_spacing=100.0 / num_ptcl, ptcl_grid_shape=(num_ptcl, ) * 3, mesh_shape=1, compute_mesh=compute_mesh,
-            max_ptcl_per_slice=int(num_ptcl**3 / len(devices) * 3.0), max_share_ptcl=4000, max_share_gather_ptcl=4000,
-            to_save_z=[1, 2 / 3, 1 / 3, 0], a_start=1 / 60, a_nbody_maxstep=1 / 60, a_stop=1 / 30, pallas_cic=False,
-            float_dtype=jnp.float64, cosmo_dtype=jnp.float64,
+            max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * 3.0), max_share_ptcl=4000,
+            max_share_gather_ptcl=4000, to_save_z=[1, 2 / 3, 1 / 3, 0], a_start=1 / 60, a_nbody_maxstep=1 / 60,
+            a_stop=1 / 30, pallas_cic=False, float_dtype=jnp.float64, cosmo_dtype=jnp.float64,
         )
         cosmo = boltzmann(SimpleLCDM(conf), conf)
 
@@ -434,7 +434,7 @@ def test_fd_nbody_omega_m():
 
 def test_fd_E2():
     """E2(a) gradient w.r.t. scale factor."""
-    conf = init_conf(num_ptcl=4, mesh_shape=1, box_size=100.0)
+    conf = init_conf(num_ptcl=4, mesh_shape=1, box_size=100.0, num_devices=1)
     cosmo = SimpleLCDM(conf)
     a = jnp.asarray(0.5, dtype=conf.cosmo_dtype)
 
@@ -446,7 +446,7 @@ def test_fd_E2():
 
 def test_fd_growth():
     """Growth function gradient w.r.t. scale factor."""
-    conf = init_conf(num_ptcl=4, mesh_shape=1, box_size=100.0)
+    conf = init_conf(num_ptcl=4, mesh_shape=1, box_size=100.0, num_devices=1)
     cosmo = boltzmann(SimpleLCDM(conf), conf)
     a = jnp.asarray(0.5, dtype=conf.cosmo_dtype)
 
@@ -458,7 +458,7 @@ def test_fd_growth():
 
 def test_fd_linear_power_As():
     """Linear power spectrum gradient w.r.t. A_s_1e9."""
-    conf = init_conf(num_ptcl=4, mesh_shape=1, box_size=100.0)
+    conf = init_conf(num_ptcl=4, mesh_shape=1, box_size=100.0, num_devices=1)
     cosmo = boltzmann(SimpleLCDM(conf), conf)
     k = jnp.asarray(0.1, dtype=conf.cosmo_dtype)
 
@@ -470,7 +470,7 @@ def test_fd_linear_power_As():
 
 def test_fd_linear_power_ns():
     """Linear power spectrum gradient w.r.t. n_s."""
-    conf = init_conf(num_ptcl=4, mesh_shape=1, box_size=100.0)
+    conf = init_conf(num_ptcl=4, mesh_shape=1, box_size=100.0, num_devices=1)
     cosmo = boltzmann(SimpleLCDM(conf), conf)
     k = jnp.asarray(0.1, dtype=conf.cosmo_dtype)
 
@@ -482,7 +482,7 @@ def test_fd_linear_power_ns():
 
 def test_fd_linear_power_omega_m():
     """Linear power spectrum gradient w.r.t. Omega_m."""
-    conf = init_conf(num_ptcl=4, mesh_shape=1, box_size=100.0)
+    conf = init_conf(num_ptcl=4, mesh_shape=1, box_size=100.0, num_devices=1)
     cosmo = boltzmann(SimpleLCDM(conf), conf)
     k = jnp.asarray(0.1, dtype=conf.cosmo_dtype)
 

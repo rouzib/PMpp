@@ -65,10 +65,10 @@ def _sum_duplicate_slot_gradients(grad_pmpp_slots, pid_slots, valid_slots, ptcl_
 
 
 def test_scatter_gradient_matches_pmwd_for_unique_pmid_particles():
-    if GPU_COUNT < 1:
+    if GPU_COUNT < 2:
         if pytest is not None:
-            pytest.skip("scatter gradient test requires at least 1 GPU")
-        raise SystemExit("scatter gradient test requires at least 1 GPU")
+            pytest.skip("scatter gradient test requires at least 2 GPUs")
+        raise SystemExit("scatter gradient test requires at least 2 GPUs")
 
     conf = init_conf(
         num_ptcl=6, mesh_shape=1, box_size=100.0, num_devices=2, max_ptcl_per_slice=1.6, max_share_ptcl=20000,
@@ -121,7 +121,7 @@ def test_scatter_gradient_matches_pmwd_for_unique_pmid_particles():
 
 if pytest is not None:
     test_scatter_gradient_matches_pmwd_for_unique_pmid_particles = pytest.mark.skipif(
-        GPU_COUNT < 1, reason="scatter gradient test requires at least 1 GPU",
+        GPU_COUNT < 2, reason="scatter gradient test requires at least 2 GPUs",
     )(test_scatter_gradient_matches_pmwd_for_unique_pmid_particles)
 
 if __name__ == "__main__":

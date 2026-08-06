@@ -96,10 +96,10 @@ def _tree_max_abs_diff(ref_tree, got_tree):
 
 
 def test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp():
-    if GPU_COUNT < 1:
+    if GPU_COUNT < 2:
         if pytest is not None:
-            pytest.skip("kick gradient test requires at least 1 GPU")
-        raise SystemExit("kick gradient test requires at least 1 GPU")
+            pytest.skip("kick gradient test requires at least 2 GPUs")
+        raise SystemExit("kick gradient test requires at least 2 GPUs")
 
     conf, conf_pmwd, cosmo_pmpp, cosmo_pmwd, ptcl_pmpp, ptcl_pmwd = _build_state()
     first_slot = _first_slot_mapping(ptcl_pmwd, ptcl_pmpp, conf_pmwd, conf)
@@ -149,7 +149,7 @@ def test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp():
 
 if pytest is not None:
     test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp = pytest.mark.skipif(
-        GPU_COUNT < 1, reason="kick gradient test requires at least 1 GPU",
+        GPU_COUNT < 2, reason="kick gradient test requires at least 2 GPUs",
     )(test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp)
 
 if __name__ == "__main__":

@@ -86,10 +86,10 @@ def _build_pair():
 
 
 def test_mesh_halo_scatter_matches_pmwd():
-    if GPU_COUNT < 1:
+    if GPU_COUNT < 2:
         if pytest is not None:
-            pytest.skip("mesh-halo scatter test requires at least 1 GPU")
-        raise SystemExit("mesh-halo scatter test requires at least 1 GPU")
+            pytest.skip("mesh-halo scatter test requires at least 2 GPUs")
+        raise SystemExit("mesh-halo scatter test requires at least 2 GPUs")
 
     conf, conf_pmwd, ptcl_pmwd, ptcl_pmpp, pid_slots, valid_slots, _ = _build_pair()
 
@@ -110,10 +110,10 @@ def test_mesh_halo_scatter_matches_pmwd():
 
 
 def test_mesh_halo_gather_matches_pmwd():
-    if GPU_COUNT < 1:
+    if GPU_COUNT < 2:
         if pytest is not None:
-            pytest.skip("mesh-halo gather test requires at least 1 GPU")
-        raise SystemExit("mesh-halo gather test requires at least 1 GPU")
+            pytest.skip("mesh-halo gather test requires at least 2 GPUs")
+        raise SystemExit("mesh-halo gather test requires at least 2 GPUs")
 
     conf, conf_pmwd, ptcl_pmwd, ptcl_pmpp, pid_slots, valid_slots, first_slot = _build_pair()
     mesh = jax.random.normal(jax.random.PRNGKey(7), shape=conf.mesh_shape, dtype=conf.float_dtype)
@@ -150,10 +150,10 @@ def test_mesh_halo_gather_matches_pmwd():
 
 if pytest is not None:
     test_mesh_halo_scatter_matches_pmwd = pytest.mark.skipif(
-        GPU_COUNT < 1, reason="mesh-halo scatter test requires at least 1 GPU",
+        GPU_COUNT < 2, reason="mesh-halo scatter test requires at least 2 GPUs",
     )(test_mesh_halo_scatter_matches_pmwd)
     test_mesh_halo_gather_matches_pmwd = pytest.mark.skipif(
-        GPU_COUNT < 1, reason="mesh-halo gather test requires at least 1 GPU",
+        GPU_COUNT < 2, reason="mesh-halo gather test requires at least 2 GPUs",
     )(test_mesh_halo_gather_matches_pmwd)
 
 if __name__ == "__main__":

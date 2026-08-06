@@ -65,10 +65,10 @@ def _sum_duplicate_slot_gradients(grad_pmpp_slots, pid_slots, valid_slots, ptcl_
 
 
 def _check_gather_gradients_match_pmwd_on_unique_particles(particle_halo_gather_mesh_halo=False):
-    if GPU_COUNT < 1:
+    if GPU_COUNT < 2:
         if pytest is not None:
-            pytest.skip("gather gradient test requires at least 1 GPU")
-        raise SystemExit("gather gradient test requires at least 1 GPU")
+            pytest.skip("gather gradient test requires at least 2 GPUs")
+        raise SystemExit("gather gradient test requires at least 2 GPUs")
 
     conf = init_conf(
         num_ptcl=6, mesh_shape=1, box_size=100.0, num_devices=2, max_ptcl_per_slice=1.6, max_share_ptcl=20000,
@@ -136,10 +136,10 @@ def test_particle_halo_mesh_edge_gather_gradients_match_pmwd_on_unique_particles
 
 if pytest is not None:
     test_gather_gradients_match_pmwd_on_unique_particles = pytest.mark.skipif(
-        GPU_COUNT < 1, reason="gather gradient test requires at least 1 GPU",
+        GPU_COUNT < 2, reason="gather gradient test requires at least 2 GPUs",
     )(test_gather_gradients_match_pmwd_on_unique_particles)
     test_particle_halo_mesh_edge_gather_gradients_match_pmwd_on_unique_particles = pytest.mark.skipif(
-        GPU_COUNT < 1, reason="gather gradient test requires at least 1 GPU",
+        GPU_COUNT < 2, reason="gather gradient test requires at least 2 GPUs",
     )(test_particle_halo_mesh_edge_gather_gradients_match_pmwd_on_unique_particles)
 
 if __name__ == "__main__":
