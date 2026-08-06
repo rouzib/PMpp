@@ -39,9 +39,9 @@ therefore produce slightly different float32 sums on repeated executions.
 
 Important accumulation sites include:
 
-- CIC mesh painting in `src/pmpp/scatter.py`.
-- Particle-route cotangent accumulation in `src/pmpp/halo_moving.py`.
-- Force and gravity VJPs reached through `src/pmpp/steps.py`.
+- CIC mesh painting in `src/pmpp/cic/scatter.py`.
+- Particle-route cotangent accumulation in `src/pmpp/distributed/routing.py`.
+- Force and gravity VJPs reached through `src/pmpp/nbody/integrator.py`.
 
 This is not a GPU hardware fault. It is a performance trade-off of unordered
 parallel accumulation. OpenXLA's
@@ -70,7 +70,7 @@ jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
 
-from pmpp.configuration import Configuration
+from pmpp import Configuration
 
 conf = Configuration(
     ptcl_spacing=1.0,

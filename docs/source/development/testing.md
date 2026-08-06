@@ -52,6 +52,6 @@ sphinx-build -W --keep-going -b html docs/source docs/build/html
 sphinx-build -W --keep-going -b linkcheck docs/source docs/build/linkcheck
 ```
 
-Notebook validation runs every notebook in a temporary copy with exactly two
-selected GPUs and must not overwrite committed outputs. The regenerated
+Notebook validation runs every notebook in a temporary copy with all visible
+GPUs and must not overwrite committed outputs. The regenerated
 notebooks must contain no overflow or error output.

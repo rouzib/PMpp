@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 
-from ..utils import is_float0_array, pytree_dataclass
+from ..core.utils import is_float0_array, pytree_dataclass
 from .common import (
     HaikuModuleBase, correction_cosmo_features, default_cosmo_features, normalized_k_magnitude_transposed,
     require_haiku, hk,

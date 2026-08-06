@@ -4,9 +4,7 @@ import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 import pytest
 
-from pmpp.configuration import Configuration
-from pmpp.cosmo import SimpleLCDM
-from pmpp.multigpu_configuration import MultiGPUConfiguration
+from pmpp.core import Configuration
 from pmpp.corrections import (
     apply_potential_correction, build_correction_optimizer, evaluate_high_k_softening, evaluate_mesh_potential_residual,
     evaluate_mesh_source_residual, evaluate_pm_window_compensation, evaluate_pgd_bandpass,
@@ -14,8 +12,9 @@ from pmpp.corrections import (
     force_uses_interlacing, init_potential_correction, init_mesh_cnn_potential_correction,
     init_radial_potential_correction, sample_potential_transfer,
 )
-from pmpp.utils import create_compute_mesh
-from pmpp.gravity import neg_grad
+from pmpp.cosmology import SimpleLCDM
+from pmpp.distributed import MultiGPUConfiguration, create_compute_mesh
+from pmpp.nbody import neg_grad
 
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
 

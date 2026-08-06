@@ -5,10 +5,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from pmpp.configuration import Configuration
-from pmpp.gather import _gather
-from pmpp.pallas_cic import pallas_cic_supported
-from pmpp.scatter import _scatter
+from pmpp.cic import _gather, _scatter, pallas_cic_supported
+from pmpp.core import Configuration
 
 pytestmark = pytest.mark.skipif(
     not pallas_cic_supported(jnp.float32), reason="Pallas CIC tests require a qualified float32 GPU JAX installation",

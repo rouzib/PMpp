@@ -4,9 +4,8 @@ os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 
 import jax
 
-from pmpp.configuration import Configuration
-from pmpp.multigpu_configuration import MultiGPUConfiguration
-from pmpp.utils import create_compute_mesh
+from pmpp.core import Configuration
+from pmpp.distributed import MultiGPUConfiguration, create_compute_mesh
 
 
 def init_conf(

@@ -1,6 +1,6 @@
 # Configuration
 
-`pmpp.configuration.Configuration` is a frozen dataclass and a static JAX
+`pmpp.core.Configuration` is a frozen dataclass and a static JAX
 PyTree. It combines the simulation definition with the shapes and
 callables needed by the runtime. Treat a configuration as immutable; use
 `conf.replace(...)` to make a related configuration.
@@ -11,9 +11,9 @@ callables needed by the runtime. Treat a configuration as immutable; use
 import jax
 import jax.numpy as jnp
 
-from pmpp.configuration import Configuration
-from pmpp.multigpu_configuration import MultiGPUConfiguration
-from pmpp.utils import create_compute_mesh
+from pmpp import Configuration
+from pmpp import MultiGPUConfiguration
+from pmpp.distributed import create_compute_mesh
 
 n = 64
 box_size = 250.0
@@ -121,7 +121,7 @@ compiled program.
 Keep configuration construction outside jitted functions, reuse an object
 across repeated calls, and benchmark only after calling
 `jax.block_until_ready` on a warm result. Cosmological parameter arrays are
-dynamic leaves of `Cosmology`; use the helpers in `pmpp.cosmo` when selecting
+dynamic leaves of `Cosmology`. Use the helpers in `pmpp.cosmology` when selecting
 and replacing differentiable parameters.
 
 ## Device mesh and capacities
@@ -195,7 +195,7 @@ cuda_conf = conf.replace(
     )
 )
 
-print("CUDA routing enabled:", cuda_conf.cuda_routing)
+print("CUDA routing enabled:", cuda_conf.multigpu.cuda_routing)
 ```
 
 See [CUDA routing](cuda_routing.md) for compiler requirements, installation,

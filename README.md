@@ -15,7 +15,7 @@ ideas and extended for multi-GPU simulations. The active implementation is
 imported as `pmpp` and lives in `src/pmpp/`; `tests/pmwd/` retains the PMWD
 reference implementation used exclusively for validation.
 
-The documented baseline uses exactly two GPUs so every example exercises the
+The documented baseline uses multiple GPUs so every example exercises the
 distributed ownership, mesh-halo, and FFT paths.
 
 ## Installation
@@ -54,25 +54,24 @@ release on this target.
 ```text
 PMpp/
 |-- src/pmpp/                    # Active importable PM++ package
-|   |-- configuration.py         # Simulation configuration
-|   |-- multigpu_configuration.py# Multi-GPU mode/configuration object
-|   |-- particles.py             # Particle state and ownership
-|   |-- scatter.py               # Particle-to-mesh assignment
-|   |-- gather.py                # Mesh-to-particle interpolation
-|   |-- gravity.py               # PM force solve
-|   |-- steps.py                 # Drift, kick, force, adjoint pieces
-|   |-- nbody.py                 # Full N-body integration and VJP
-|   |-- FFT_distributed.py       # Distributed FFT construction
-|   |-- mesh_halo.py             # Mesh halo exchange helpers
-|   |-- modes.py                 # White noise and linear modes
-|   |-- lpt.py                   # LPT initialization
-|   |-- power_spectrum.py        # Density and particle P(k)
-|   `-- potential_correction.py  # Backward-compatible correction facade
+|   |-- core/                    # Configuration and shared utilities
+|   |-- cosmology/               # Cosmology, transfer, and growth
+|   |-- initial_conditions/      # White noise, modes, and LPT
+|   |-- numerics/                # Local FFT and ODE primitives
+|   |-- distributed/             # Multi-GPU FFT, halos, and routing
+|   |-- cic/                     # Scatter, gather, and Pallas CIC
+|   |-- nbody/                   # Particles, gravity, integrator, observers
+|   |-- corrections/             # Optional correction models
+|   |-- analysis/                # Power spectra and plotting
+|   `-- extras/                  # CAMELS and QUIJOTE adapters
 |-- tests/                       # Regression and gradient tests
 |   `-- pmwd/                    # Test-only PMWD reference implementation
 |-- docs/source/notebooks/       # Pre-executed documentation notebooks
 `-- docs/                        # Project documentation
 ```
+
+Import through the feature packages shown above. The former flat module paths
+were removed as part of this architecture change.
 
 ## Minimal Multi-GPU Setup
 
@@ -83,9 +82,8 @@ top-level `compute_mesh=` compatibility path still exists, but is not preferred.
 import jax
 import jax.numpy as jnp
 
-from pmpp.configuration import Configuration
-from pmpp.multigpu_configuration import MultiGPUConfiguration
-from pmpp.utils import create_compute_mesh
+from pmpp import Configuration, MultiGPUConfiguration
+from pmpp.distributed import create_compute_mesh
 
 res = 256
 box_size = 1000.0  # Mpc/h
@@ -95,7 +93,7 @@ ptcl_spacing = box_size / res
 gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
 if len(gpu_devices) < 2:
     raise RuntimeError("This multi-GPU example requires at least 2 GPUs.")
-selected_devices = gpu_devices[:2]
+selected_devices = gpu_devices
 compute_mesh = create_compute_mesh(selected_devices)
 num_devices = len(selected_devices)
 
@@ -119,28 +117,25 @@ Capacity overflows are correctness failures. If a run reports overflow in
 particle migration, halo rebuild, or gather exchange buffers, increase the
 corresponding capacity and rerun.
 
-## Minimal Two-GPU Forward Run
+## Minimal Multi-GPU Forward Run
 
 ```python
 import jax
 import jax.numpy as jnp
 
-from pmpp.boltzmann import boltzmann
-from pmpp.configuration import Configuration
-from pmpp.cosmo import SimpleLCDM
-from pmpp.lpt import lpt
-from pmpp.modes import linear_modes, white_noise
-from pmpp.multigpu_configuration import MultiGPUConfiguration
+from pmpp import Configuration, MultiGPUConfiguration
+from pmpp.cic import scatter
+from pmpp.cosmology import SimpleLCDM, boltzmann
+from pmpp.distributed import create_compute_mesh
+from pmpp.initial_conditions import linear_modes, lpt, white_noise
 from pmpp.nbody import nbody
-from pmpp.scatter import scatter
-from pmpp.utils import create_compute_mesh
 
 res = 32
 box_size = 100.0
 gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
 if len(gpu_devices) < 2:
     raise RuntimeError("This PM++ simulation requires at least two GPUs")
-selected_devices = gpu_devices[:2]
+selected_devices = gpu_devices
 
 conf = Configuration(
     box_size / res,
@@ -182,8 +177,8 @@ Prefer `mesh_halo` for current multi-GPU work:
 - particles are stored authoritatively on their owning slab;
 - particles migrate between slabs when needed;
 - mesh halos are exchanged for local stencil operations;
-- it is generally faster than the older particle-halo path in current
-  `256^3`, 2-GPU testing.
+- it is generally faster than the older particle-halo path for both smaller
+  and larger simulation boxes.
 
 `particle_halo` remains useful for comparison and legacy validation.
 
@@ -243,19 +238,19 @@ End-to-end gradient:
 
 The documentation gallery contains six pre-executed notebooks:
 
-- first simulation and configuration;
-- resolution-consistent initial conditions evolved from $32^3$ through $256^3$;
-- a two-GPU `mesh_halo` run;
-- observers and analysis;
+- first simulation and configuration
+- resolution-consistent initial conditions evolved from $32^3$ through $256^3$
+- a multi-GPU `mesh_halo` run
+- observers and analysis
 - differentiation with finite-difference checks.
 
 Read the Docs renders committed outputs and does not execute the notebooks.
-Restart kernels after code changes. Re-run every notebook with exactly two
-selected GPUs in a clean temporary copy before committing its outputs.
+Restart kernels after code changes. Re-run every notebook with all visible
+GPUs in a clean temporary copy before committing its outputs.
 
 ## License
 
-PM++ is distributed under the BSD-3-Clause license; see [LICENSE](LICENSE).
+PM++ is distributed under the BSD-3-Clause license. See [LICENSE](LICENSE).
 PM++ is based on PMWD and retains the original PMWD BSD 3-Clause notice in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The test-only `tests/pmwd/`
 package is kept as a reference implementation for validation.

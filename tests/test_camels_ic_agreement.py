@@ -22,17 +22,12 @@ from tests.pmwd.nbody import nbody_init as nbody_init_pmwd
 from tests.pmwd.particles import Particles as ParticlesPMWD
 from tests.pmwd.scatter import scatter as scatter_pmwd
 
-from pmpp.boltzmann import boltzmann as boltzmann_pmpp
-from pmpp.camels_io import load_camels_pair
-from pmpp.configuration import Configuration
-from pmpp.cosmo import Cosmology
-from pmpp.multigpu_configuration import MultiGPUConfiguration
-from pmpp.nbody import nbody as nbody_pmpp
-from pmpp.nbody import nbody_init as nbody_init_pmpp
-from pmpp.particles import Particles
-from pmpp.scatter import scatter as scatter_pmpp
-from pmpp.steps import drift as drift_pmpp
-from pmpp.utils import create_compute_mesh
+from pmpp.cic import scatter as scatter_pmpp
+from pmpp.core import Configuration
+from pmpp.cosmology import Cosmology, boltzmann as boltzmann_pmpp
+from pmpp.distributed import MultiGPUConfiguration, create_compute_mesh
+from pmpp.extras.camels import load_camels_pair
+from pmpp.nbody import Particles, drift as drift_pmpp, nbody as nbody_pmpp, nbody_init as nbody_init_pmpp
 
 try:
     import pytest

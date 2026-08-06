@@ -22,15 +22,15 @@ Define a scalar loss and make the floating modes the differentiated argument:
 import jax
 import jax.numpy as jnp
 
-from pmpp.boltzmann import boltzmann
-from pmpp.configuration import Configuration
-from pmpp.cosmo import SimpleLCDM
-from pmpp.lpt import lpt
-from pmpp.modes import linear_modes, white_noise
-from pmpp.multigpu_configuration import MultiGPUConfiguration
+from pmpp.cosmology import boltzmann
+from pmpp import Configuration
+from pmpp.cosmology import SimpleLCDM
+from pmpp.initial_conditions import lpt
+from pmpp.initial_conditions import linear_modes, white_noise
+from pmpp import MultiGPUConfiguration
 from pmpp.nbody import nbody
-from pmpp.scatter import scatter
-from pmpp.utils import create_compute_mesh
+from pmpp.cic import scatter
+from pmpp.distributed import create_compute_mesh
 
 n = 16
 gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
@@ -89,7 +89,7 @@ requires displacement or mode gradients but not N-body cosmology gradients. This
 is a computational choice that changes the returned cotangent.
 
 Use `cosmology_param_names`, `cosmology_param_values`, and
-`replace_cosmology_params` from `pmpp.cosmo` to form a stable vector of selected
+`replace_cosmology_params` from `pmpp.cosmology` to form a stable vector of selected
 parameters. Optional parameters such as curvature or dark-energy terms are
 differentiable only when their underscored fields are not `None`.
 

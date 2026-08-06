@@ -324,12 +324,12 @@ same sequence. This extends the reverse-time reconstruction of
 
 ## Implementation anchors
 
-- `multigpu_configuration.py`: slab geometry, ring permutations, capacities,
-  and compiled runtime binding
-- `halo_moving.py`: canonical compaction, migration, stable merge,
+- `pmpp.distributed.configuration`: slab geometry, ring permutations,
+  capacities, and compiled runtime binding
+- `pmpp.distributed.routing`: canonical compaction, migration, stable merge,
   reconstruction, and route transpose
-- `mesh_halo.py`: mesh edge copy and reduction
-- `FFT_distributed.py`: two-pass transforms, partitioning rules, transposed
+- `pmpp.distributed.mesh_halo`: mesh edge copy and reduction
+- `pmpp.distributed.fft`: two-pass transforms, partitioning rules, transposed
   spectral layout, and real-FFT custom VJPs
 - `tests/test_grad_fft_distributed.py`: numerical checks of the distributed
   real-FFT transposes
@@ -342,7 +342,7 @@ same sequence. This extends the reverse-time reconstruction of
   and gradients
 - `tests/test_grad_nbody_mesh_halo.py`: end-to-end mesh-halo forward and
   gradient agreement
-- `utils.py`: ring permutations and periodic raveled keys
+- `pmpp.core.utils`: ring permutations and periodic raveled keys
 
 [jax-distributed-arrays]: https://docs.jax.dev/en/latest/parallel.html
 [jax-shard-map]: https://docs.jax.dev/en/latest/notebooks/shard_map.html

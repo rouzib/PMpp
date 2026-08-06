@@ -30,7 +30,8 @@ requirements because the hosted build renders source and does not rewrite it.
 ## Authoring rules
 
 - Teach one concept once, then link to it from API/notebooks.
-- Use explicit, runnable `pmpp.<module>` imports and small deterministic seeds.
+- Import runnable examples through the canonical `pmpp` feature packages and
+  use small deterministic seeds.
 - State shapes, units, static/JIT assumptions, hardware, and capacity behavior.
 - Mark experimental interfaces and distinguish scientific model choices from
   runtime choices.
@@ -50,8 +51,8 @@ capacities, and execution date. Reject notebooks with error outputs, stale
 kernels, hidden external data, absolute paths, or undocumented optional
 dependencies.
 
-All notebooks are re-executed in clean temporary copies with exactly two
-selected GPUs, one heavy process at a time. The hardware requirement must be
+All notebooks are re-executed in clean temporary copies with all visible
+GPUs, one heavy process at a time. The hardware requirement must be
 visible before the first code cell.
 
 ## Diagram policy

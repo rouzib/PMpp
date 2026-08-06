@@ -27,7 +27,7 @@ validated tolerances.
 :link: getting_started/first_simulation
 :link-type: doc
 
-Build a two-device mesh, evolve a small periodic box, and check mass
+Build a multi-device mesh, evolve a small periodic box, and check mass
 conservation in about ten minutes.
 :::
 

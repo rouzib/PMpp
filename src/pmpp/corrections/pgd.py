@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 
-from ..utils import AXIS_NAME, pytree_dataclass
+from ..core.utils import AXIS_NAME, pytree_dataclass
 
 
 @partial(pytree_dataclass, aux_fields=("alpha0", "A", "B", "kl", "ks", "dtype"), frozen=True, eq=False, )

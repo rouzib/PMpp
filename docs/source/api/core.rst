@@ -9,14 +9,14 @@ Use these objects to define a simulation and select its JAX devices.  See
 Configuration
 -------------
 
-.. autoclass:: pmpp.configuration.Configuration
+.. autoclass:: pmpp.core.configuration.Configuration
 
 Multi-GPU configuration
 -----------------------
 
-.. autoclass:: pmpp.multigpu_configuration.MultiGPUConfiguration
+.. autoclass:: pmpp.distributed.configuration.MultiGPUConfiguration
 
 Device mesh construction
 ------------------------
 
-.. autofunction:: pmpp.utils.create_compute_mesh
+.. autofunction:: pmpp.core.utils.create_compute_mesh

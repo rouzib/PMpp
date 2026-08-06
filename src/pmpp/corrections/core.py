@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 
-from ..utils import is_float0_array
+from ..core.utils import is_float0_array
 from .combined import CombinedPotentialCorrection
 from .mesh_cnn import (
     MeshCNNPotentialCorrection, evaluate_mesh_potential_residual as _evaluate_mesh_potential_residual,

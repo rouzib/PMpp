@@ -49,7 +49,7 @@ JAX installation.
 ```python
 import jax
 
-from pmpp.utils import create_compute_mesh
+from pmpp.distributed import create_compute_mesh
 
 gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
 if len(gpu_devices) < 2:

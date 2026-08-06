@@ -326,13 +326,15 @@ every particle state {cite:p}`li2024adjoint`.
 
 ## Implementation anchors
 
-- `steps.py`: growth-matched factors, drift, force, kick, reconstruction, and
-  substep adjoints
-- `nbody.py`: forward scan, observer and collector entry points, reverse scan,
-  and the `nbody` custom VJP
-- `halo_moving.py`: reconstruction and transpose of the ownership route
-- `gravity.py`, `scatter.py`, `gather.py`, `FFT_distributed.py`: force VJP
-  primitives used inside `force_adj`
+- `pmpp.nbody.integrator`: growth-matched factors, drift, force, kick,
+  reconstruction, and substep adjoints
+- `pmpp.nbody.solver`: forward and reverse scans, collector entry points, and
+  the `nbody` custom VJP
+- `pmpp.nbody.observers`: forward observer construction
+- `pmpp.distributed.routing`: reconstruction and transpose of the ownership
+  route
+- `pmpp.nbody.gravity`, `pmpp.cic.scatter`, `pmpp.cic.gather`, and
+  `pmpp.distributed.fft`: force VJP primitives used inside `force_adj`
 
 [jax-scan]: https://docs.jax.dev/en/latest/_autosummary/jax.lax.scan.html
 [jax-custom-vjp]: https://docs.jax.dev/en/latest/_autosummary/jax.custom_vjp.html

@@ -19,12 +19,12 @@ from tests.pmwd.cosmology import Cosmology as CosmologyPMWD
 from tests.pmwd.modes import linear_modes as linear_modes_pmwd
 from tests.pmwd.modes import white_noise as white_noise_pmwd
 
-from pmpp.boltzmann import boltzmann as boltzmann_pmpp
-from pmpp.configuration import Configuration
-from pmpp.cosmo import Cosmology as CosmologyPMPP
-from pmpp.modes import linear_modes as linear_modes_pmpp
-from pmpp.modes import white_noise as white_noise_pmpp
-from pmpp.utils import create_compute_mesh
+from pmpp.core import Configuration
+from pmpp.cosmology import Cosmology as CosmologyPMPP
+from pmpp.cosmology import boltzmann as boltzmann_pmpp
+from pmpp.distributed import create_compute_mesh
+from pmpp.initial_conditions import linear_modes as linear_modes_pmpp
+from pmpp.initial_conditions import white_noise as white_noise_pmpp
 
 try:
     import pytest

@@ -11,9 +11,9 @@ For a full forward simulation, use:
 ```python
 import jax
 
-from pmpp.configuration import Configuration
-from pmpp.multigpu_configuration import MultiGPUConfiguration
-from pmpp.utils import create_compute_mesh
+from pmpp import Configuration
+from pmpp import MultiGPUConfiguration
+from pmpp.distributed import create_compute_mesh
 
 gpu_devices = jax.devices("gpu")
 n = 64

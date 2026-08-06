@@ -7,13 +7,13 @@ initialization:
 import jax
 import jax.numpy as jnp
 
-from pmpp.boltzmann import boltzmann
-from pmpp.configuration import Configuration
-from pmpp.cosmo import SimpleLCDM
-from pmpp.lpt import lpt
-from pmpp.modes import linear_modes, white_noise, white_noise_nested
-from pmpp.multigpu_configuration import MultiGPUConfiguration
-from pmpp.utils import create_compute_mesh
+from pmpp.cosmology import boltzmann
+from pmpp import Configuration
+from pmpp.cosmology import SimpleLCDM
+from pmpp.initial_conditions import lpt
+from pmpp.initial_conditions import linear_modes, white_noise, white_noise_nested
+from pmpp import MultiGPUConfiguration
+from pmpp.distributed import create_compute_mesh
 
 n = 32
 gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]

@@ -267,9 +267,13 @@ when gradients flow back to the LPT fields.
 
 ## Implementation anchors
 
-- `cosmo.py`: $E^2(a)$, $d\ln H/d\ln a$, and differentiable parameters
-- `growth.py`: growth-table interpolation and derivative conversion
-- `boltzmann.py`: transfer fit, growth integration, power, and variance tables
-- `modes.py`: ordinary and nested noise and linear-mode scaling
-- `lpt.py`: strain tensors, the second-order source, LPT state construction,
-  and the ownership-route VJP
+- `pmpp.cosmology.models`: $E^2(a)$, $d\ln H/d\ln a$, and differentiable
+  parameters
+- `pmpp.cosmology.growth`: growth-table interpolation and derivative
+  conversion
+- `pmpp.cosmology.boltzmann`: transfer fit, growth integration, power, and
+  variance tables
+- `pmpp.initial_conditions.modes`: ordinary and nested noise and linear-mode
+  scaling
+- `pmpp.initial_conditions.lpt`: strain tensors, the second-order source, LPT
+  state construction, and the ownership-route VJP

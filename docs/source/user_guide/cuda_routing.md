@@ -54,7 +54,7 @@ pmpp-build-cuda-routing
 export PMPP_CUDA_ROUTING_BACKEND=bidir_mergepath
 ```
 
-`python -m pmpp.build_cuda_routing` is equivalent to
+`python -m pmpp.distributed.build_cuda` is equivalent to
 `pmpp-build-cuda-routing` and can be used when the console-script directory is
 not on `PATH`.
 
@@ -72,8 +72,8 @@ pmpp-build-cuda-routing --cuda-architectures "80;86;90;90-virtual"
 The builder configures CMake with the active Python executable and obtains the
 matching FFI headers from that environment's `jaxlib`. It compiles in a
 temporary build directory, then installs only
-`libpmpp_cuda_routing.so` and its ABI manifest under `pmpp/_cuda`. PM++ finds
-that package-local artifact automatically.
+`libpmpp_cuda_routing.so` and its ABI manifest under
+`pmpp/distributed/_cuda`. PM++ finds that package-local artifact automatically.
 
 Some system installations expose a read-only `site-packages` directory. In
 that case, the command installs the artifact in a versioned user cache under
@@ -90,7 +90,7 @@ places the resulting artifact in the importable package directory:
 
 ```bash
 python cuda/build_cuda_routing.py \
-  --build-dir "$(python -c 'from pathlib import Path; import pmpp; print(Path(pmpp.__file__).resolve().parent / "_cuda")')"
+  --build-dir "$(python -c 'from pathlib import Path; import pmpp.distributed; print(Path(pmpp.distributed.__file__).resolve().parent / "_cuda")')"
 ```
 
 The installed command is preferred for PyPI users because it selects the
@@ -103,8 +103,8 @@ route. Request the extension explicitly after building it:
 ```python
 import jax
 
-from pmpp.multigpu_configuration import MultiGPUConfiguration
-from pmpp.utils import create_compute_mesh
+from pmpp import MultiGPUConfiguration
+from pmpp.distributed import create_compute_mesh
 
 gpu_devices = jax.devices("gpu")
 
@@ -121,7 +121,7 @@ status without printing the full build manifest:
 ```python
 import json
 
-from pmpp.cuda_routing import extension_status
+from pmpp.distributed.cuda import extension_status
 
 status = extension_status()
 summary = {
@@ -143,7 +143,7 @@ print(json.dumps(summary, indent=2))
 `qualified_jax` should be `true`, `backend` should be `gpu`, `library` should
 contain the installed shared-library path, and `bidir_targets` should list both
 bidirectional handlers. After a compatible `Configuration` is constructed,
-`conf.mGPU.cuda_routing` reports whether PM++ selected the extension.
+`conf.multigpu.cuda_routing` reports whether PM++ selected the extension.
 
 For an intentional portable comparison, leave `cuda_routing` unset, use
 `cuda_routing=False` in `MultiGPUConfiguration`, or set `PMPP_CUDA_ROUTING=0`

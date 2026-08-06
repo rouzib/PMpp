@@ -20,10 +20,9 @@ from tests.pmwd.cosmology import SimpleLCDM as SimpleLCDM_PMWD
 from tests.pmwd.nbody import drift as drift_pmwd, drift_adj as drift_adj_pmwd, drift_factor
 from tests.pmwd.particles import Particles as ParticlesPMWD
 
-from pmpp.boltzmann import boltzmann as boltzmann_pmpp
-from pmpp.cosmo import SimpleLCDM as SimpleLCDM_PMPP
-from pmpp.particles import Particles
-from pmpp.steps import drift as drift_pmpp, drift_adj as drift_adj_pmpp
+from pmpp.cosmology import SimpleLCDM as SimpleLCDM_PMPP
+from pmpp.cosmology import boltzmann as boltzmann_pmpp
+from pmpp.nbody import Particles, drift as drift_pmpp, drift_adj as drift_adj_pmpp
 
 from test_utils import init_conf
 

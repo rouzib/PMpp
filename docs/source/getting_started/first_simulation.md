@@ -1,7 +1,7 @@
 # Your first simulation
 
 This example evolves a periodic $256^3$ particle load to $a=1$ in a
-$100\,h^{-1}\mathrm{Mpc}$ box on exactly two GPUs. The run therefore
+$100\,h^{-1}\mathrm{Mpc}$ box on multiple GPUs. The run therefore
 exercises slab ownership, mesh halos, and the distributed FFT layout.
 
 ## Complete example
@@ -10,22 +10,22 @@ exercises slab ownership, mesh halos, and the distributed FFT layout.
 import jax
 import jax.numpy as jnp
 
-from pmpp.boltzmann import boltzmann
-from pmpp.configuration import Configuration
-from pmpp.cosmo import SimpleLCDM
-from pmpp.lpt import lpt
-from pmpp.modes import linear_modes, white_noise
-from pmpp.multigpu_configuration import MultiGPUConfiguration
+from pmpp.cosmology import boltzmann
+from pmpp import Configuration
+from pmpp.cosmology import SimpleLCDM
+from pmpp.initial_conditions import lpt
+from pmpp.initial_conditions import linear_modes, white_noise
+from pmpp import MultiGPUConfiguration
 from pmpp.nbody import nbody
-from pmpp.scatter import scatter
-from pmpp.utils import create_compute_mesh
+from pmpp.cic import scatter
+from pmpp.distributed import create_compute_mesh
 
 resolution = 256
 box_size = 100.0  # Mpc/h with the default PM++ length unit
 gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
 if len(gpu_devices) < 2:
     raise RuntimeError("This PM++ simulation requires at least two GPUs")
-selected_devices = gpu_devices[:2]
+selected_devices = gpu_devices
 compute_mesh = create_compute_mesh(selected_devices)
 
 conf = Configuration(
@@ -83,7 +83,7 @@ legacy routing switches.
 ## What each stage does
 
 1. `Configuration` fixes box/grid geometry, precision, the scale-factor
-   schedule, and the two-device runtime.
+   schedule, and the multi-device runtime.
 2. `boltzmann(SimpleLCDM(...))` tabulates transfer and growth quantities.
 3. `white_noise` produces a deterministic Gaussian realization and
    `linear_modes` scales it by the linear matter power spectrum.

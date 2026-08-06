@@ -272,13 +272,15 @@ the transpose of the complete distributed forward map.
 
 ## Implementation anchors
 
-- `enmesh.py`: periodic neighbor indices, CIC weights, and weight derivatives
-- `scatter.py`: reference and distributed scatter plus custom VJPs
-- `gather.py`: reference, stacked, and distributed gather plus custom VJPs
-- `pallas_cic.py`: tiled forward and backward CIC kernels
-- `gravity.py`: density normalization, Nyquist filtering, Poisson solve,
-  spectral differentiation, inverse transforms, and force gather
-- `mesh_halo.py`: edge copy and edge reduction
+- `pmpp.cic.enmesh`: periodic neighbor indices, CIC weights, and weight
+  derivatives
+- `pmpp.cic.scatter`: reference and distributed scatter plus custom VJPs
+- `pmpp.cic.gather`: reference, stacked, and distributed gather plus custom
+  VJPs
+- `pmpp.cic.pallas`: tiled forward and backward CIC kernels
+- `pmpp.nbody.gravity`: density normalization, Nyquist filtering, Poisson
+  solve, spectral differentiation, inverse transforms, and force gather
+- `pmpp.distributed.mesh_halo`: edge copy and edge reduction
 
 [jax-custom-vjp]: https://docs.jax.dev/en/latest/_autosummary/jax.custom_vjp.html
 [jax-scan]: https://docs.jax.dev/en/latest/_autosummary/jax.lax.scan.html

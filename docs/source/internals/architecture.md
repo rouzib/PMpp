@@ -23,12 +23,20 @@ change ownership and array sharding, but not the equations being solved.
 
 ## Configuration is static program structure
 
-`Configuration` contains the geometry, units, time schedule, numeric dtypes,
-and kernel choices. It is a frozen JAX pytree whose fields are static auxiliary
-data. This makes array shapes and control flow known while JAX traces a solver.
-The cosmological parameters and particle arrays remain dynamic pytree leaves.
-This division follows JAX's treatment of [JIT-static data][jax-jit] and
-structured [pytree leaves][jax-pytrees].
+`pmpp.core.Configuration` contains the geometry, units, time schedule, numeric
+dtypes, and kernel choices. It is a frozen JAX pytree whose fields are static
+auxiliary data. This makes array shapes and control flow known while JAX traces
+a solver. The cosmological parameters and particle arrays remain dynamic
+pytree leaves. This division follows JAX's treatment of
+[JIT-static data][jax-jit] and structured [pytree leaves][jax-pytrees].
+
+When a compute mesh is supplied, the configuration turns the user-provided
+`pmpp.distributed.MultiGPUConfiguration` seed into an initialized runtime.
+`build_multigpu_configuration` derives slab bounds, capacities, and ring
+permutations. `initialize_multigpu_runtime` then attaches distributed FFT,
+CIC, halo, and particle-routing callables. The completed object lives at
+`conf.multigpu`, while compatibility attributes such as `conf.mGPU_scatter`
+forward to it.
 
 For particle spacing $\ell_p$, particle-grid shape
 $\mathbf N_p=(N_{p,x},N_{p,y},N_{p,z})$, and mesh shape
@@ -236,21 +244,22 @@ of the number or model of devices used to execute the program.
 
 | Responsibility | Main module |
 | --- | --- |
-| geometry, units, schedules, static kernel selection | `configuration.py` |
-| differentiable cosmological parameters | `cosmo.py` |
-| transfer, growth, and linear variance tables | `boltzmann.py`, `growth.py` |
-| random and nested Fourier modes | `modes.py` |
-| first- and second-order LPT | `lpt.py` |
-| particle state and coordinate conversion | `particles.py` |
-| CIC and Pallas kernels | `scatter.py`, `gather.py`, `pallas_cic.py` |
-| Poisson force | `gravity.py` |
-| drift, force, kick, and their adjoints | `steps.py` |
-| N-body scan and custom VJP | `nbody.py` |
-| slab layout and runtime binding | `multigpu_configuration.py` |
-| particle ownership and route transpose | `halo_moving.py` |
-| mesh halos | `mesh_halo.py` |
-| distributed FFTs | `FFT_distributed.py` |
-| optional CUDA FFI | `cuda_routing.py`, `cuda/route_kernels.cu` |
+| geometry, units, schedules, static kernel selection | `pmpp.core.configuration` |
+| differentiable cosmological parameters | `pmpp.cosmology.models` |
+| transfer, growth, and linear variance tables | `pmpp.cosmology.boltzmann`, `pmpp.cosmology.growth` |
+| random and nested Fourier modes | `pmpp.initial_conditions.modes` |
+| first- and second-order LPT | `pmpp.initial_conditions.lpt` |
+| particle state and coordinate conversion | `pmpp.nbody.particles` |
+| CIC and Pallas kernels | `pmpp.cic.scatter`, `pmpp.cic.gather`, `pmpp.cic.pallas` |
+| Poisson force | `pmpp.nbody.gravity` |
+| drift, force, kick, and their adjoints | `pmpp.nbody.integrator` |
+| N-body scan and custom VJP | `pmpp.nbody.solver` |
+| forward observers | `pmpp.nbody.observers` |
+| slab layout and runtime binding | `pmpp.distributed.configuration` |
+| particle ownership and route transpose | `pmpp.distributed.routing` |
+| mesh halos | `pmpp.distributed.mesh_halo` |
+| distributed FFTs | `pmpp.distributed.fft` |
+| optional CUDA FFI | `pmpp.distributed.cuda`, `cuda/route_kernels.cu` |
 
 [jax-jit]: https://docs.jax.dev/en/latest/_autosummary/jax.jit.html
 [jax-pytrees]: https://docs.jax.dev/en/latest/pytrees.html

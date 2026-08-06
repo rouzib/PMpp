@@ -25,17 +25,15 @@ from tests.pmwd.modes import white_noise as white_noise_pmwd
 from tests.pmwd.nbody import nbody as nbody_pmwd
 from tests.pmwd.scatter import scatter as scatter_pmwd
 
-from pmpp.boltzmann import boltzmann as boltzmann_pmpp
-from pmpp.configuration import Configuration
-from pmpp.cosmo import SimpleLCDM as SimpleLCDM_PP
-from pmpp.lpt import lpt as lpt_pmpp
-from pmpp.modes import linear_modes as linear_modes_pmpp
-from pmpp.modes import white_noise as white_noise_pmpp
-from pmpp.multigpu_configuration import MultiGPUConfiguration
-from pmpp.nbody import nbody as nbody_pmpp
-from pmpp.particles import Particles
-from pmpp.scatter import scatter as scatter_pmpp
-from pmpp.utils import create_compute_mesh, pmid_to_idx
+from pmpp.cic import scatter as scatter_pmpp
+from pmpp.core import Configuration, pmid_to_idx
+from pmpp.cosmology import SimpleLCDM as SimpleLCDM_PP
+from pmpp.cosmology import boltzmann as boltzmann_pmpp
+from pmpp.distributed import MultiGPUConfiguration, create_compute_mesh
+from pmpp.initial_conditions import linear_modes as linear_modes_pmpp
+from pmpp.initial_conditions import lpt as lpt_pmpp
+from pmpp.initial_conditions import white_noise as white_noise_pmpp
+from pmpp.nbody import Particles, nbody as nbody_pmpp
 
 try:
     import pytest

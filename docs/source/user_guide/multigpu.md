@@ -10,9 +10,9 @@ exchanges mesh edge cells for local CIC operations.
 import jax
 import jax.numpy as jnp
 
-from pmpp.configuration import Configuration
-from pmpp.multigpu_configuration import MultiGPUConfiguration
-from pmpp.utils import create_compute_mesh
+from pmpp import Configuration
+from pmpp import MultiGPUConfiguration
+from pmpp.distributed import create_compute_mesh
 
 devices = [d for d in jax.devices() if d.platform == "gpu"]
 if len(devices) < 2:
@@ -47,12 +47,12 @@ Require `ptcl_grid_shape[0] % D == 0`, `mesh_shape[0] % D == 0`, and
 `mesh_shape[1] % D == 0`. The first rule prevents particle-grid generation
 from dropping a remainder, the second creates equal real-space x slabs, and
 the third supports the y-sharded spectral layout after the distributed FFT
-transpose. Inspect `conf.owned_slice_start`,
-`conf.owned_slice_end`, and `conf.local_mesh_shape` rather than inferring a
-layout from physical device IDs. Stored slice endpoints are periodic: an end
-value of `0` on the final slab represents the wrapped boundary at $N_x$, not an
-empty interval. The examples use every visible GPU, and the formulas retain
-$D$ so the same constraints apply to any supported device mesh.
+transpose. Inspect `conf.multigpu.owned_slice_start`,
+`conf.multigpu.owned_slice_end`, and `conf.multigpu.local_mesh_shape` rather
+than inferring a layout from physical device IDs. Stored slice endpoints are
+periodic. An end value of `0` on the final slab represents the wrapped boundary
+at $N_x$, not an empty interval. The examples use every visible GPU, and the
+formulas retain $D$ so the same constraints apply to any supported device mesh.
 
 ## Why `mesh_halo`
 
@@ -100,9 +100,9 @@ result.
 
 The real density begins in x slabs. A distributed rFFT performs local transforms
 and a collective transpose so a later axis is local. The spectral array is
-therefore in a transposed sharded layout. Use PM++'s `conf.mGPU_*fftn*` helpers
-inside solver extensions rather than applying a local FFT independently to each
-slab.
+therefore in a transposed sharded layout. Use the FFT helpers owned by
+`conf.multigpu`, such as `rfftn_transposed` and `irfftn_transposed`, inside
+solver extensions rather than applying a local FFT independently to each slab.
 
 For the communication design and diagrams, read
 [Distributed runtime](../internals/distributed_runtime.md).

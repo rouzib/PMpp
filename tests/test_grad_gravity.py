@@ -15,9 +15,8 @@ from tests.pmwd.cosmology import SimpleLCDM as SimpleLCDM_PMWD
 from tests.pmwd.gravity import gravity as gravity_pmwd
 from tests.pmwd.particles import Particles as ParticlesPMWD
 
-from pmpp.cosmo import SimpleLCDM as SimpleLCDM_PMPP
-from pmpp.gravity import gravity as gravity_pmpp
-from pmpp.particles import Particles
+from pmpp.cosmology import SimpleLCDM as SimpleLCDM_PMPP
+from pmpp.nbody import Particles, gravity as gravity_pmpp
 
 from test_utils import init_conf
 

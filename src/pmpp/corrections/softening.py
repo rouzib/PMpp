@@ -5,7 +5,7 @@ from functools import partial
 
 import jax.numpy as jnp
 
-from ..utils import pytree_dataclass
+from ..core.utils import pytree_dataclass
 
 
 @partial(pytree_dataclass, aux_fields=("strength", "start", "stop", "mode", "dtype"), frozen=True, eq=False, )

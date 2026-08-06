@@ -2,7 +2,7 @@
 
 These notebooks are pre-executed, self-contained research workflows. Read the
 Docs renders the committed outputs and never executes notebook code. Every
-notebook is regenerated locally with exactly two selected GPUs and
+notebook is regenerated locally with all visible GPUs and
 `XLA_PYTHON_CLIENT_PREALLOCATE=false`.
 
 Every notebook begins with a committed-execution admonition.  Its first executed output
@@ -36,7 +36,7 @@ package installed in the active environment.
 :link: 01_first_simulation
 :link-type: doc
 
-A complete 256-cube two-GPU run to $z=0$ with density and mass checks.
+A complete 256-cube multi-GPU run to $z=0$ with density and mass checks.
 :::
 
 :::{grid-item-card} 02 - Configuration
@@ -57,7 +57,7 @@ Matched initial modes and evolved $z=0$ fields from 32-cube through 256-cube.
 :link: 04_multigpu_mesh_halo
 :link-type: doc
 
-A precomputed 256-cube, full-scale-factor two-GPU run with ownership and capacity checks.
+A precomputed 256-cube, full-scale-factor multi-GPU run with ownership and capacity checks.
 :::
 
 :::{grid-item-card} 05 - Observers and analysis
@@ -71,7 +71,7 @@ Projection observers, compact collectors, final density, and differentiable powe
 :link: 06_differentiation
 :link-type: doc
 
-The full two-GPU adjoint for initial modes and an isolated cosmology sensitivity.
+The full multi-GPU adjoint for initial modes and an isolated cosmology sensitivity.
 :::
 
 ::::

@@ -6,22 +6,25 @@ particle-mesh simulation. It develops the equations together with the array
 layouts and discrete operators that evaluate them
 {cite:p}`hockney1988particles,li2024adjoint`.
 
-The chapters follow the forward simulation and then its reverse pass:
+The chapters first define the code boundaries, then follow the forward
+simulation and its reverse pass:
 
-1. [System architecture](architecture.md) defines the state, units, JAX
+1. [Python package layout](package_layout.md) maps implementation modules to
+   their scientific and runtime responsibilities.
+2. [System architecture](architecture.md) defines the state, units, JAX
    program structure, and end-to-end dataflow.
-2. [Initial modes and LPT](initial_conditions.md) constructs the transfer and
+3. [Initial modes and LPT](initial_conditions.md) constructs the transfer and
    growth tables, Gaussian density modes, and first- or second-order particle
    initial conditions.
-3. [Particle-mesh force](particle_mesh.md) derives CIC assignment, the
+4. [Particle-mesh force](particle_mesh.md) derives CIC assignment, the
    periodic Poisson solve, spectral forces, the Pallas kernels, and their
    transposes.
-4. [Distributed runtime](distributed_runtime.md) explains slab ownership,
+5. [Distributed runtime](distributed_runtime.md) explains slab ownership,
    mesh halos, particle migration, distributed real FFTs, and static-capacity
    invariants.
-5. [Integration and discrete adjoint](integration_and_adjoint.md) derives the
+6. [Integration and discrete adjoint](integration_and_adjoint.md) derives the
    growth-matched drift and kick factors and the reverse-time custom VJP.
-6. [Optional CUDA routing](cuda_routing.md) documents the typed FFI boundary,
+7. [Optional CUDA routing](cuda_routing.md) documents the typed FFI boundary,
    route records, stable merge, and route transpose.
 
 The underlying PM and discrete-adjoint formulation follows
@@ -55,6 +58,7 @@ its physical trajectory remains continuous.
 :maxdepth: 1
 :hidden:
 
+package_layout
 architecture
 initial_conditions
 particle_mesh

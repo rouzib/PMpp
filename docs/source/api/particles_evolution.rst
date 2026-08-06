@@ -12,42 +12,42 @@ and :doc:`../notebooks/06_differentiation`.
 Particle state and constructors
 -------------------------------
 
-.. autoclass:: pmpp.particles.Particles
+.. autoclass:: pmpp.nbody.particles.Particles
 
-.. automethod:: pmpp.particles.Particles.gen_grid
+.. automethod:: pmpp.nbody.particles.Particles.gen_grid
 
-.. automethod:: pmpp.particles.Particles.from_pos
+.. automethod:: pmpp.nbody.particles.Particles.from_pos
 
-.. automethod:: pmpp.particles.Particles.from_pos_sharded
+.. automethod:: pmpp.nbody.particles.Particles.from_pos_sharded
 
-.. automethod:: pmpp.particles.Particles.from_ordered_pos
+.. automethod:: pmpp.nbody.particles.Particles.from_ordered_pos
 
-.. automethod:: pmpp.particles.Particles.from_pmid
+.. automethod:: pmpp.nbody.particles.Particles.from_pmid
 
-.. automethod:: pmpp.particles.Particles.from_ptcl
+.. automethod:: pmpp.nbody.particles.Particles.from_ptcl
 
-.. automethod:: pmpp.particles.Particles.pos
+.. automethod:: pmpp.nbody.particles.Particles.pos
 
-.. automethod:: pmpp.particles.Particles.raveled_id
+.. automethod:: pmpp.nbody.particles.Particles.raveled_id
 
 Forward evolution
 -----------------
 
-.. autofunction:: pmpp.nbody.nbody
+.. autofunction:: pmpp.nbody.solver.nbody
 
-.. autofunction:: pmpp.nbody.nbody_observe
+.. autofunction:: pmpp.nbody.solver.nbody_observe
 
-.. autofunction:: pmpp.nbody.nbody_collect
+.. autofunction:: pmpp.nbody.solver.nbody_collect
 
-.. autofunction:: pmpp.nbody_observers.density_projection_observer
+.. autofunction:: pmpp.nbody.observers.density_projection_observer
 
-.. autofunction:: pmpp.nbody_observers.nbody_kappa
+.. autofunction:: pmpp.nbody.observers.nbody_kappa
 
 Particle--mesh operators
 ------------------------
 
-.. autofunction:: pmpp.scatter.scatter
+.. autofunction:: pmpp.cic.scatter.scatter
 
-.. autofunction:: pmpp.gather.gather
+.. autofunction:: pmpp.cic.gather.gather
 
-.. autofunction:: pmpp.gravity.gravity
+.. autofunction:: pmpp.nbody.gravity.gravity

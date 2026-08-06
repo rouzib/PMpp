@@ -61,8 +61,11 @@ acceptable approximation.
 
 ## Public API and documentation
 
-Use explicit `pmpp.<module>` imports in examples. Add public objects to the
-curated API by user task and write NumPy-style docstrings. Link concepts to API
-and notebooks; avoid copying the same explanation into multiple pages. PMWD is
-an upstream reference implementation, not part of PM++'s public API
-or documentation tree.
+Use the canonical feature packages documented in
+[Python package layout](../internals/package_layout.md) for new examples and
+internal imports. The feature-package initializer is the stable public
+boundary. Implementation modules are private organization details. Add public
+objects to the curated package API by user task and write NumPy-style
+docstrings. Link concepts to API and notebooks. Avoid copying the same
+explanation into multiple pages. PMWD is an upstream
+reference implementation, not part of PM++'s public API or documentation tree.

@@ -13,7 +13,7 @@ The same selection also covers their hand-written custom-VJP paths.
 Pallas setup:
 
 ```python
-from pmpp.configuration import Configuration
+from pmpp import Configuration
 
 n = 64
 conf = Configuration(

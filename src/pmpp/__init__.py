@@ -3,7 +3,7 @@
 The project is named PM++, while the importable package name is ``pmpp``.
 """
 
-from .configuration import Configuration
-from .multigpu_configuration import MultiGPUConfiguration
+from .core import Configuration
+from .distributed import MultiGPUConfiguration
 
 __all__ = ["Configuration", "MultiGPUConfiguration"]

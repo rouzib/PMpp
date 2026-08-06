@@ -25,19 +25,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pmpp.cosmo import SimpleLCDM, E2
-from pmpp.boltzmann import boltzmann, linear_power as boltzmann_linear_power
-from pmpp.growth import growth as growth_fn
-from pmpp.modes import white_noise, linear_modes
-from pmpp.lpt import lpt
-from pmpp.scatter import scatter
-from pmpp.gather import gather
-from pmpp.gravity import gravity
-from pmpp.steps import drift, kick, force, integrate
-from pmpp.nbody import nbody
-from pmpp.particles import Particles
-from pmpp.configuration import Configuration
-from pmpp.utils import create_compute_mesh
+from pmpp.cic import gather, scatter
+from pmpp.core import Configuration
+from pmpp.cosmology import E2, SimpleLCDM, boltzmann, growth as growth_fn
+from pmpp.cosmology import linear_power as boltzmann_linear_power
+from pmpp.distributed import create_compute_mesh
+from pmpp.initial_conditions import linear_modes, lpt, white_noise
+from pmpp.nbody import Particles, drift, force, gravity, integrate, kick, nbody
 from test_utils import init_conf
 
 try:

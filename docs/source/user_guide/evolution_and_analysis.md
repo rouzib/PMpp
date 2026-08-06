@@ -13,15 +13,15 @@ cross-correlations.
 import jax
 import jax.numpy as jnp
 
-from pmpp.boltzmann import boltzmann
-from pmpp.configuration import Configuration
-from pmpp.cosmo import SimpleLCDM
-from pmpp.lpt import lpt
-from pmpp.modes import linear_modes, white_noise
-from pmpp.multigpu_configuration import MultiGPUConfiguration
+from pmpp.cosmology import boltzmann
+from pmpp import Configuration
+from pmpp.cosmology import SimpleLCDM
+from pmpp.initial_conditions import lpt
+from pmpp.initial_conditions import linear_modes, white_noise
+from pmpp import MultiGPUConfiguration
 from pmpp.nbody import nbody
-from pmpp.scatter import scatter
-from pmpp.utils import create_compute_mesh
+from pmpp.cic import scatter
+from pmpp.distributed import create_compute_mesh
 
 n = 32
 gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
@@ -91,7 +91,7 @@ Observers keep diagnostic work out of the core adjoint solver:
 
 ```python
 from pmpp.nbody import nbody_observe
-from pmpp.nbody_observers import density_projection_observer
+from pmpp.nbody.observers import density_projection_observer
 
 observer = density_projection_observer(axis=2, normalize=True)
 observe = jax.jit(
@@ -118,7 +118,7 @@ running statistic or selected outputs are required.
 ## Power spectra and cross-correlations
 
 ```python
-from pmpp.power_spectrum import density_to_pk, particles_to_pk
+from pmpp.analysis import density_to_pk, particles_to_pk
 
 analyze_density = jax.jit(lambda field: density_to_pk(field, conf, mas="CIC"))
 analyze_particles = jax.jit(lambda state: particles_to_pk(state, conf, mas="CIC"))

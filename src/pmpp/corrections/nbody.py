@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 
-from ..utils import is_float0_array, pytree_dataclass
+from ..core.utils import is_float0_array, pytree_dataclass
 
 
 def _default_phase_space_head(params, a, ptcl, cosmo, conf, local_pair):

@@ -6,7 +6,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from ..utils import pytree_dataclass
+from ..core.utils import pytree_dataclass
 
 
 def _logit(x):

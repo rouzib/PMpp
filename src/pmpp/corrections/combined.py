@@ -6,7 +6,7 @@ from typing import Optional
 
 import jax.numpy as jnp
 
-from ..utils import pytree_dataclass
+from ..core.utils import pytree_dataclass
 from .mesh_cnn import MeshCNNPotentialCorrection
 from .pgd import PGDPotentialCorrection
 from .radial import RadialPotentialCorrection

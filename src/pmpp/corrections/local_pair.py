@@ -31,10 +31,10 @@ import jax.numpy as jnp
 import numpy as np
 from jax.tree_util import tree_map
 
-from ..gather import gather_stacked_mesh_halo
-from ..mesh_halo import maybe_shard_map_mesh_local_op, owned_mesh_partition_spec
-from ..scatter import scatter
-from ..utils import is_float0_array, pytree_dataclass
+from ..cic.gather import gather_stacked_mesh_halo
+from ..distributed.mesh_halo import maybe_shard_map_mesh_local_op, owned_mesh_partition_spec
+from ..cic.scatter import scatter
+from ..core.utils import is_float0_array, pytree_dataclass
 from .common import HaikuModuleBase, correction_cosmo_features, default_cosmo_features, hk, require_haiku
 from .mesh_cnn import _global_mesh_mean, _periodic_pad_mesh_channels
 

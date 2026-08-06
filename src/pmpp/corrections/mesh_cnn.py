@@ -7,11 +7,11 @@ import jax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 
-from ..mesh_halo import (
+from ..distributed.mesh_halo import (
     exchange_owned_mesh_halo_edges, extend_owned_mesh_from_halo_edges, maybe_shard_map_mesh_local_op,
     owned_mesh_partition_spec,
 )
-from ..utils import AXIS_NAME, is_float0_array, pytree_dataclass
+from ..core.utils import AXIS_NAME, is_float0_array, pytree_dataclass
 from .common import (
     HaikuModuleBase, correction_cosmo_features, cosmo_features, default_cosmo_features, require_haiku, hk,
 )

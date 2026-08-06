@@ -1,6 +1,6 @@
 import numpy as np
 
-from pmpp.camels_io import CamelsMetadata, CamelsParticlePair, coarsen_camels_pair
+from pmpp.extras.camels import CamelsMetadata, CamelsParticlePair, coarsen_camels_pair
 
 
 def test_coarsen_camels_pair_preserves_periodic_shift():
