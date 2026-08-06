@@ -34,7 +34,7 @@ target_link_libraries(pmpp_cuda_routing PRIVATE CUDA::cudart)
 # Qualified default: CUDA_ARCHITECTURES "80;86;90;90-virtual"
 # The qualified default now embeds native Ampere and Hopper code plus compute
 # 90 PTX. No fast-math flags are used: boundary classification must match the
-# float32 operations in the JAX fallback.
+# dtype-matched float32 or float64 operations in the JAX fallback.
 set_target_properties(pmpp_cuda_routing PROPERTIES
   OUTPUT_NAME "pmpp_cuda_routing"
   CUDA_ARCHITECTURES "${PMPP_CUDA_ARCHITECTURES}"

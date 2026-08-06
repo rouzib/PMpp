@@ -1,8 +1,9 @@
 # System architecture
 
-PM++ is a JAX program for a periodic, differentiable particle-mesh simulation.
-Its structure is easiest to understand as a sequence of mathematical maps,
-with distributed layouts attached to the maps that require communication.
+PM++ is a JAX program for a periodic, differentiable particle-mesh simulation
+{cite:p}`hockney1988particles,li2024adjoint,bradbury2018jax`. Its structure is
+easiest to understand as a sequence of mathematical maps, with distributed
+layouts attached to the maps that require communication.
 
 ```{mermaid}
 flowchart LR
@@ -26,6 +27,8 @@ change ownership and array sharding, but not the equations being solved.
 and kernel choices. It is a frozen JAX pytree whose fields are static auxiliary
 data. This makes array shapes and control flow known while JAX traces a solver.
 The cosmological parameters and particle arrays remain dynamic pytree leaves.
+This division follows JAX's treatment of [JIT-static data][jax-jit] and
+structured [pytree leaves][jax-pytrees].
 
 For particle spacing $\ell_p$, particle-grid shape
 $\mathbf N_p=(N_{p,x},N_{p,y},N_{p,z})$, and mesh shape
@@ -87,6 +90,9 @@ The main particle fields use these conventions:
 | `vel` | canonical momentum per unit mass, $a^2\dot{\mathbf x}$ | $H_0L$ |
 | `acc` | scaled force, $-\nabla(a\phi)$ | $H_0^2L$ |
 
+These canonical particle variables and internal cosmological units follow the
+differentiable PM formulation of {cite:t}`li2024adjoint`.
+
 ## Particle representation
 
 PM++ does not normally store an absolute floating-point position. It stores a
@@ -112,7 +118,8 @@ physical particle count is therefore not inferred from the allocated shape.
 ## Cosmology as differentiable data
 
 `Cosmology` holds the parameters that may receive gradients. For a
-Chevallier-Polarski-Linder (CPL) dark-energy model,
+Chevallier-Polarski-Linder (CPL) dark-energy model
+{cite:p}`chevallier2001accelerating,linder2003expansion`,
 
 $$
 E^2(a)=\frac{H^2(a)}{H_0^2}
@@ -141,24 +148,28 @@ parameter.
 
 PM++ uses several JAX mechanisms for different responsibilities:
 
-- `jax.jit` compiles the numerical pipeline and specializes it to the static
-  configuration.
-- pytrees keep cosmology and particle state structured while exposing their
-  differentiable array leaves.
-- `shard_map`, named shardings, and `lax.ppermute` express local work and ring
-  communication.
-- `custom_partitioning` tells JAX when an FFT stage is local in a particular
-  layout.
-- `custom_vjp` supplies the exact discrete transpose for real FFTs, CIC, and
-  the full N-body evolution.
-- Pallas supplies tiled CIC kernels with the same mathematical contract as the
-  reference JAX implementation.
-- typed JAX FFI can replace shard-local particle pack and merge work with CUDA.
+- [`jax.jit`][jax-jit] compiles the numerical pipeline and specializes it to
+  the static configuration.
+- [pytrees][jax-pytrees] keep cosmology and particle state structured while
+  exposing their differentiable array leaves.
+- [`shard_map`][jax-shard-map], named shardings, and
+  [`lax.ppermute`][jax-ppermute] express local work and ring communication.
+- [`custom_partitioning`][jax-custom-partitioning] tells JAX when an FFT stage
+  is local in a particular layout.
+- [`custom_vjp`][jax-custom-vjp] lets PM++ program reverse rules explicitly.
+  The CIC and N-body rules follow the discrete adjoint formulation of
+  {cite:t}`li2024adjoint`.
+- [Pallas][jax-pallas] provides the JAX-traceable custom-kernel model used by
+  the tiled CIC implementation. PM++ keeps its mathematical contract identical
+  to the reference JAX implementation.
+- [typed JAX FFI][jax-ffi] provides the boundary used to call shard-local CUDA
+  particle pack and merge kernels.
 
-The compiled program has fixed array shapes. Counts and masks determine which
-slots are active at runtime. This is why every particle capacity is part of the
-correctness contract. An overflow is not an approximation. It means the
-requested state cannot be represented by the compiled program.
+The compiled program has [fixed array shapes][jax-dynamic-shapes].
+Counts and masks determine which slots are active at runtime. This is why every
+particle capacity is part of the correctness contract. An overflow is not an
+approximation. It means the requested state cannot be represented by the
+compiled program.
 
 ## Forward state transitions
 
@@ -182,6 +193,10 @@ Each N-body macro-step alternates three maps:
    gathers acceleration back to particles.
 3. **Kick** updates canonical velocity from acceleration.
 
+This PM drift-force-kick structure and its growth-aware cosmological variant
+are standard in particle-mesh evolution
+{cite:p}`hockney1988particles,feng2016fastpm,li2024adjoint`.
+
 The force is initialized before the first macro-step. It is refreshed after
 each drift and reused by the adjacent kick.
 
@@ -195,7 +210,8 @@ discrete forward operator.
 
 This is a discretize-then-differentiate construction. The reverse pass is the
 transpose of the implemented drift, route, force, and kick maps. It is not a
-separate numerical integration of a continuous adjoint equation.
+separate numerical integration of a continuous adjoint equation
+{cite:p}`griewank2008derivatives,li2024adjoint`.
 
 ## Core invariants
 
@@ -235,3 +251,13 @@ of the number or model of devices used to execute the program.
 | mesh halos | `mesh_halo.py` |
 | distributed FFTs | `FFT_distributed.py` |
 | optional CUDA FFI | `cuda_routing.py`, `cuda/route_kernels.cu` |
+
+[jax-jit]: https://docs.jax.dev/en/latest/_autosummary/jax.jit.html
+[jax-pytrees]: https://docs.jax.dev/en/latest/pytrees.html
+[jax-shard-map]: https://docs.jax.dev/en/latest/notebooks/shard_map.html
+[jax-ppermute]: https://docs.jax.dev/en/latest/_autosummary/jax.lax.ppermute.html
+[jax-custom-partitioning]: https://docs.jax.dev/en/latest/jax.experimental.custom_partitioning.html
+[jax-custom-vjp]: https://docs.jax.dev/en/latest/_autosummary/jax.custom_vjp.html
+[jax-pallas]: https://docs.jax.dev/en/latest/pallas/
+[jax-ffi]: https://docs.jax.dev/en/latest/ffi.html
+[jax-dynamic-shapes]: https://docs.jax.dev/en/latest/notebooks/Common_Gotchas_in_JAX.html#dynamic-shapes

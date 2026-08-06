@@ -61,6 +61,7 @@ def _init_confs():
         multigpu=MultiGPUConfiguration(
             compute_mesh=compute_mesh,
             mode="mesh_halo",
+            cuda_routing=True,
         ),
         max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * 2.5),
         max_share_ptcl=4000,

@@ -3,12 +3,20 @@
 PM++ decomposes the periodic box into slabs along the global x-axis. Particles
 are owned by slabs, real meshes are sharded by x, and Fourier transforms
 temporarily move the sharding to y. The runtime keeps these representation
-changes separate from the physical simulation state.
+changes separate from the physical simulation state. Periodic slab
+decomposition is an established design for parallel cosmological
+particle-mesh solvers {cite:p}`merz2005pmfast,feng2016fastpm`. Local transforms
+joined by global layout transposes are the standard construction for
+distributed multidimensional FFTs
+{cite:p}`pippig2013pfft,pekurovsky2012p3dfft`.
 
 ## Logical device topology
 
 A one-dimensional JAX `Mesh` named `gpus` defines the logical device order.
 Topology arrays use positions in that logical mesh, not physical device IDs.
+Named meshes and explicit per-shard programs follow JAX's
+[distributed-array model][jax-distributed-arrays] and
+[`shard_map`][jax-shard-map].
 For $P$ devices and a mesh with $N_x$ cells, logical device $r$ owns
 
 $$
@@ -27,7 +35,8 @@ $$
 $$
 
 Left and right ring permutations are built once from the logical mesh. All
-neighbor communication uses these permutations through `lax.ppermute`.
+neighbor communication uses these permutations through
+[`lax.ppermute`][jax-ppermute].
 
 ## Authoritative particle ownership
 
@@ -49,13 +58,16 @@ bound is exclusive, so every valid coordinate has one owner.
 
 `mesh_halo` stores only these authoritative particles. Mesh boundary cells are
 exchanged for CIC, but particles are not duplicated for the force calculation.
-Particle ownership can still change after a drift.
+Particle ownership can still change after a drift. This owner-computes domain
+decomposition and migration pattern is established in parallel particle
+simulation {cite:p}`plimpton1995domain,feng2016fastpm`.
 
 ## Static particle buffers
 
-JAX compilation requires fixed shapes. Each device therefore stores
-`max_ptcl_per_slice` slots even though its active particle count changes.
-`unused_index` marks the inactive suffix.
+PM++'s JIT-compiled routing path uses fixed-shape arrays, consistent with JAX's
+[compiled dynamic-shape restrictions][jax-dynamic-shapes]. Each device
+therefore stores `max_ptcl_per_slice` slots even though its active particle
+count changes. `unused_index` marks the inactive suffix.
 
 The routing operation also uses fixed-capacity streams:
 
@@ -97,6 +109,10 @@ explicit order `stay`, `left`, then `right`.
 
 ## Migration after a drift
 
+Spatial domain decomposition requires particles that cross a subdomain
+boundary to migrate to their new owner {cite:p}`feng2016fastpm`. PM++ applies
+this rule after each drift.
+
 After updating displacement, PM++ classifies every valid particle as one of:
 
 - **stay**, if its new coordinate is still in the owned slab
@@ -120,8 +136,9 @@ $$
 $$
 
 The compact outgoing streams have shape `max_share_ptcl`. Counts remain
-uncapped scalars so capacity checks can detect truncation. JAX `ppermute`
-transfers the packed metadata and floating payloads to the neighboring shard.
+uncapped scalars so capacity checks can detect truncation. JAX
+[`ppermute`][jax-ppermute] transfers the packed metadata and floating payloads
+to the neighboring shard.
 
 The stable merge does not need to materialize a second full-capacity stay
 payload. It treats outgoing locations as holes in the already sorted input,
@@ -132,6 +149,9 @@ small incoming streams by key.
 
 Routing is a permutation, compaction, communication, and merge of floating
 particle fields. Its transpose must reverse all four operations.
+Reverse-mode differentiation applies transposed linearized operations in
+reverse evaluation order, including communication between devices
+{cite:p}`griewank2008derivatives,utke2009adjoinable`.
 
 The forward merge records, or can reconstruct, a source tag and source rank for
 each valid output. The transpose then:
@@ -155,10 +175,17 @@ $$
 \left(\frac{N_x}{P}+2h,N_y,N_z\right).
 $$
 
+Neighbor-boundary exchange is a standard multi-GPU pattern for
+domain-decomposed grids {cite:p}`kraus2027multigpu`. The fifth-edition
+[companion examples][pmpp5-examples] are available on GitHub.
+
 The ordinary CIC path uses $h=1$, which is sufficient because CIC reaches only
-one neighboring grid point on either side of a particle. A larger static halo
-is available for operators whose known support is wider, provided it fits in
-one neighbor slab.
+one neighboring grid point on either side of a particle
+{cite:p}`hockney1988particles`. A larger static halo is available for operators
+whose known support is wider, provided it fits in one neighbor slab.
+Adjacent halo exchange is also used by distributed differentiable
+cosmological particle-mesh solvers to localize compact-support mesh operations
+{cite:p}`modi2021flowpm`.
 
 There are two complementary edge operations.
 
@@ -185,7 +212,9 @@ R^\mathsf T=C.
 $$
 
 The scatter and gather VJPs use this relationship. As a result, halo
-communication is included in the derivative of the distributed operator.
+communication is included in the derivative of the distributed operator, as
+required when adjoining a parallel communication graph
+{cite:p}`utke2009adjoinable`.
 
 ## Two-pass distributed FFT
 
@@ -222,7 +251,8 @@ $$
 The resharding between the two layouts lowers to the required global
 transpose. PM++ retains the natural y-sharded spectral layout for the Poisson
 and gradient operations. It does not transpose back merely to make the Fourier
-array resemble the real-space layout.
+array resemble the real-space layout
+{cite:p}`pippig2013pfft,pekurovsky2012p3dfft`.
 
 The inverse transform reverses these stages:
 
@@ -236,18 +266,22 @@ F(x,k_y,k_z)
 f(x,y,z).
 $$
 
-`custom_partitioning` marks each pass as local in its declared layout. Named
-input and output shardings make the collective transpose explicit to JAX.
+[`custom_partitioning`][jax-custom-partitioning] marks each pass as local in
+its declared layout. Named input and output shardings make the collective
+transpose explicit to JAX.
 
 ## Real FFT adjoints
 
 An rFFT stores only the nonnegative frequencies of its final transformed axis.
-Its adjoint is not an ordinary irFFT call with no adjustment.
+Its adjoint is not an ordinary irFFT call with no adjustment. OpenXLA defines
+the half-spectrum and Hermitian representation used by the transform
+{cite:p}`openxlaFftDocs`. PM++ derives the following discrete transposes from
+that representation and the stated unnormalized DFT convention.
 
 For the forward rFFT transpose, PM++ pads the half-spectrum cotangent to the
 full real input shape, conjugates it, applies a complex inverse FFT, takes the
-real part, and multiplies by the total real-grid size. This matches JAX's
-unnormalized forward transform.
+real part, and multiplies by the total real-grid size. This matches the default
+normalization of JAX's [`rfftn`][jax-rfftn].
 
 For an inverse rFFT with real output shape $\mathbf N$, the transpose first
 computes the conjugated rFFT of the real cotangent. It then applies the
@@ -262,7 +296,8 @@ w(k_z)=
 \end{cases}
 $$
 
-and divides by $\prod_iN_i$. Interior positive frequencies receive weight two
+and divides by $\prod_iN_i$. This is the inverse scaling used by JAX's
+[`irfftn`][jax-irfftn]. Interior positive frequencies receive weight two
 because their omitted negative-frequency partners carry the same real-field
 degree of freedom.
 
@@ -284,7 +319,8 @@ positions, which recovers the exact authoritative layout that entered the
 forward drift. PM++ then rebuilds the forward route from that state and applies
 its transpose to the arriving cotangents. A fused implementation performs the
 reconstruction and route pullback together, but the mathematical map is the
-same sequence.
+same sequence. This extends the reverse-time reconstruction of
+{cite:t}`li2024adjoint` across distributed ownership changes.
 
 ## Implementation anchors
 
@@ -295,4 +331,24 @@ same sequence.
 - `mesh_halo.py`: mesh edge copy and reduction
 - `FFT_distributed.py`: two-pass transforms, partitioning rules, transposed
   spectral layout, and real-FFT custom VJPs
+- `tests/test_grad_fft_distributed.py`: numerical checks of the distributed
+  real-FFT transposes
+- `tests/test_capacity_failure.py`: fail-closed fixed-capacity routing
+- `tests/test_sparse_stay_compaction.py`: stable routing order, provenance,
+  and payload gradients
+- `tests/test_grad_halo_moving.py`: particle-migration route VJP
+- `tests/test_cic_multigpu.py`: CIC across distributed boundaries
+- `tests/test_mesh_halo_scatter_gather.py`: mesh-halo scatter and gather values
+  and gradients
+- `tests/test_grad_nbody_mesh_halo.py`: end-to-end mesh-halo forward and
+  gradient agreement
 - `utils.py`: ring permutations and periodic raveled keys
+
+[jax-distributed-arrays]: https://docs.jax.dev/en/latest/parallel.html
+[jax-shard-map]: https://docs.jax.dev/en/latest/notebooks/shard_map.html
+[jax-ppermute]: https://docs.jax.dev/en/latest/_autosummary/jax.lax.ppermute.html
+[jax-dynamic-shapes]: https://docs.jax.dev/en/latest/notebooks/Common_Gotchas_in_JAX.html#dynamic-shapes
+[jax-custom-partitioning]: https://docs.jax.dev/en/latest/jax.experimental.custom_partitioning.html
+[jax-rfftn]: https://docs.jax.dev/en/latest/_autosummary/jax.numpy.fft.rfftn.html
+[jax-irfftn]: https://docs.jax.dev/en/latest/_autosummary/jax.numpy.fft.irfftn.html
+[pmpp5-examples]: https://github.com/pmpp-book/pmpp5e-examples

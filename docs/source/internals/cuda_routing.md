@@ -1,10 +1,10 @@
 # Optional CUDA routing
 
 PM++ can replace the shard-local classification, packing, stable merge, and
-transpose-scatter parts of `mesh_halo` particle migration with a typed JAX FFI
-extension. Device-to-device communication remains a JAX collective. The
-extension changes how the canonical route is evaluated, not the route's
-mathematical contract.
+transpose-scatter parts of `mesh_halo` particle migration with a typed
+[JAX FFI extension][jax-ffi] {cite:p}`openxlaFfiDocs`. Device-to-device
+communication remains a JAX collective. The extension changes how the
+canonical route is evaluated, not the route's mathematical contract.
 
 ```{mermaid}
 flowchart LR
@@ -16,12 +16,14 @@ flowchart LR
 
 ## Boundary between CUDA and JAX
 
-The CUDA handlers are shard-local. They receive the CUDA stream supplied by
-XLA, enqueue their kernels on that stream, and return without a private device
+[JAX FFI][jax-ffi] and XLA FFI provide a CUDA stream to a device handler, and
+CUDA streams support asynchronous kernel enqueueing
+{cite:p}`openxlaFfiDocs,nvidiaCudaStreamsDocs`. PM++'s shard-local handlers
+enqueue their kernels on that stream and return without a private device
 synchronization. Temporary scan storage comes from the XLA FFI scratch
-allocator.
+allocator used in `route_kernels.cu`.
 
-The ring exchanges remain
+The ring exchanges remain [`jax.lax.ppermute`][jax-ppermute]:
 
 ```python
 jax.lax.ppermute(...)
@@ -33,7 +35,7 @@ itself.
 
 ## Route record
 
-An outgoing particle is encoded as eight `uint32` words:
+An outgoing float32 particle is encoded as eight `uint32` words:
 
 | Word | Contents |
 | --- | --- |
@@ -45,6 +47,11 @@ An outgoing particle is encoded as eight `uint32` words:
 The record is 32 bytes. It is an opaque communication payload. The floating
 values are not numerically converted to integers. Their bit patterns are
 copied into the words and restored by the merge kernel.
+
+Float64 uses a separate typed FFI target and fourteen `uint32` words: the same
+two key/validity words followed by six two-word float64 bit patterns. The
+resulting record is 56 bytes. Keeping both records as `uint32` arrays preserves
+the ordinary JAX `ppermute` communication boundary.
 
 Acceleration is absent because the ordinary drift immediately refreshes the
 force. When an internal adjoint helper needs acceleration to reconstruct a
@@ -76,6 +83,9 @@ Classification is followed by a stable compaction:
 3. a block-level exclusive scan gives each selected lane its local rank
 4. the block offset plus local rank gives its output position.
 
+This scan-based packing follows the parallel prefix-scan and compaction
+construction implemented by CUB {cite:p}`merrill2016scan`.
+
 Because input slots are already in canonical key order, preserving input order
 also keeps each outgoing record stream sorted by key.
 
@@ -105,7 +115,9 @@ stay < left < right
 ```
 
 for equal keys. The kernel writes the selected `pmid`, displacement, velocity,
-validity, key, and provenance tag and index.
+validity, key, and provenance tag and index. The diagonal partitioning is a
+GPU merge-path construction extended here to three streams
+{cite:p}`green2012merge`.
 
 ## Typed FFI targets
 
@@ -121,15 +133,22 @@ The shared library exports these typed handlers:
 | `pmpp_route_transpose_split` | split merged cotangents by source tag |
 | `pmpp_route_transpose_scatter` | scatter returned cotangents to source slots |
 
+These unsuffixed targets are the float32 ABI. Each target also has a float64
+counterpart with an `_f64` suffix.
+
 `cuda_routing.py` loads the shared library with `ctypes`, converts exported
 symbols to JAX capsules, and registers them for the CUDA platform. Each Python
 wrapper declares exact input and output shapes and dtypes with
-`jax.ShapeDtypeStruct` before calling `jax.ffi.ffi_call`.
+`jax.ShapeDtypeStruct` before calling [`jax.ffi.ffi_call`][jax-ffi]
+{cite:p}`openxlaFfiDocs`.
 
 ## Differentiation boundary
 
 The FFI pack and merge targets do not define a standalone JAX derivative.
-They execute inside the custom VJP of the full N-body evolution.
+They execute inside the custom VJP of the full N-body evolution. JAX
+[does not automatically differentiate foreign calls][jax-ffi], so the
+extension needs an explicit transformation rule such as
+[`custom_vjp`][jax-custom-vjp].
 
 During the reverse pass, PM++ reconstructs the canonical forward route and its
 provenance. The local transpose is
@@ -160,7 +179,7 @@ implementation checks:
 
 - a qualified JAX 0.6 typed-FFI line
 - a CUDA JAX backend
-- float32 particle payloads
+- float32 or float64 particle payloads, with dtype-matched classification
 - 16- or 32-bit `pmid`, converted to int32 at the FFI boundary
 - at least two logical devices
 - `mesh_halo` mode
@@ -207,3 +226,7 @@ the optional artifact is absent.
   wrappers
 - `halo_moving.py`: canonical route, JAX collectives, capacity checks, and
   custom-adjoint integration
+
+[jax-ffi]: https://docs.jax.dev/en/latest/ffi.html
+[jax-ppermute]: https://docs.jax.dev/en/latest/_autosummary/jax.lax.ppermute.html
+[jax-custom-vjp]: https://docs.jax.dev/en/latest/_autosummary/jax.custom_vjp.html

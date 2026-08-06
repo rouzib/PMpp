@@ -1890,7 +1890,7 @@ def _canonical_route_authoritative_with_aux(
     conf,
 ):
     """Route authoritative particles and save the data needed by the transpose."""
-    if cuda_routing_enabled(conf) and jnp.dtype(disp.dtype) == jnp.float32:
+    if cuda_routing_enabled(conf):
         return _canonical_route_authoritative_with_aux_cuda(
             keys,
             pmid,
@@ -2052,7 +2052,7 @@ def _reverse_route_cot(
     conf=None,
 ):
     """Transpose the authoritative particle migration route."""
-    if conf is not None and cuda_routing_enabled(conf) and merged_cot.dtype == jnp.float32:
+    if conf is not None and cuda_routing_enabled(conf):
         stay_cot, incoming_from_left_cot, incoming_from_right_cot = (
             cuda_route_transpose_split(
                 merged_cot,
@@ -2147,7 +2147,7 @@ def _reverse_route_cot_two_gpu(
     equals 1 (incoming_from_left). We skip the zero-ppermute on that side
     and the associated scatter.
     """
-    if conf is not None and cuda_routing_enabled(conf) and merged_cot.dtype == jnp.float32:
+    if conf is not None and cuda_routing_enabled(conf):
         stay_cot, _incoming_from_left_cot, incoming_from_right_cot = (
             cuda_route_transpose_split(
                 merged_cot,

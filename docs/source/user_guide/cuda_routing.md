@@ -31,8 +31,10 @@ requirements are:
 - CMake 3.24 or newer
 - at least two GPUs
 
-CUDA routing supports float32 simulation fields, `int16` or `int32` particle
-IDs, and `mesh_halo` mode.
+CUDA routing supports float32 and float64 simulation fields, `int16` or
+`int32` particle mesh indices (`pmid`), and `mesh_halo` mode. The indices are
+converted to int32 at the FFI boundary; the persistent PM++ particle arrays
+retain the configured integer dtype.
 
 ## Build and select the extension
 
@@ -113,8 +115,8 @@ requirements, PM++ automatically retains the packed portable JAX router.
 That fallback still performs the same capacity checks, routing, collectives,
 and custom-adjoint calculation. Its cost is performance rather than a change
 in the intended numerical method. Keep the fallback available for CPU runs,
-single-GPU runs, non-float32 work, platform qualification, and controlled
-regression tests.
+single-GPU runs, unsupported floating dtypes, platform qualification, and
+controlled regression tests.
 
 For the handler ABI, packed record format, and the boundary between the FFI and
 the adjoint, see [Optional CUDA routing](../internals/cuda_routing.md).

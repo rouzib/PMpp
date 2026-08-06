@@ -52,6 +52,8 @@ def _write_manifest(build_dir: Path, python: str, architectures: str):
         "embedded_cuda_architectures": [part for part in architectures.split(";") if part],
         "build_timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "record_format_version": 2,
+        "record_words_by_dtype": {"float32": 8, "float64": 14},
+        "particle_float_dtypes": ["float32", "float64"],
         "artifact": None if artifact is None else artifact.name,
         "artifact_sha256": artifact_hash,
         "routing_targets": [
@@ -62,6 +64,13 @@ def _write_manifest(build_dir: Path, python: str, architectures: str):
             "pmpp_route_transpose_scatter",
             "pmpp_route_bidir_pack",
             "pmpp_route_merge_bidir",
+            "pmpp_route_pack_f64",
+            "pmpp_route_merge_f64",
+            "pmpp_route_merge_aux_f64",
+            "pmpp_route_transpose_split_f64",
+            "pmpp_route_transpose_scatter_f64",
+            "pmpp_route_bidir_pack_f64",
+            "pmpp_route_merge_bidir_f64",
         ],
     }
     manifest_path = build_dir / "pmpp_cuda_routing.manifest.json"

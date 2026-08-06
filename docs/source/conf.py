@@ -31,8 +31,12 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx_copybutton",
     "sphinx_design",
+    "sphinxcontrib.bibtex",
     "sphinxcontrib.mermaid",
 ]
+
+bibtex_bibfiles = ["references.bib"]
+bibtex_reference_style = "author_year"
 
 source_suffix = {
     ".rst": "restructuredtext",
@@ -107,6 +111,7 @@ html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 html_js_files = [
     ("mermaid-pan-zoom.js", {"defer": "defer"}),
+    ("sidebar-state.js", {"defer": "defer"}),
 ]
 html_sidebars = {
     # The PyData theme's stock sidebar starts below the current top-level
@@ -117,7 +122,9 @@ html_sidebars = {
 html_theme_options = {
     "collapse_navigation": False,
     "navigation_depth": 4,
-    "show_nav_level": 3,
+    # Keep the master tree available while folding its branches by default.
+    # PyData opens the branch containing the current page automatically.
+    "show_nav_level": 1,
     "show_toc_level": 2,
     "sidebar_includehidden": True,
     # The root toctree contains exactly five major sections.  Keep all five in

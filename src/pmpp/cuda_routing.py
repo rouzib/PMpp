@@ -10,9 +10,10 @@ parts of ``mesh_halo`` routing.  Neighbor communication remains ordinary JAX
 The extension ABI is intentionally small:
 
 * ``pmpp_route_pack`` classifies a local authoritative buffer and emits a
-  fixed-capacity array of eight ``uint32`` words per record.  The words are a
-  32-byte opaque record: raveled pmid, validity, three displacement values, and
-  three velocity values (the floating-point values are bit-copied).
+  fixed-capacity opaque ``uint32`` record.  Float32 records use eight words
+  (32 bytes), while float64 records use fourteen words (56 bytes): a raveled
+  pmid, validity, three displacement values, and three velocity values (the
+  floating-point values are bit-copied).
 * ``pmpp_route_merge`` performs a stable merge against a virtual stay stream
   and emits canonical ``pmid``, displacement, velocity, and validity arrays.
 * ``pmpp_route_merge_aux`` has the same operation but additionally emits source
@@ -36,22 +37,31 @@ import jax.numpy as jnp
 import numpy as np
 
 
-_CURRENT_TARGETS = (
+_FLOAT32_TARGETS = (
     "pmpp_route_pack",
     "pmpp_route_merge",
     "pmpp_route_merge_aux",
     "pmpp_route_transpose_split",
     "pmpp_route_transpose_scatter",
 )
-_BIDIR_TARGETS = (
+_FLOAT32_BIDIR_TARGETS = (
     "pmpp_route_bidir_pack",
     "pmpp_route_merge_bidir",
 )
+_FLOAT64_TARGETS = tuple(f"{target}_f64" for target in _FLOAT32_TARGETS)
+_FLOAT64_BIDIR_TARGETS = tuple(
+    f"{target}_f64" for target in _FLOAT32_BIDIR_TARGETS
+)
+# Backward-compatible names used by diagnostics and older tests.
+_CURRENT_TARGETS = _FLOAT32_TARGETS
+_BIDIR_TARGETS = _FLOAT32_BIDIR_TARGETS
 # Kept as a public-ish compatibility name for diagnostics and older tests.
 _TARGETS = _CURRENT_TARGETS
 _LIBRARY: ctypes.CDLL | None = None
 _REGISTERED = False
 _BIDIR_REGISTERED = False
+_FLOAT64_REGISTERED = False
+_FLOAT64_BIDIR_REGISTERED = False
 _RECORD_FORMAT_VERSION = 2
 
 
@@ -132,6 +142,7 @@ def _load_library() -> ctypes.CDLL | None:
 
 def _register_targets(*, strict: bool = False) -> bool:
     global _REGISTERED, _BIDIR_REGISTERED
+    global _FLOAT64_REGISTERED, _FLOAT64_BIDIR_REGISTERED
     manifest = _load_build_manifest()
     if manifest is not None and int(manifest.get("record_format_version", -1)) != _RECORD_FORMAT_VERSION:
         if strict:
@@ -172,6 +183,38 @@ def _register_targets(*, strict: bool = False) -> bool:
             _BIDIR_REGISTERED = False
         else:
             _BIDIR_REGISTERED = True
+
+    if not _FLOAT64_REGISTERED and all(
+        hasattr(library, target) for target in _FLOAT64_TARGETS
+    ):
+        try:
+            for target in _FLOAT64_TARGETS:
+                jax.ffi.register_ffi_target(
+                    target,
+                    jax.ffi.pycapsule(getattr(library, target)),
+                    platform="CUDA",
+                )
+        except (AttributeError, RuntimeError, TypeError, ValueError, OSError):
+            _FLOAT64_REGISTERED = False
+            if strict:
+                raise
+        else:
+            _FLOAT64_REGISTERED = True
+
+    if not _FLOAT64_BIDIR_REGISTERED and all(
+        hasattr(library, target) for target in _FLOAT64_BIDIR_TARGETS
+    ):
+        try:
+            for target in _FLOAT64_BIDIR_TARGETS:
+                jax.ffi.register_ffi_target(
+                    target,
+                    jax.ffi.pycapsule(getattr(library, target)),
+                    platform="CUDA",
+                )
+        except (AttributeError, RuntimeError, TypeError, ValueError, OSError):
+            _FLOAT64_BIDIR_REGISTERED = False
+        else:
+            _FLOAT64_BIDIR_REGISTERED = True
     return _REGISTERED
 
 
@@ -186,8 +229,18 @@ def extension_status() -> dict[str, Any]:
         "library": None if library is None else getattr(library, "_name", None),
         "registered": bool(_REGISTERED),
         "bidir_registered": bool(_BIDIR_REGISTERED),
+        "float64_registered": bool(_FLOAT64_REGISTERED),
+        "float64_bidir_registered": bool(_FLOAT64_BIDIR_REGISTERED),
         "bidir_targets": tuple(
             target for target in _BIDIR_TARGETS
+            if library is not None and hasattr(library, target)
+        ),
+        "float64_targets": tuple(
+            target for target in _FLOAT64_TARGETS
+            if library is not None and hasattr(library, target)
+        ),
+        "float64_bidir_targets": tuple(
+            target for target in _FLOAT64_BIDIR_TARGETS
             if library is not None and hasattr(library, target)
         ),
         "build_identifier": None if manifest is None else manifest.get("build_identifier"),
@@ -204,7 +257,8 @@ def supported_configuration(
     """Check the static conditions required by the CUDA routing ABI."""
     if not _qualified_jax() or str(jax.default_backend()).lower() not in {"gpu", "cuda"}:
         return False
-    if jnp.dtype(conf.float_dtype) != jnp.float32:
+    float_dtype = jnp.dtype(conf.float_dtype)
+    if float_dtype not in {jnp.dtype(jnp.float32), jnp.dtype(jnp.float64)}:
         return False
     if jnp.dtype(conf.pmid_dtype) not in {jnp.dtype(jnp.int16), jnp.dtype(jnp.int32)}:
         return False
@@ -221,7 +275,9 @@ def supported_configuration(
         mesh_size = int(np.prod(tuple(int(value) for value in conf.mesh_shape)))
     except (AttributeError, TypeError, ValueError):
         return False
-    return mesh_size <= np.iinfo(np.uint32).max and _register_targets()
+    if mesh_size > np.iinfo(np.uint32).max or not _register_targets():
+        return False
+    return float_dtype == jnp.float32 or bool(_FLOAT64_REGISTERED)
 
 
 def supported_bidir_configuration(
@@ -230,6 +286,8 @@ def supported_bidir_configuration(
     """Check the additional qualification required by the merge-path route."""
     if not supported_configuration(conf, num_devices=num_devices, mode=mode):
         return False
+    if jnp.dtype(conf.float_dtype) == jnp.float64:
+        return bool(_FLOAT64_BIDIR_REGISTERED)
     return bool(_BIDIR_REGISTERED)
 
 
@@ -251,6 +309,21 @@ def _shape_dtype(shape: tuple[int, ...], dtype: Any) -> jax.ShapeDtypeStruct:
     return jax.ShapeDtypeStruct(shape, jnp.dtype(dtype))
 
 
+def _float_abi(*values: jax.Array) -> tuple[jnp.dtype, int, str]:
+    """Resolve the typed FFI suffix and record width for routing payloads."""
+    dtypes = {jnp.dtype(value.dtype) for value in values}
+    if len(dtypes) != 1:
+        raise TypeError(f"CUDA routing floating payloads must share one dtype, got {dtypes}")
+    dtype = dtypes.pop()
+    if dtype == jnp.float32:
+        return dtype, 8, ""
+    if dtype == jnp.float64:
+        if not _FLOAT64_REGISTERED:
+            raise RuntimeError("the loaded PM++ CUDA routing library has no float64 ABI")
+        return dtype, 14, "_f64"
+    raise TypeError(f"CUDA routing supports float32 or float64 payloads, got {dtype}")
+
+
 def route_pack(
     pmid: jax.Array,
     disp: jax.Array,
@@ -269,18 +342,19 @@ def route_pack(
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Call the shard-local CUDA route-pack handler."""
     n = int(pmid.shape[0])
+    float_dtype, record_words, target_suffix = _float_abi(disp, vel, x_mod)
     outputs = (
-        _shape_dtype((capacity, 8), jnp.uint32),
+        _shape_dtype((capacity, record_words), jnp.uint32),
         _shape_dtype((), jnp.int32),
         _shape_dtype((n,), jnp.uint8),
     )
-    call = jax.ffi.ffi_call("pmpp_route_pack", outputs)
+    call = jax.ffi.ffi_call(f"pmpp_route_pack{target_suffix}", outputs)
     return call(
         pmid.astype(jnp.int32),
-        disp.astype(jnp.float32),
-        vel.astype(jnp.float32),
+        disp.astype(float_dtype),
+        vel.astype(float_dtype),
         valid.astype(jnp.uint8),
-        x_mod.astype(jnp.float32),
+        x_mod.astype(float_dtype),
         jnp.asarray(owned_start, dtype=jnp.int32),
         jnp.asarray(owned_end, dtype=jnp.int32),
         jnp.asarray(slice_width, dtype=jnp.int32),
@@ -292,20 +366,6 @@ def route_pack(
         num_devices=np.int32(num_devices),
         capacity=np.int32(capacity),
     )
-
-
-def route_pack_bidir(*args, **kwargs):
-    """Reference contract for the experimental one-pass bidirectional route.
-
-    The existing FFI artifact intentionally remains the independently
-    selectable ``cuda_current`` backend.  Until a library advertises the new
-    target in its manifest, this function exposes the same fixed-capacity
-    semantics through the JAX shard-local implementation for logical-topology
-    tests; it is not reported as native CUDA.
-    """
-    from ._experimental.routing import route_pack_bidir as _route_pack_bidir
-
-    return _route_pack_bidir(*args, **kwargs)
 
 
 def route_pack_bidir_cuda(
@@ -328,14 +388,17 @@ def route_pack_bidir_cuda(
 
     Returns left records, right records, their uncapped counts, the per-slot
     classification, compact stay keys/indices, and the uncapped stay count.
-    The record arrays use the same eight-word format as ``route_pack``.
+    The record arrays use the same dtype-specific format as ``route_pack``.
     """
     n = int(pmid.shape[0])
+    float_dtype, record_words, target_suffix = _float_abi(disp, vel, x_mod)
+    if float_dtype == jnp.float64 and not _FLOAT64_BIDIR_REGISTERED:
+        raise RuntimeError("the loaded PM++ CUDA routing library has no float64 bidirectional ABI")
     if stay_capacity is None:
         stay_capacity = capacity
     outputs = (
-        _shape_dtype((capacity, 8), jnp.uint32),
-        _shape_dtype((capacity, 8), jnp.uint32),
+        _shape_dtype((capacity, record_words), jnp.uint32),
+        _shape_dtype((capacity, record_words), jnp.uint32),
         _shape_dtype((), jnp.int32),
         _shape_dtype((), jnp.int32),
         _shape_dtype((n,), jnp.uint8),
@@ -343,12 +406,12 @@ def route_pack_bidir_cuda(
         _shape_dtype((stay_capacity,), jnp.int32),
         _shape_dtype((), jnp.int32),
     )
-    return jax.ffi.ffi_call("pmpp_route_bidir_pack", outputs)(
+    return jax.ffi.ffi_call(f"pmpp_route_bidir_pack{target_suffix}", outputs)(
         pmid.astype(jnp.int32),
-        disp.astype(jnp.float32),
-        vel.astype(jnp.float32),
+        disp.astype(float_dtype),
+        vel.astype(float_dtype),
         valid.astype(jnp.uint8),
-        x_mod.astype(jnp.float32),
+        x_mod.astype(float_dtype),
         jnp.asarray(owned_start, dtype=jnp.int32),
         jnp.asarray(owned_end, dtype=jnp.int32),
         global_nmesh=np.int32(global_nmesh),
@@ -378,20 +441,23 @@ def route_merge_bidir_cuda(
     capacity: int,
 ) -> tuple[jax.Array, ...]:
     """Merge stay, left, and right streams with stable source provenance."""
+    float_dtype, _, target_suffix = _float_abi(disp, vel)
+    if float_dtype == jnp.float64 and not _FLOAT64_BIDIR_REGISTERED:
+        raise RuntimeError("the loaded PM++ CUDA routing library has no float64 bidirectional ABI")
     outputs = (
         _shape_dtype((capacity, 3), jnp.int32),
-        _shape_dtype((capacity, 3), jnp.float32),
-        _shape_dtype((capacity, 3), jnp.float32),
+        _shape_dtype((capacity, 3), float_dtype),
+        _shape_dtype((capacity, 3), float_dtype),
         _shape_dtype((capacity,), jnp.uint8),
         _shape_dtype((capacity,), jnp.uint8),
         _shape_dtype((capacity,), jnp.int32),
         _shape_dtype((capacity,), jnp.uint32),
         _shape_dtype((), jnp.int32),
     )
-    return jax.ffi.ffi_call("pmpp_route_merge_bidir", outputs)(
+    return jax.ffi.ffi_call(f"pmpp_route_merge_bidir{target_suffix}", outputs)(
         pmid.astype(jnp.int32),
-        disp.astype(jnp.float32),
-        vel.astype(jnp.float32),
+        disp.astype(float_dtype),
+        vel.astype(float_dtype),
         stay_keys.astype(jnp.uint32),
         stay_indices.astype(jnp.int32),
         stay_count.astype(jnp.int32),
@@ -425,10 +491,11 @@ def route_merge(
     when producing each output slot, so outgoing holes never need a second
     full-capacity payload allocation.
     """
+    float_dtype, _, target_suffix = _float_abi(disp, vel)
     outputs: tuple[jax.ShapeDtypeStruct, ...] = (
         _shape_dtype((capacity, 3), jnp.int32),
-        _shape_dtype((capacity, 3), jnp.float32),
-        _shape_dtype((capacity, 3), jnp.float32),
+        _shape_dtype((capacity, 3), float_dtype),
+        _shape_dtype((capacity, 3), float_dtype),
         _shape_dtype((capacity,), jnp.uint8),
     )
     if auxiliary:
@@ -436,14 +503,14 @@ def route_merge(
             _shape_dtype((capacity,), jnp.uint8),
             _shape_dtype((capacity,), jnp.int32),
         )
-        target = "pmpp_route_merge_aux"
+        target = f"pmpp_route_merge_aux{target_suffix}"
     else:
-        target = "pmpp_route_merge"
+        target = f"pmpp_route_merge{target_suffix}"
     call = jax.ffi.ffi_call(target, outputs)
     return call(
         pmid.astype(jnp.int32),
-        disp.astype(jnp.float32),
-        vel.astype(jnp.float32),
+        disp.astype(float_dtype),
+        vel.astype(float_dtype),
         stay_mask.astype(jnp.uint8),
         incoming_records.astype(jnp.uint32),
         incoming_count.astype(jnp.int32),
@@ -464,13 +531,14 @@ def route_transpose_split(
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Transpose a merge locally into stay/left/right exchange streams."""
     payload_shape = tuple(int(value) for value in merged_cot.shape[1:])
+    float_dtype, _, target_suffix = _float_abi(merged_cot)
     outputs = (
-        _shape_dtype((auth_size,) + payload_shape, jnp.float32),
-        _shape_dtype((share_capacity,) + payload_shape, jnp.float32),
-        _shape_dtype((share_capacity,) + payload_shape, jnp.float32),
+        _shape_dtype((auth_size,) + payload_shape, float_dtype),
+        _shape_dtype((share_capacity,) + payload_shape, float_dtype),
+        _shape_dtype((share_capacity,) + payload_shape, float_dtype),
     )
-    return jax.ffi.ffi_call("pmpp_route_transpose_split", outputs)(
-        merged_cot.astype(jnp.float32),
+    return jax.ffi.ffi_call(f"pmpp_route_transpose_split{target_suffix}", outputs)(
+        merged_cot.astype(float_dtype),
         source_tag.astype(jnp.uint8),
         source_idx.astype(jnp.int32),
         auth_size=np.int32(auth_size),
@@ -493,11 +561,14 @@ def route_transpose_scatter(
     share_capacity: int,
 ) -> jax.Array:
     """Scatter returned route cotangents into authoritative source slots."""
-    output = _shape_dtype(tuple(int(value) for value in stay_cot.shape), jnp.float32)
-    return jax.ffi.ffi_call("pmpp_route_transpose_scatter", output)(
-        stay_cot.astype(jnp.float32),
-        send_left_cot.astype(jnp.float32),
-        send_right_cot.astype(jnp.float32),
+    float_dtype, _, target_suffix = _float_abi(
+        stay_cot, send_left_cot, send_right_cot
+    )
+    output = _shape_dtype(tuple(int(value) for value in stay_cot.shape), float_dtype)
+    return jax.ffi.ffi_call(f"pmpp_route_transpose_scatter{target_suffix}", output)(
+        stay_cot.astype(float_dtype),
+        send_left_cot.astype(float_dtype),
+        send_right_cot.astype(float_dtype),
         stay_pos.astype(jnp.int32),
         stay_valid.astype(jnp.uint8),
         send_left_pos.astype(jnp.int32),
@@ -514,7 +585,6 @@ __all__ = [
     "extension_status",
     "route_merge",
     "route_pack",
-    "route_pack_bidir",
     "route_pack_bidir_cuda",
     "route_merge_bidir_cuda",
     "requested_backend",

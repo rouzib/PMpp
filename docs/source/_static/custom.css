@@ -3,10 +3,20 @@
   --pmpp-accent-2: #00c2ff;
   --pmpp-ink: #182033;
   --pmpp-mermaid-edge: #4b5563;
+  --pmpp-sidebar-primary-max-width: 19rem;
 }
 
 html[data-theme="dark"] {
   --pmpp-mermaid-edge: #d1d5db;
+}
+
+/* PyData uses a 25% primary column on desktop. Cap that column so the site
+   navigation cannot crowd the article on wide displays. The mobile drawer is
+   below this theme-specific breakpoint and keeps its native width. */
+@media (min-width: 960px) {
+  .bd-sidebar-primary {
+    max-width: var(--pmpp-sidebar-primary-max-width);
+  }
 }
 
 /* Mermaid emits its own SVG styles, so the important declarations are needed

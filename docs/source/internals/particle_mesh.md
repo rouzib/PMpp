@@ -3,7 +3,7 @@
 The force operator maps particle displacement to particle acceleration through
 a mesh. It uses cloud-in-cell assignment twice: scatter deposits normalized
 particle mass, while gather interpolates the force field back to the same
-particle positions.
+particle positions {cite:p}`hockney1988particles,li2024adjoint`.
 
 ```{mermaid}
 flowchart LR
@@ -33,7 +33,8 @@ W_{gp}=\prod_{i=1}^{3}\max(1-|u_{gp,i}|,0).
 $$
 
 Only the two adjacent vertices on each axis have nonzero weight, so a particle
-touches $2^3=8$ mesh vertices. Within a stencil cell,
+touches $2^3=8$ mesh vertices {cite:p}`hockney1988particles`. Within a stencil
+cell,
 
 $$
 \frac{\partial W_{gp}}{\partial x_{p,i}}
@@ -67,7 +68,7 @@ $$
 
 where $N_m$ is the number of mesh cells and $N_p$ is the number of physical
 particles. Since the CIC weights for each valid particle sum to one, the
-result has mean one:
+result has mean one {cite:p}`hockney1988particles,li2024adjoint`:
 
 $$
 \rho_g=\frac{N_m}{N_p}\sum_pW_{gp},
@@ -85,7 +86,8 @@ Padding and inactive particle slots have zero value and make no contribution.
 
 ## Periodic Poisson solve
 
-PM++ stores the time-independent scaled potential
+PM++ stores the scaled potential used by the cosmological PM formulation
+{cite:p}`li2024adjoint`:
 
 $$
 \varphi=a\phi,
@@ -116,8 +118,9 @@ $$
 
 The zero mode is explicitly zero. This fixes the arbitrary additive constant
 in the potential and avoids division by zero. The Poisson operator is real,
-diagonal, and self-adjoint under the discrete inner product. Its custom VJP is
-therefore the same Poisson solve applied to the potential cotangent.
+diagonal, and self-adjoint under the discrete inner product. Its
+[custom VJP][jax-custom-vjp] is therefore the same Poisson solve applied to the
+potential cotangent {cite:p}`li2024adjoint`.
 
 ## Spectral force
 
@@ -137,7 +140,8 @@ $$
 On an even grid, a Nyquist mode is its own negative. A first derivative at
 that frequency cannot simultaneously retain the ordinary $ik$ value and the
 Hermitian symmetry needed for a real inverse transform. PM++ sets the
-corresponding derivative component to zero.
+corresponding derivative component to zero, following the usual Fourier
+spectral convention for odd derivatives {cite:p}`trefethen2000spectral`.
 
 When the force mesh is finer than the particle lattice, the density spectrum
 also contains modes above the particle Nyquist limit. PM++ applies the
@@ -150,7 +154,10 @@ $$
 
 before the Poisson solve. The separable representation avoids constructing a
 second dense three-dimensional mask and is compatible with the sharded
-spectral layout.
+spectral layout. PM++ treats modes beyond the particle-lattice resolution as
+unresolved and suppresses them with this explicit model cutoff. This is
+distinct from the general mass-assignment and FFT aliasing problem discussed
+by {cite:t}`sefusatti2016aliasing`.
 
 The three force components are transformed back to real space. A batched
 inverse-transform path keeps the component axis unsharded, then a stacked CIC
@@ -166,7 +173,8 @@ f_p=\sum_gW_{gp}F_g.
 $$
 
 Using the same stencil for deposition and interpolation gives a matched PM
-pair. It also makes the discrete transposes particularly direct.
+pair {cite:p}`hockney1988particles,li2024adjoint`. It also makes the discrete
+transposes particularly direct.
 
 For gather output cotangent $\bar f_p$,
 
@@ -202,13 +210,13 @@ the chain rule.
 ## Reference JAX kernels
 
 The reference CIC implementation materializes the eight neighbors for a chunk
-of particles, then uses indexed JAX gather or scatter operations. `lax.scan`
-can process multiple fixed-size chunks, which bounds the size of intermediate
-arrays without changing the operator.
+of particles, then uses indexed JAX gather or scatter operations.
+[`lax.scan`][jax-scan] can process multiple fixed-size chunks, which bounds the
+size of intermediate arrays without changing the operator.
 
-Custom VJPs implement the equations above directly. This avoids asking JAX to
-differentiate through index construction and makes the intended derivative at
-CIC knots explicit.
+[Custom VJPs][jax-custom-vjp] implement the equations above directly. This
+avoids asking JAX to differentiate through index construction and makes the
+intended derivative at CIC knots explicit {cite:p}`li2024adjoint`.
 
 ## Pallas CIC kernels
 
@@ -216,7 +224,8 @@ When the selected dtype and JAX backend satisfy the Pallas kernel contract,
 PM++ can evaluate the same CIC maps with tiled Pallas kernels. A program tile
 handles up to 128 particle lanes. The final partial tile is padded, and a
 validity mask prevents padded lanes from loading a mesh value, issuing an
-atomic update, or writing a gradient.
+atomic update, or writing a gradient. [Pallas][jax-pallas] provides the
+JAX-traceable custom-kernel model used here.
 
 The coordinate helper statically unrolls the eight neighbors. Gather performs
 eight masked loads per particle and accumulates the weighted result. Scatter
@@ -240,7 +249,10 @@ the PM equations.
 
 In `mesh_halo` mode, every device stores authoritative particles for one
 x-slab and an owned mesh slab. CIC support can cross a slab boundary, so local
-scatter and gather use a mesh with one edge cell from each neighbor.
+scatter and gather use a mesh with one edge cell from each neighbor. This
+follows the neighboring ghost-data pattern of spatial domain decomposition
+{cite:p}`plimpton1995domain`. PM++ expresses the per-device work with
+[`shard_map`][jax-shard-map].
 
 For scatter:
 
@@ -267,3 +279,8 @@ the transpose of the complete distributed forward map.
 - `gravity.py`: density normalization, Nyquist filtering, Poisson solve,
   spectral differentiation, inverse transforms, and force gather
 - `mesh_halo.py`: edge copy and edge reduction
+
+[jax-custom-vjp]: https://docs.jax.dev/en/latest/_autosummary/jax.custom_vjp.html
+[jax-scan]: https://docs.jax.dev/en/latest/_autosummary/jax.lax.scan.html
+[jax-pallas]: https://docs.jax.dev/en/latest/pallas/
+[jax-shard-map]: https://docs.jax.dev/en/latest/notebooks/shard_map.html

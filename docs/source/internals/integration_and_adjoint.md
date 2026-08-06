@@ -3,11 +3,14 @@
 PM++ advances particles with a symplectic drift-force-kick composition. The
 time factors are matched to linear growth rather than assuming that momentum
 and force remain constant in ordinary cosmic time. The custom N-body VJP then
-reverses the exact discrete maps while reconstructing particle states.
+reverses the exact discrete maps while reconstructing particle states
+{cite:p}`feng2016fastpm,li2024adjoint`.
 
 ## Canonical equations
 
-With comoving position $\mathbf x$ and canonical momentum per unit mass
+With comoving position $\mathbf x$ and canonical momentum per unit mass, using
+the standard cosmological Hamiltonian convention
+{cite:p}`springel2005gadget,li2024adjoint`,
 
 $$
 \mathbf p=a^2\dot{\mathbf x},
@@ -58,6 +61,9 @@ Primes denote $d/d\ln a$.
 
 ## Growth-matched drift and kick factors
 
+The modified factors below enforce the linear Zel'dovich growth across a
+finite step {cite:p}`feng2016fastpm,li2024adjoint`.
+
 For a drift from $a_0$ to $a_1$ whose momentum is represented at $a_v$,
 
 $$
@@ -89,6 +95,10 @@ state follows its assumed time dependence. They also work for a reversed
 interval because exchanging $a_0$ and $a_1$ changes the numerator's sign.
 
 ## Configurable symplectic composition
+
+Kick-drift-kick and drift-kick-drift compositions are the standard leapfrog
+splittings used by cosmological particle integrators
+{cite:p}`springel2005gadget,feng2016fastpm`.
 
 `symp_splits` is a sequence of pairs $(d_j,k_j)$. PM++ requires
 
@@ -160,8 +170,8 @@ $\mathbf a_0=F(\mathbf d_0,\boldsymbol\theta)$.
 
 The N-body scale-factor array is either supplied explicitly or constructed
 from `a_start`, `a_stop`, and `a_nbody_maxstep`. Consecutive pairs define the
-macro-steps. `lax.scan` applies `integrate` to every pair, which keeps the loop
-inside the compiled JAX program.
+macro-steps. [`lax.scan`][jax-scan] applies `integrate` to every pair, which
+keeps the loop inside the compiled JAX program.
 
 The final state contains particle anchors, displacement, velocity,
 acceleration, padding masks, and optional attributes. In a multi-device run,
@@ -181,7 +191,8 @@ $$
 
 The adjoint of a composed discrete program applies the transpose Jacobians in
 the reverse order. PM++ differentiates the implemented time step, so its
-reverse pass follows the same substep schedule in reverse.
+reverse pass follows the same substep schedule in reverse
+{cite:p}`griewank2008derivatives,sanzserna2016adjoint,li2024adjoint`.
 
 ## Kick adjoint
 
@@ -247,7 +258,8 @@ overwritten, its cotangent is zero at this boundary.
 An earlier kick may still require the acceleration that existed before this
 force stage. After reversing the force and drift, PM++ recomputes that earlier
 force from the reconstructed particle position. This restores the primal state
-needed by the next reverse substep without storing it from the forward run.
+needed by the next reverse substep without storing it from the forward run
+{cite:p}`li2024adjoint`.
 
 ## Drift and route adjoint
 
@@ -305,11 +317,12 @@ order:
 `nbody_adj` scans all macro-steps in reverse scale-factor order, then applies
 the adjoint of the initial force evaluation at $a_0$.
 
-The `nbody` custom VJP saves the final state rather than the full forward
-trajectory. Reverse reconstruction and force reevaluation make the amount of
-stored particle state independent of the number of time steps. More steps
-increase reverse computation, but do not require a tape containing every
-particle state.
+The `nbody` reverse rule is registered through JAX's
+[`custom_vjp`][jax-custom-vjp] interface. It saves the final state rather than
+the full forward trajectory. Reverse reconstruction and force reevaluation make
+the amount of stored particle state independent of the number of time steps.
+More steps increase reverse computation, but do not require a tape containing
+every particle state {cite:p}`li2024adjoint`.
 
 ## Implementation anchors
 
@@ -320,3 +333,6 @@ particle state.
 - `halo_moving.py`: reconstruction and transpose of the ownership route
 - `gravity.py`, `scatter.py`, `gather.py`, `FFT_distributed.py`: force VJP
   primitives used inside `force_adj`
+
+[jax-scan]: https://docs.jax.dev/en/latest/_autosummary/jax.lax.scan.html
+[jax-custom-vjp]: https://docs.jax.dev/en/latest/_autosummary/jax.custom_vjp.html

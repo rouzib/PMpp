@@ -4,11 +4,12 @@ PM++ constructs initial particle positions and canonical velocities from three
 inputs: cosmological parameters $\boldsymbol\theta$, a white-noise realization
 $\boldsymbol\omega$, and a periodic particle lattice. The construction keeps
 the random realization separate from the cosmology, which allows either input
-to be differentiated or replaced independently.
+to be differentiated or replaced independently {cite:p}`li2024adjoint`.
 
 ## Background expansion
 
-The dimensionless expansion rate is
+For the CPL equation-of-state parametrization, the dimensionless expansion
+rate is {cite:p}`chevallier2001accelerating,linder2003expansion`:
 
 $$
 E^2(a)=\Omega_m a^{-3}+\Omega_k a^{-2}
@@ -45,6 +46,10 @@ G_1=1,\quad G_1'=0,
 G_2=\frac37,\quad G_2'=0.
 $$
 
+These growth equations use the sign and normalization conventions of the PMWD
+adjoint formulation, together with the standard LPT expansion
+{cite:p}`li2024adjoint,bouchet1995lpt`.
+
 After integration, PM++ reconstructs the derivatives needed by LPT and the
 time integrator:
 
@@ -65,13 +70,14 @@ intervals. Outside the tabulated interval the extrapolation slope is zero.
 ## Transfer function and linear power
 
 `boltzmann` builds an Eisenstein-Hu transfer-function table, with either its
-baryonic-wiggle or no-wiggle analytic fit. Despite its historical function
-name, this path does not numerically solve the Einstein-Boltzmann hierarchy.
-It evaluates the fit, integrates the growth ODE, and builds the linear-variance
-table used by `sigma8` and related helpers.
+baryonic-wiggle or no-wiggle analytic fit {cite:p}`eisenstein1998transfer`.
+Despite its historical function name, this path does not numerically solve the
+Einstein-Boltzmann hierarchy. It evaluates the fit, integrates the growth ODE,
+and builds the linear-variance table used by `sigma8` and related helpers.
 
 For pivot scale $k_\mathrm{pivot}$, scalar amplitude $A_s$, and tilt $n_s$,
-the implemented linear matter spectrum satisfies
+the implemented linear matter spectrum follows the normalization of
+{cite:t}`li2024adjoint`:
 
 $$
 \frac{k^3P_\mathrm{lin}(k,a)}{2\pi^2}
@@ -89,8 +95,10 @@ avoids undefined intermediate derivatives without changing nonzero modes.
 ## Ordinary white noise
 
 `white_noise` starts from independent standard-normal samples on the real
-particle lattice. It applies an orthonormal rFFT, so its stored Fourier
-coefficients have the normalization expected by `linear_modes`:
+particle lattice, as in standard Gaussian cosmological initial fields
+{cite:p}`bertschinger2001multiscale`. It applies an orthonormal rFFT, so its
+stored Fourier coefficients have the normalization expected by `linear_modes`
+{cite:p}`li2024adjoint`:
 
 $$
 \omega_\mathbf{k}=\frac{1}{\sqrt{N_p}}
@@ -106,15 +114,19 @@ $$
 
 The optional unit-amplitude mode divides every stored coefficient by its
 magnitude. It preserves phases but changes the Gaussian ensemble, so it is a
-modeling choice rather than another representation of the same realization.
+modeling choice rather than another representation of the same realization
+{cite:p}`angulo2016suppressed`.
 
 ## Resolution-nested white noise
 
 `white_noise_nested` assigns a random value to each signed integer Fourier
 label $(n_x,n_y,n_z)$ instead of consuming a sequential random stream. The
 seed, the three labels, and an independent stream salt are mixed into unsigned
-32-bit hashes. Two hashes are converted to Gaussian variates with a Box-Muller
-map.
+32-bit hashes by PM++'s own noncryptographic mixer. This random-access approach
+is conceptually related to hierarchical phase fields and counter-based random
+streams {cite:p}`jenkins2013phases,salmon2011parallel`, but those sources do
+not define PM++'s exact hash. Two hashes are converted to Gaussian variates
+with a Box-Muller map {cite:p}`box1958normal`.
 
 The rFFT stores only nonnegative $n_z$. On the self-conjugate planes $n_z=0$
 and, for even grids, $n_z=N_z/2$, PM++ chooses one canonical representative of
@@ -134,10 +146,11 @@ are not identical because the fine grid also contains additional modes.
 ## Scaling white noise to density modes
 
 For a periodic volume $V_\mathrm{box}$, PM++ constructs
+{cite:p}`bertschinger2001multiscale,li2024adjoint`:
 
 $$
 \widehat\delta_\mathrm{lin}(\mathbf k,a)
-=\sqrt{V_\mathrm{box}P_\mathrm{lin}(k,a)}\,omega(\mathbf k).
+=\sqrt{V_\mathrm{box}P_\mathrm{lin}(k,a)}\,\omega(\mathbf k).
 $$
 
 This is the discrete form of
@@ -157,7 +170,8 @@ spectral layout used by the distributed FFT.
 ## First-order LPT
 
 Particles begin on Lagrangian lattice positions $\mathbf q$. The first-order
-potential and displacement field are
+potential and displacement field are the Zel'dovich approximation
+{cite:p}`zeldovich1970gravitational,bouchet1995lpt`:
 
 $$
 \nabla_\mathbf q^2\phi^{(1)}=\delta_\mathrm{lin},
@@ -179,6 +193,11 @@ normalization, so `lpt` first divides by the particle-cell volume before the
 discrete Poisson solve.
 
 ## Second-order LPT
+
+At second order, PM++ uses the standard quadratic Lagrangian source with the
+PMWD sign convention {cite:p}`bouchet1995lpt,li2024adjoint`. Second-order LPT
+also reduces starting transients relative to first-order Zel'dovich initial
+conditions {cite:p}`crocce2006transients`.
 
 The first-order strain tensor is
 
@@ -211,7 +230,8 @@ $$
 
 Off-diagonal strain terms zero the particle-grid Nyquist component before
 multiplication. This preserves a real, unambiguous spectral derivative on the
-self-conjugate plane. Diagonal second derivatives retain their Nyquist terms.
+self-conjugate plane. Diagonal second derivatives retain their Nyquist terms
+{cite:p}`trefethen2000spectral`.
 
 The strain diagonals may be cached and reused while forming $L^{(2)}$. Turning
 off this cache recomputes some inverse FFTs while keeping fewer strain arrays
@@ -219,7 +239,8 @@ live. Both paths evaluate the same source.
 
 ## Particle state at the starting scale factor
 
-At $a=a_\mathrm{start}$, PM++ sums the requested LPT orders:
+At $a=a_\mathrm{start}$, PM++ sums the requested LPT orders using the canonical
+momentum convention of {cite:t}`li2024adjoint`:
 
 $$
 \mathbf x(\mathbf q,a)

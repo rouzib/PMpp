@@ -217,8 +217,6 @@ CUDA routing
 
 .. autofunction:: pmpp.cuda_routing.route_pack
 
-.. autofunction:: pmpp.cuda_routing.route_pack_bidir
-
 .. autofunction:: pmpp.cuda_routing.route_pack_bidir_cuda
 
 .. autofunction:: pmpp.cuda_routing.route_merge
@@ -228,18 +226,6 @@ CUDA routing
 .. autofunction:: pmpp.cuda_routing.route_transpose_split
 
 .. autofunction:: pmpp.cuda_routing.route_transpose_scatter
-
-FFI diagnostics and registration
---------------------------------
-
-.. autoclass:: pmpp._ffi.status.FFIStatus
-   :members:
-
-.. autofunction:: pmpp._ffi.status.ffi_status
-
-.. autofunction:: pmpp._ffi.status.load_build_manifest
-
-.. autofunction:: pmpp._ffi.registration.register_targets
 
 Pallas CIC kernels
 ------------------
@@ -337,81 +323,3 @@ QUIJOTE data and validation
 .. autofunction:: pmpp.quijote_metrics.summarize_acceptance
 
 .. autofunction:: pmpp.quijote_metrics.validate_lagrangian_bijection
-
-Experimental policy and capacity
---------------------------------
-
-.. autoclass:: pmpp._experimental.policy.OptimizationPolicy
-   :members:
-
-.. autoclass:: pmpp._experimental.policy.OptimizationStatus
-   :members:
-
-.. autofunction:: pmpp._experimental.policy.resolve_policy
-
-.. autodata:: pmpp._experimental.capacity.CAPACITY_FIELDS
-
-.. autoclass:: pmpp._experimental.capacity.CapacityTelemetry
-   :members:
-
-.. autofunction:: pmpp._experimental.capacity.capacity_sweep_factors
-
-.. autofunction:: pmpp._experimental.capacity.scale_capacity
-
-Experimental CIC and reductions
--------------------------------
-
-.. autoclass:: pmpp._experimental.cic.CICPlan
-   :members:
-
-.. autofunction:: pmpp._experimental.cic.make_cic_plan
-
-.. autofunction:: pmpp._experimental.cic.cic_gather_reference
-
-.. autofunction:: pmpp._experimental.cic.cic_gather_binned
-
-.. autofunction:: pmpp._experimental.cic.cic_gather_vjp
-
-.. autofunction:: pmpp._experimental.cic.cic_scatter_reference
-
-.. autofunction:: pmpp._experimental.cic.cic_scatter_binned
-
-.. autofunction:: pmpp._experimental.cic.cic_scatter_vjp
-
-.. autofunction:: pmpp._experimental.reductions.fused_particle_statistics
-
-.. autofunction:: pmpp._experimental.reductions.fused_phase_space_reductions
-
-Experimental routing
---------------------
-
-.. autoclass:: pmpp._experimental.routing.RouteMessage
-   :members:
-
-.. autoclass:: pmpp._experimental.routing.BidirRouteResult
-   :members:
-
-.. autoclass:: pmpp._experimental.routing.MergePathResult
-   :members:
-
-.. autofunction:: pmpp._experimental.routing.compact_stay_descriptors
-
-.. autofunction:: pmpp._experimental.routing.route_pack_bidir
-
-.. autofunction:: pmpp._experimental.routing.merge_path_route
-
-.. autofunction:: pmpp._experimental.routing.transpose_route_cotangent
-
-Experimental tuning
--------------------
-
-.. py:data:: pmpp._experimental.tuning.CIC_TILE_CANDIDATES
-
-   Candidate particle counts used by the offline CIC tile selector.
-
-.. py:data:: pmpp._experimental.tuning.STATIC_CIC_TILE_TABLE
-
-   Static operation-to-tile mapping used when no offline measurements are
-   supplied.
-
-.. autofunction:: pmpp._experimental.tuning.select_cic_tile

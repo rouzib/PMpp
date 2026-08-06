@@ -3,7 +3,8 @@
 This section describes the algorithm implemented in `src/pmpp`, from the
 cosmological parameters and random modes to a differentiable, distributed
 particle-mesh simulation. It develops the equations together with the array
-layouts and discrete operators that evaluate them.
+layouts and discrete operators that evaluate them
+{cite:p}`hockney1988particles,li2024adjoint`.
 
 The chapters follow the forward simulation and then its reverse pass:
 
@@ -24,18 +25,18 @@ The chapters follow the forward simulation and then its reverse pass:
    route records, stable merge, and route transpose.
 
 The underlying PM and discrete-adjoint formulation follows
-[Li et al., *Differentiable Cosmological Simulation with the Adjoint Method*,
-arXiv:2211.09815v2](https://arxiv.org/abs/2211.09815v2). PM++ keeps those
-mathematical operators while adding distributed particle ownership, mesh-halo
-communication, distributed FFT layouts, and optional local CUDA routing.
+{cite:t}`li2024adjoint`. PM++ keeps those mathematical operators while adding
+distributed particle ownership, mesh-halo communication, distributed FFT
+layouts, and optional local CUDA routing.
 
 ## Conventions
 
 The simulation is periodic. Bold lower-case symbols denote vectors, hats
 denote Fourier coefficients, and a prime denotes differentiation with respect
-to $\ln a$. The discrete Fourier transforms use JAX's default normalization:
-the forward transform is unnormalized and the inverse transform carries
-$1/N_\mathrm{mesh}$.
+to $\ln a$. The discrete Fourier transforms use the default normalization of
+[`jax.numpy.fft.rfftn`][jax-rfftn] and
+[`jax.numpy.fft.irfftn`][jax-irfftn]. The forward transform is unnormalized and
+the inverse transform carries $1/N_\mathrm{mesh}$.
 
 PM++ separates three kinds of quantities:
 
@@ -61,3 +62,6 @@ distributed_runtime
 integration_and_adjoint
 cuda_routing
 ```
+
+[jax-rfftn]: https://docs.jax.dev/en/latest/_autosummary/jax.numpy.fft.rfftn.html
+[jax-irfftn]: https://docs.jax.dev/en/latest/_autosummary/jax.numpy.fft.irfftn.html
