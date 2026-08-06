@@ -20,6 +20,15 @@ _FALLBACK_ARCHITECTURES = "80;86;90;90-virtual"
 _RECORD_FORMAT_VERSION = 2
 
 
+def _supported_jax_version(version: str) -> bool:
+    """Return whether a JAX package version supports the required FFI floor."""
+    match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", version)
+    if match is None:
+        return False
+    major, minor, patch = (int(part or 0) for part in match.groups())
+    return (major, minor, patch) >= (0, 6, 0)
+
+
 def _query(command: list[str]) -> str | None:
     try:
         return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
@@ -98,10 +107,9 @@ def _preflight() -> None:
         jaxlib_version = metadata.version("jaxlib")
     except metadata.PackageNotFoundError as error:
         raise RuntimeError("JAX and jaxlib must be installed before building") from error
-    match = re.match(r"^(\d+)\.(\d+)", jax_version)
-    if match is None or tuple(map(int, match.groups())) != (0, 6):
+    if not _supported_jax_version(jax_version) or not _supported_jax_version(jaxlib_version):
         raise RuntimeError(
-            "CUDA routing is currently qualified for JAX 0.6.x, but this "
+            "CUDA routing requires JAX and jaxlib 0.6.0 or newer, but this "
             f"environment has JAX {jax_version} and jaxlib {jaxlib_version}."
         )
 

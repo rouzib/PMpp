@@ -30,6 +30,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 import jax
@@ -67,13 +68,12 @@ def _truthy_env(name: str, default: bool) -> bool:
 
 def _qualified_jax() -> bool:
     """Return whether the typed FFI ABI is qualified for this prototype."""
-    try:
-        major, minor, patch = (int(part) for part in jax.__version__.split(".")[:3])
-    except (AttributeError, TypeError, ValueError):
+    version = getattr(jax, "__version__", "")
+    match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", version)
+    if match is None:
         return False
-    # The CUDA prototype is compiled and tested against the 0.6 typed FFI
-    # ABI.  A later minor line must qualify itself explicitly before reuse.
-    return (major, minor, patch) >= (0, 6, 0) and major == 0 and minor == 6
+    major, minor, patch = (int(part or 0) for part in match.groups())
+    return (major, minor, patch) >= (0, 6, 0)
 
 
 def _candidate_library_paths() -> tuple[Path, ...]:

@@ -5,6 +5,28 @@ from pathlib import Path
 from pmpp.distributed import build_cuda as build_cuda_routing, cuda as cuda_routing
 
 
+def test_cuda_routing_accepts_jax_0_6_or_newer(monkeypatch):
+    assert build_cuda_routing._supported_jax_version("0.6.0")
+    assert build_cuda_routing._supported_jax_version("0.10.2+computecanada")
+    assert build_cuda_routing._supported_jax_version("1.0.0")
+    assert not build_cuda_routing._supported_jax_version("0.5.3")
+    assert not build_cuda_routing._supported_jax_version("unknown")
+
+    monkeypatch.setattr(cuda_routing.jax, "__version__", "0.10.2+computecanada")
+    assert cuda_routing._qualified_jax()
+    monkeypatch.setattr(cuda_routing.jax, "__version__", "0.5.3")
+    assert not cuda_routing._qualified_jax()
+
+
+def test_cuda_build_preflight_accepts_newer_custom_jax_versions(monkeypatch):
+    monkeypatch.setattr(build_cuda_routing.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(build_cuda_routing.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    versions = {"jax": "0.10.2+computecanada", "jaxlib": "0.10.2+computecanada"}
+    monkeypatch.setattr(build_cuda_routing.metadata, "version", versions.__getitem__)
+
+    build_cuda_routing._preflight()
+
+
 def test_compute_capability_parser_deduplicates_and_sorts():
     assert build_cuda_routing._parse_compute_capabilities("8.6\n9.0\n8.6\n") == ("86", "90", )
 

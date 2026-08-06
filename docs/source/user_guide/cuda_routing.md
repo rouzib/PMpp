@@ -26,7 +26,7 @@ The PM++ wheel contains the CUDA source and build command, but not a precompiled
 shared library. Compiling the extension requires:
 
 - Python 3.10 or newer
-- JAX and `jaxlib` 0.6.x with CUDA support
+- JAX and `jaxlib` 0.6.0 or newer with CUDA support
 - the CUDA toolkit with `nvcc`, CUDA runtime headers, and CUB
 - CMake 3.24 or newer
 - `nvidia-smi` for automatic architecture detection, or an explicit
