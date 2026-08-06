@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
-from jax.experimental.shard_map import shard_map
+from jax import shard_map
 from jax.sharding import PartitionSpec as P
 
 from ..core.utils import AXIS_NAME
@@ -26,7 +26,7 @@ def owned_mesh_partition_spec(ndim: int):
     return P(AXIS_NAME, *([None] * (ndim - 1)))
 
 
-def maybe_shard_map_mesh_local_op(local_fn, conf, in_specs, out_specs, check_rep=False):
+def maybe_shard_map_mesh_local_op(local_fn, conf, in_specs, out_specs, check_vma=False):
     """Conditionally wrap a mesh-local operator in ``shard_map``.
 
     Parameters
@@ -37,7 +37,7 @@ def maybe_shard_map_mesh_local_op(local_fn, conf, in_specs, out_specs, check_rep
         Configuration determining whether distributed execution is active.
     in_specs, out_specs
         ``shard_map`` input/output partition specs.
-    check_rep : bool, optional
+    check_vma : bool, optional
         ``shard_map`` replication-check flag.
 
     Returns
@@ -47,7 +47,7 @@ def maybe_shard_map_mesh_local_op(local_fn, conf, in_specs, out_specs, check_rep
     """
     if conf.compute_mesh is None or conf.num_devices == 1:
         return local_fn
-    return shard_map(local_fn, mesh=conf.compute_mesh, in_specs=in_specs, out_specs=out_specs, check_rep=check_rep, )
+    return shard_map(local_fn, mesh=conf.compute_mesh, in_specs=in_specs, out_specs=out_specs, check_vma=check_vma, )
 
 
 def zero_pad_owned_mesh_halo(mesh_owned, halo_width: int):

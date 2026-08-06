@@ -27,6 +27,10 @@ def _assert_halo_move_succeeded(has_failed, max_ptcl_moved):
             "max_particles_moved={x}.", x=jnp.max(max_ptcl_moved),
         ), lambda _: None, operand=None,
     )
+    # Returning the predicate gives callers a value on which to synchronize.
+    # This matters on asynchronous JAX runtimes where a callback exception can
+    # otherwise be reported after a void jitted function has returned.
+    return has_failed
 
 
 def _halo_move_float_outputs(ptcl, disp, vel, acc, conf):

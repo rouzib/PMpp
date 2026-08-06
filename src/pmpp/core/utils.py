@@ -80,6 +80,7 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
         raise TypeError('cls cannot already be a dataclass')
     cls = dataclasses.dataclass(cls, **kwargs)
 
+    all_fields_static = aux_fields is Ellipsis
     if aux_fields is None:
         aux_fields = ()
     elif isinstance(aux_fields, str):
@@ -129,6 +130,12 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
         obj
             Dataclass instance being flattened into JAX pytree children.
         """
+        if all_fields_static:
+            # Preserve the initialized object itself. Reconstructing an
+            # all-static Configuration by calling its constructor inside a
+            # shard_map reruns __post_init__ under the manual axis context;
+            # JAX 0.10 then assigns manual sharding to cached setup arrays.
+            return (), obj
         return tuple(obj.children()), tuple(obj.aux_data())
 
     def tree_unflatten(aux_data, children):
@@ -141,6 +148,8 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
         children
             Dynamic pytree children restored into the dataclass instance.
         """
+        if all_fields_static:
+            return aux_data
         return cls(**dict(zip(children_names, children)), **dict(zip(aux_data_names, aux_data)))
 
     register_pytree_node(cls, tree_flatten, tree_unflatten)

@@ -3,7 +3,7 @@ from functools import partial
 import jax
 from jax import custom_vjp
 import jax.numpy as jnp
-from jax.experimental.shard_map import shard_map
+from jax import shard_map
 from jax.sharding import NamedSharding, PartitionSpec as P
 
 from ..core.configuration import Configuration
@@ -588,7 +588,7 @@ def _reduce_gather_disp_cot(pmid, disp, unused_index, disp_cot, conf: Configurat
     @partial(
         shard_map, mesh=conf.compute_mesh,
         in_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), P(AXIS_NAME, None), None,
-                  ), out_specs=P(AXIS_NAME, None), check_rep=False,
+                  ), out_specs=P(AXIS_NAME, None), check_vma=False,
     )
     def reduce_local(disp_cot_local, pmid_local, unused_local, disp_local, conf_local):
         """Accumulate local displacement cotangents for owned particles.
@@ -661,7 +661,7 @@ def duplicate_slot_counts(ptcl, conf: Configuration):
     @partial(
         shard_map, mesh=conf.compute_mesh,
         in_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), P(AXIS_NAME, None), None,
-                  ), out_specs=P(AXIS_NAME, None), check_rep=False,
+                  ), out_specs=P(AXIS_NAME, None), check_vma=False,
     )
     def count_local(counts_local, pmid_local, unused_local, disp_local, conf_local):
         """Count local gather contributions for owned particles.

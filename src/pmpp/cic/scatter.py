@@ -3,7 +3,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from jax import custom_vjp
-from jax.experimental.shard_map import shard_map
+from jax import shard_map
 from jax.lax import scan
 from jax.sharding import NamedSharding, PartitionSpec as P
 
@@ -131,7 +131,7 @@ def initialize_mGPU_scatter(conf):
                 P(AXIS_NAME),  # valid particle mask
             ),
             out_specs=P(None, None, None),
-            check_rep=False,
+            check_vma=False,
         )
     if conf.multigpu_mode == "mesh_halo":
         return shard_map(
@@ -147,7 +147,7 @@ def initialize_mGPU_scatter(conf):
                 P(AXIS_NAME),  # valid particle mask
             ),
             out_specs=(P(AXIS_NAME, None, None)),
-            check_rep=False,
+            check_vma=False,
         )
     return shard_map(
         _scatter_mGPU,
@@ -162,7 +162,7 @@ def initialize_mGPU_scatter(conf):
             P(AXIS_NAME),  # valid particle mask
         ),
         out_specs=(P(AXIS_NAME, None, None)),
-        check_rep=False
+        check_vma=False
     )
 
 

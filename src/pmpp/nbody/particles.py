@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.tree_util import tree_map
-from jax.experimental.shard_map import shard_map
+from jax import shard_map
 from jax.typing import ArrayLike
 from jax.sharding import NamedSharding, PartitionSpec as P
 
@@ -16,6 +16,18 @@ from ..distributed.routing import (
     compute_halo_mask as halo_compute_halo_mask, particles_in_slice_mask as halo_particles_in_slice_mask,
 )
 from ..core.utils import pytree_dataclass, is_float0_array, raise_error, AXIS_NAME
+
+
+def _mark_varying(value):
+    """Mark a shard-map value as varying across the PM++ device axis."""
+    if hasattr(jax.lax, "pcast"):
+        try:
+            return jax.lax.pcast(value, AXIS_NAME, to="varying")
+        except NameError:
+            # ``distribute_ptcl_pos`` is also used directly by host-side test
+            # and conversion helpers, where no shard-map axis is bound.
+            return value
+    return jax.lax.pvary(value, (AXIS_NAME, ))
 
 
 @partial(pytree_dataclass, aux_fields=("conf", ), frozen=True, eq=False)
@@ -393,11 +405,12 @@ class Particles:
             empty_vel = jnp.zeros((conf.max_ptcl_per_slice, disp.shape[1]), dtype=vel.dtype)
             empty_acc = jnp.zeros((conf.max_ptcl_per_slice, disp.shape[1]), dtype=acc.dtype)
 
-            # Use jax.lax.pvary on each output to annotate with no partitioning (empty tuple)
-            empty_pmid = jax.lax.pvary(empty_pmid, (AXIS_NAME, ))
-            empty_disp = jax.lax.pvary(empty_disp, (AXIS_NAME, ))
-            empty_vel = jax.lax.pvary(empty_vel, (AXIS_NAME, ))
-            empty_acc = jax.lax.pvary(empty_acc, (AXIS_NAME, ))
+            # JAX 0.10 exposes this variance annotation through pcast. The
+            # helper retains compatibility with JAX 0.6 on Python 3.10.
+            empty_pmid = _mark_varying(empty_pmid)
+            empty_disp = _mark_varying(empty_disp)
+            empty_vel = _mark_varying(empty_vel)
+            empty_acc = _mark_varying(empty_acc)
 
             return empty_pmid, empty_disp, empty_vel, empty_acc
 

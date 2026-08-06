@@ -242,7 +242,7 @@ def evaluate_local_pair_potential(correction, source, a, cosmo, conf):
     apply_fn = partial(transform.apply)
     mesh_spec = owned_mesh_partition_spec(source.ndim)
     apply_fn = maybe_shard_map_mesh_local_op(
-        apply_fn, conf, in_specs=(None, mesh_spec, None, None), out_specs=mesh_spec, check_rep=False,
+        apply_fn, conf, in_specs=(None, mesh_spec, None, None), out_specs=mesh_spec, check_vma=False,
     )
     return apply_fn(
         correction.params, source.astype(correction.dtype), jnp.asarray(a, dtype=correction.dtype),
@@ -305,7 +305,7 @@ def apply_local_pair_correction(correction, a, ptcl, cosmo, conf):
     vector_spec = owned_mesh_partition_spec(potential.ndim + 1)
     gradient_fn = maybe_shard_map_mesh_local_op(
         partial(_negative_central_gradient, conf=conf), conf, in_specs=(mesh_spec, ), out_specs=vector_spec,
-        check_rep=False,
+        check_vma=False,
     )
     force_mesh = _upsample_particle_force_to_force_mesh(gradient_fn(potential), factors)
     residual = gather_stacked_mesh_halo(ptcl, conf, force_mesh)

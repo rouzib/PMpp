@@ -19,7 +19,7 @@ import os
 
 import jax
 import jax.numpy as jnp
-from jax.experimental.shard_map import shard_map
+from jax import shard_map
 from jax.sharding import PartitionSpec as P
 
 from ..core.utils import AXIS_NAME, pmid_to_idx, raise_error
@@ -2087,7 +2087,7 @@ def initialize_mGPU_halo_movement_canonical(conf):
         ), out_specs=(
             P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME,
                                                                           None), P(AXIS_NAME), P(AXIS_NAME), P(), P(),
-        ), check_rep=False,
+        ), check_vma=False,
     )
 
 
@@ -2121,7 +2121,7 @@ def initialize_mGPU_halo_movement_no_acc(conf):
                                                                None), P(AXIS_NAME), P(AXIS_NAME), P(AXIS_NAME),
         ),
         out_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), P(AXIS_NAME), P(), P(),
-                   ), check_rep=False,
+                   ), check_vma=False,
     )
 
 
@@ -2164,7 +2164,7 @@ def initialize_mGPU_reconstruct_pre_drift(conf):
                                                                None), P(AXIS_NAME), P(AXIS_NAME), P(AXIS_NAME), P(),
         ), out_specs=(
             P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), P(AXIS_NAME),
-        ), check_rep=False,
+        ), check_vma=False,
     )
 
 
@@ -2201,7 +2201,7 @@ def initialize_mGPU_reconstruct_pre_drift_pullback(conf):
         ), out_specs=(
             P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), P(AXIS_NAME),
             P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None),
-        ), check_rep=False,
+        ), check_vma=False,
     )
 
 
@@ -2243,7 +2243,7 @@ def initialize_mGPU_halo_move_pullback(conf):
             P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None),
             P(AXIS_NAME), P(AXIS_NAME), P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None),
         ), out_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None),
-                      ), check_rep=False,
+                      ), check_vma=False,
     )
 
 
@@ -2276,7 +2276,7 @@ def initialize_mGPU_compute_halo_mask(conf):
         return shard_map(
             _zero_halo_mask_shard, mesh=conf.compute_mesh,
             in_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), P(AXIS_NAME), P(AXIS_NAME),
-                      ), out_specs=P(AXIS_NAME), check_rep=False,
+                      ), out_specs=P(AXIS_NAME), check_vma=False,
         )
 
     if conf.num_devices == 1:
@@ -2292,5 +2292,5 @@ def initialize_mGPU_compute_halo_mask(conf):
     return shard_map(
         func, mesh=conf.compute_mesh,
         in_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), P(AXIS_NAME), P(AXIS_NAME),
-                  ), out_specs=P(AXIS_NAME), check_rep=False,
+                  ), out_specs=P(AXIS_NAME), check_vma=False,
     )

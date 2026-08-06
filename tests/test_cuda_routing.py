@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax.experimental.shard_map import shard_map
+from jax import shard_map
 from jax.sharding import PartitionSpec as P
 
 from pmpp.core import Configuration
@@ -125,7 +125,7 @@ def test_cuda_route_merge_aux_and_overflow_are_device_safe(float_dtype, record_w
     fn = jax.jit(
         shard_map(
             local, mesh=mesh, in_specs=(P("i"), P("i"), P("i"), P("i"), P("i")), out_specs=(P("i"), ) * 10,
-            check_rep=False,
+            check_vma=False,
         )
     )
     result = fn(pmid, disp, vel, valid, cot)
@@ -167,7 +167,7 @@ def test_cuda_route_merge_aux_and_overflow_are_device_safe(float_dtype, record_w
     overflow = jax.jit(
         shard_map(
             overflow_local, mesh=mesh, in_specs=(P("i"), P("i"), P("i"), P("i")), out_specs=(P("i"), P("i"), P("i")),
-            check_rep=False,
+            check_vma=False,
         )
     )(pmid, disp, vel, valid)
     # Every valid row is routed in this synthetic case.  The device count is

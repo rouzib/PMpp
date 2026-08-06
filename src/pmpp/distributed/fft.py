@@ -20,6 +20,8 @@ Note: The script expects a computing environment with multiple GPUs available.
 """
 
 import numpy as np
+import inspect
+import string
 from typing import Callable, Tuple
 from functools import partial
 
@@ -190,7 +192,38 @@ def create_sharded_fft(basic_fft: Callable, partition_spec: P, global_mesh: Mesh
         arg_shardings = tree.tree_map(lambda x: x.sharding, arg_shapes)
         return supported_sharding(arg_shardings[0], arg_shapes[0])
 
-    sharded_fft.def_partition(infer_sharding_from_operands=infer_sharding_from_operands, partition=partition)
+    # Shardy (the only partitioner in JAX 0.10) requires an explicit rule
+    # instead of relying only on the legacy propagation callback. Propagate
+    # the one partitioned slab dimension and require every local FFT dimension
+    # to remain replicated. Distinct input/output factors allow rFFT and
+    # irFFT to change the final dimension size.
+    factor_names = iter(string.ascii_lowercase)
+    input_factors = []
+    output_factors = []
+    input_replication_factors = []
+    output_replication_factors = []
+    for mesh_axis in partition_spec:
+        input_factor = next(factor_names)
+        input_factors.append(input_factor)
+        if mesh_axis is None:
+            output_factor = next(factor_names)
+            output_factors.append(output_factor)
+            input_replication_factors.append(input_factor)
+            output_replication_factors.append(output_factor)
+        else:
+            output_factors.append(input_factor)
+    sharding_rule = f"{' '.join(input_factors)} -> {' '.join(output_factors)}"
+
+    partition_kwargs = {
+        "infer_sharding_from_operands": infer_sharding_from_operands,
+        "partition": partition,
+        "sharding_rule": sharding_rule,
+    }
+    if "need_replication_factors" in inspect.signature(sharded_fft.def_partition).parameters:
+        # Shardy indexes factors by first appearance in all operands followed
+        # by result-only factors, and requires special-factor indices sorted.
+        partition_kwargs["need_replication_factors"] = tuple(input_replication_factors + output_replication_factors)
+    sharded_fft.def_partition(**partition_kwargs)
     return sharded_fft
 
 

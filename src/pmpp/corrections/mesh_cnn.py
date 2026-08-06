@@ -240,7 +240,7 @@ def evaluate_mesh_potential_residual(correction, source_real, potential_real, a,
     apply_fn = partial(_apply_mesh_cnn_residual, conf=conf, correction=correction)
     mesh_spec = owned_mesh_partition_spec(source_real.ndim)
     apply_fn = maybe_shard_map_mesh_local_op(
-        apply_fn, conf, in_specs=(None, mesh_spec, mesh_spec, None, None), out_specs=mesh_spec, check_rep=False,
+        apply_fn, conf, in_specs=(None, mesh_spec, mesh_spec, None, None), out_specs=mesh_spec, check_vma=False,
     )
     return apply_fn(
         correction.params, source_real.astype(correction.dtype), potential_real.astype(correction.dtype),

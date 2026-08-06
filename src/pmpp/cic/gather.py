@@ -3,7 +3,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from jax import custom_vjp
-from jax.experimental.shard_map import shard_map
+from jax import shard_map
 from jax.lax import scan
 from jax.sharding import NamedSharding, PartitionSpec as P
 
@@ -42,7 +42,7 @@ def initialize_mGPU_gather(conf):
                 P(AXIS_NAME, None, None),  # mesh
             ),
             out_specs=P(AXIS_NAME),
-            check_rep=False,
+            check_vma=False,
         )
     if conf.particle_halo_gather_mesh_halo:
         return shard_map(
@@ -56,7 +56,7 @@ def initialize_mGPU_gather(conf):
                 P(AXIS_NAME, None, None),  # mesh
             ),
             out_specs=P(AXIS_NAME),
-            check_rep=False,
+            check_vma=False,
         )
     return shard_map(
         _gather_mGPU,
@@ -69,7 +69,7 @@ def initialize_mGPU_gather(conf):
             P(AXIS_NAME, None, None),  # mesh
         ),
         out_specs=P(AXIS_NAME),
-        check_rep=False,
+        check_vma=False,
     )
 
 
@@ -391,7 +391,7 @@ def gather_stacked_mesh_halo(ptcl, conf, mesh_channels):
     @partial(
         shard_map, mesh=conf.compute_mesh,
         in_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), None, P(AXIS_NAME, None, None, None),
-                  ), out_specs=P(AXIS_NAME, None), check_rep=False,
+                  ), out_specs=P(AXIS_NAME, None), check_vma=False,
     )
     def _gather_stacked_local(pmid_local, disp_local, unused_local, conf_local, mesh_channels_local):
         gpu_id = jax.lax.axis_index(AXIS_NAME)

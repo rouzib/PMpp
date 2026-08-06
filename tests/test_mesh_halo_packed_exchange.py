@@ -16,7 +16,7 @@ def _run_worker() -> None:
     import jax
     import jax.numpy as jnp
     import numpy as np
-    from jax.experimental.shard_map import shard_map
+    from jax import shard_map
     from jax.sharding import PartitionSpec as P
 
     from pmpp.core import Configuration, pmid_to_idx
@@ -51,10 +51,10 @@ def _run_worker() -> None:
         reference = jax.jit(
             shard_map(
                 lambda *values: jax.lax.ppermute(values, axis_name=AXIS_NAME, perm=perm), mesh=mesh, in_specs=specs,
-                out_specs=specs, check_rep=False,
+                out_specs=specs, check_vma=False,
             )
         )
-        packed = jax.jit(shard_map(packed_local, mesh=mesh, in_specs=specs, out_specs=specs, check_rep=False, ))
+        packed = jax.jit(shard_map(packed_local, mesh=mesh, in_specs=specs, out_specs=specs, check_vma=False, ))
 
         reference_result = reference(*compacted)
         packed_result = packed(*compacted)

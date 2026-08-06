@@ -35,6 +35,15 @@ def test_cuda_routing_none_resolves_to_automatic_selection():
     assert isinstance(resolved.cuda_routing, bool)
 
 
+def test_configuration_static_pytree_preserves_initialized_instance():
+    conf = _base_configuration()
+    leaves, treedef = jax.tree_util.tree_flatten(conf)
+
+    assert leaves == []
+    assert jax.tree_util.tree_unflatten(treedef, leaves) is conf
+    assert conf.kvec
+
+
 def test_unsupported_pallas_configuration_warns_before_jit():
     with pytest.warns(RuntimeWarning, match="Pallas CIC was requested"):
         Configuration(1.0, (4, 4, 4), mesh_shape=1, float_dtype=jnp.float64, )

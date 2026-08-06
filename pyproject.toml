@@ -33,7 +33,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
-  "jax>=0.4.7",
+  "jax>=0.6,<0.11",
   "h5py>=3.10",
   "matplotlib>=3.8",
   "mcfit>=0.0.18",
@@ -54,9 +54,11 @@ docs = [
 ]
 dev = [
   "build",
+  "dm-haiku",
   "twine",
   "pytest",
   "hdf5plugin",
+  "optax",
   "Pylians",
   "yapf==0.43.0",
 ]

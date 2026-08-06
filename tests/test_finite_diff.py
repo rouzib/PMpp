@@ -21,6 +21,11 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 
+try:
+    from jax import enable_x64
+except ImportError:  # JAX 0.6 on Python 3.10
+    from jax.experimental import enable_x64
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -145,7 +150,7 @@ def _base_setup(num_ptcl=8, seed=42):
 @lru_cache(maxsize=None)
 def _base_setup_x64(num_ptcl=8):
     """Small float64 2-GPU setup for multi-step nbody FD checks."""
-    with jax.experimental.enable_x64():
+    with enable_x64():
         gpu_devices = [d for d in jax.devices() if d.platform == "gpu"][:2]
         compute_mesh = create_compute_mesh(gpu_devices)
         conf = Configuration(
@@ -162,7 +167,7 @@ def _base_setup_x64(num_ptcl=8):
 @lru_cache(maxsize=None)
 def _particle_fd_setup_x64(num_ptcl=4, seed=42):
     """Small float64 2-GPU setup for particle/mesh FD checks."""
-    with jax.experimental.enable_x64():
+    with enable_x64():
         devices = [d for d in jax.devices() if d.platform == "gpu"]
         compute_mesh = create_compute_mesh(devices)
         conf = Configuration(

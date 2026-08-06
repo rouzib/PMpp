@@ -35,9 +35,9 @@ def test_compiled_capacity_failure_raises_instead_of_continuing():
 def test_reported_halo_move_failure_raises_instead_of_being_discarded():
     checked = jax.jit(_assert_halo_move_succeeded)
 
-    checked(jnp.asarray(False), jnp.asarray(0, dtype=jnp.int32))
+    checked(jnp.asarray(False), jnp.asarray(0, dtype=jnp.int32)).block_until_ready()
     with pytest.raises(Exception, match="Particle migration reported"):
-        checked(jnp.asarray(True), jnp.asarray(7, dtype=jnp.int32))
+        checked(jnp.asarray(True), jnp.asarray(7, dtype=jnp.int32)).block_until_ready()
 
 
 def _run_routing_overflow_worker():

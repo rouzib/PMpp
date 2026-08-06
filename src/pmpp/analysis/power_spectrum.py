@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import lax
-from jax.experimental.shard_map import shard_map
+from jax import shard_map
 from jax.sharding import PartitionSpec as P
 
 from ..cic.scatter import scatter
@@ -184,7 +184,7 @@ def _shell_reduce_transposed(spectral, conf, mas_power: int, num_shells: int):
 
     @partial(
         shard_map, mesh=conf.compute_mesh, in_specs=(P(None, AXIS_NAME, None), P(None), P(AXIS_NAME), P(None),
-                                                     ), out_specs=(P(None), ), check_rep=False,
+                                                     ), out_specs=(P(None), ), check_vma=False,
     )
     def local_reduce(spectral_local, mode_x_rep, mode_y_local, mode_z_rep):
         """Accumulate local spectral shells before cross-device reduction.
@@ -219,7 +219,7 @@ def _shell_reduce_cross_transposed(spectral_a, spectral_b, conf, mas_power: int,
         shard_map, mesh=conf.compute_mesh,
         in_specs=(P(None, AXIS_NAME, None), P(None, AXIS_NAME, None), P(None), P(AXIS_NAME), P(None),
                   ), out_specs=(P(None), P(None), P(None),
-                                ), check_rep=False,
+                                ), check_vma=False,
     )
     def local_reduce(spectral_a_local, spectral_b_local, mode_x_rep, mode_y_local, mode_z_rep):
         """Accumulate local spectral shells before cross-device reduction.

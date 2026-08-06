@@ -397,7 +397,7 @@ def get_k_magnitude_transposed(kvec, conf):
 @partial(jit, static_argnums=4)
 # @partial(checkpoint, static_argnums=4)
 def linear_modes(modes, cosmo, conf, a=None, real=False):
-    """Linear matter overdensity Fourier or real modes.
+    r"""Linear matter overdensity Fourier or real modes.
 
     Parameters
     ----------
