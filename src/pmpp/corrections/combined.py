@@ -14,12 +14,7 @@ from .softening import HighKSofteningCorrection
 from .window import PMWindowCompensationCorrection
 
 
-@partial(
-    pytree_dataclass,
-    aux_fields=("dtype",),
-    frozen=True,
-    eq=False,
-)
+@partial(pytree_dataclass, aux_fields=("dtype", ), frozen=True, eq=False, )
 class CombinedPotentialCorrection:
     """Composite correction made from independent correction blocks.
 

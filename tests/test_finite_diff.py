@@ -11,6 +11,7 @@ to avoid cancellation errors in the FD subtraction.
 """
 
 import os
+
 os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 
 import sys
@@ -46,17 +47,14 @@ except ImportError:
 
 GPU_COUNT = len([d for d in jax.devices() if d.platform == "gpu"])
 
-REQUIRE_2GPU = (
-    pytest.mark.skipif(GPU_COUNT < 1, reason="requires at least 1 GPU")
-    if pytest else lambda f: f
-)
-
+REQUIRE_2GPU = (pytest.mark.skipif(GPU_COUNT < 1, reason="requires at least 1 GPU") if pytest else lambda f: f)
 
 # ═══════════════════════════ helpers ═══════════════════════════
 
+
 def _sumsq(arr):
     """0.5 * sum(arr**2) accumulated in float64 for FD precision."""
-    return jnp.float64(0.5) * jnp.sum(arr.astype(jnp.float64) ** 2)
+    return jnp.float64(0.5) * jnp.sum(arr.astype(jnp.float64)**2)
 
 
 def _owned_mask_2d(ptcl):
@@ -82,12 +80,9 @@ def _sync_halos(ptcl, conf):
         raise RuntimeError("Halo synchronization requires an initialized multi-GPU runtime.")
 
     pmid, disp, vel, acc, hm, ui, _, _ = runtime.halo_moving(
-        ptcl.pmid, ptcl.disp, ptcl.disp, ptcl.vel, ptcl.acc,
-        runtime.halo_start, runtime.halo_end,
-        ptcl.unused_index,
+        ptcl.pmid, ptcl.disp, ptcl.disp, ptcl.vel, ptcl.acc, runtime.halo_start, runtime.halo_end, ptcl.unused_index,
     )
-    return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc,
-                        halo_mask=hm, unused_index=ui)
+    return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, halo_mask=hm, unused_index=ui)
 
 
 def _check_fd(loss_fn, x, mask=None, eps=5e-4, rtol=1e-4, atol=1e-5, seed=42, fd_order=2):
@@ -132,8 +127,7 @@ def _check_fd(loss_fn, x, mask=None, eps=5e-4, rtol=1e-4, atol=1e-5, seed=42, fd
 def _base_setup(num_ptcl=8, seed=42):
     """2-GPU conf + cosmo + particles with small random perturbations."""
     conf = init_conf(
-        num_ptcl=num_ptcl, mesh_shape=1, box_size=100.0,
-        num_devices=jax.device_count(), max_ptcl_per_slice=1.8,
+        num_ptcl=num_ptcl, mesh_shape=1, box_size=100.0, num_devices=jax.device_count(), max_ptcl_per_slice=1.8,
         max_share_ptcl=20000, max_share_gather_ptcl=50000,
     )
     cosmo = SimpleLCDM(conf)
@@ -146,23 +140,11 @@ def _base_setup(num_ptcl=8, seed=42):
     disp = jnp.where(
         valid[:, None],
         jax.random.uniform(
-            k1, ptcl.disp.shape,
-            minval=-0.3 * conf.cell_size,
-            maxval=0.3 * conf.cell_size,
-            dtype=conf.float_dtype,
-        ),
-        ptcl.disp,
+            k1, ptcl.disp.shape, minval=-0.3 * conf.cell_size, maxval=0.3 * conf.cell_size, dtype=conf.float_dtype,
+        ), ptcl.disp,
     )
-    vel = jnp.where(
-        valid[:, None],
-        jax.random.normal(k2, ptcl.disp.shape, dtype=conf.float_dtype) * 0.01,
-        ptcl.vel,
-    )
-    acc = jnp.where(
-        valid[:, None],
-        jax.random.normal(k3, ptcl.disp.shape, dtype=conf.float_dtype) * 0.001,
-        ptcl.acc,
-    )
+    vel = jnp.where(valid[:, None], jax.random.normal(k2, ptcl.disp.shape, dtype=conf.float_dtype) * 0.01, ptcl.vel, )
+    acc = jnp.where(valid[:, None], jax.random.normal(k3, ptcl.disp.shape, dtype=conf.float_dtype) * 0.001, ptcl.acc, )
     return conf, cosmo, ptcl.replace(disp=disp, vel=vel, acc=acc)
 
 
@@ -173,20 +155,10 @@ def _base_setup_x64(num_ptcl=8):
         gpu_devices = [d for d in jax.devices() if d.platform == "gpu"][:2]
         compute_mesh = create_compute_mesh(gpu_devices)
         conf = Configuration(
-            ptcl_spacing=100.0 / num_ptcl,
-            ptcl_grid_shape=(num_ptcl,) * 3,
-            mesh_shape=1,
-            compute_mesh=compute_mesh,
-            max_ptcl_per_slice=int(num_ptcl ** 3 / len(gpu_devices) * 1.8),
-            max_share_ptcl=20000,
-            max_share_gather_ptcl=50000,
-            to_save_z=[1, 2 / 3, 1 / 3, 0],
-            a_start=1 / 60,
-            a_stop=1,
-            a_nbody_maxstep=1 / 60,
-            pallas_cic=False,
-            float_dtype=jnp.float64,
-            cosmo_dtype=jnp.float64,
+            ptcl_spacing=100.0 / num_ptcl, ptcl_grid_shape=(num_ptcl, ) * 3, mesh_shape=1, compute_mesh=compute_mesh,
+            max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * 1.8), max_share_ptcl=20000,
+            max_share_gather_ptcl=50000, to_save_z=[1, 2 / 3, 1 / 3, 0], a_start=1 / 60, a_stop=1,
+            a_nbody_maxstep=1 / 60, pallas_cic=False, float_dtype=jnp.float64, cosmo_dtype=jnp.float64,
         )
         cosmo = boltzmann(SimpleLCDM(conf), conf)
         ptcl = lpt(linear_modes(white_noise(0, conf), cosmo, conf), cosmo, conf)
@@ -200,20 +172,10 @@ def _particle_fd_setup_x64(num_ptcl=4, seed=42):
         devices = [d for d in jax.devices() if d.platform == "gpu"]
         compute_mesh = create_compute_mesh(devices)
         conf = Configuration(
-            ptcl_spacing=100.0 / num_ptcl,
-            ptcl_grid_shape=(num_ptcl,) * 3,
-            mesh_shape=1,
-            compute_mesh=compute_mesh,
-            max_ptcl_per_slice=int(num_ptcl ** 3 / len(devices) * 3.0),
-            max_share_ptcl=4000,
-            max_share_gather_ptcl=4000,
-            to_save_z=[1, 2 / 3, 1 / 3, 0],
-            a_start=1 / 60,
-            a_nbody_maxstep=1 / 60,
-            a_stop=1 / 30,
-            pallas_cic=False,
-            float_dtype=jnp.float64,
-            cosmo_dtype=jnp.float64,
+            ptcl_spacing=100.0 / num_ptcl, ptcl_grid_shape=(num_ptcl, ) * 3, mesh_shape=1, compute_mesh=compute_mesh,
+            max_ptcl_per_slice=int(num_ptcl**3 / len(devices) * 3.0), max_share_ptcl=4000, max_share_gather_ptcl=4000,
+            to_save_z=[1, 2 / 3, 1 / 3, 0], a_start=1 / 60, a_nbody_maxstep=1 / 60, a_stop=1 / 30, pallas_cic=False,
+            float_dtype=jnp.float64, cosmo_dtype=jnp.float64,
         )
         cosmo = boltzmann(SimpleLCDM(conf), conf)
 
@@ -224,28 +186,22 @@ def _particle_fd_setup_x64(num_ptcl=4, seed=42):
         disp = jnp.where(
             valid[:, None],
             jax.random.uniform(
-                k1,
-                ptcl.disp.shape,
-                minval=-0.3 * conf.cell_size,
-                maxval=0.3 * conf.cell_size,
-                dtype=conf.float_dtype,
-            ),
-            ptcl.disp,
+                k1, ptcl.disp.shape, minval=-0.3 * conf.cell_size, maxval=0.3 * conf.cell_size, dtype=conf.float_dtype,
+            ), ptcl.disp,
         )
         vel = jnp.where(
             valid[:, None],
-            jax.random.normal(k2, ptcl.disp.shape, dtype=conf.float_dtype) * 0.01,
-            ptcl.vel,
+            jax.random.normal(k2, ptcl.disp.shape, dtype=conf.float_dtype) * 0.01, ptcl.vel,
         )
         acc = jnp.where(
             valid[:, None],
-            jax.random.normal(k3, ptcl.disp.shape, dtype=conf.float_dtype) * 0.001,
-            ptcl.acc,
+            jax.random.normal(k3, ptcl.disp.shape, dtype=conf.float_dtype) * 0.001, ptcl.acc,
         )
         return conf, cosmo, ptcl.replace(disp=disp, vel=vel, acc=acc)
 
 
 # ═══════════════════════════ Scatter ═══════════════════════════
+
 
 @REQUIRE_2GPU
 def test_fd_scatter_disp():
@@ -272,6 +228,7 @@ def test_fd_scatter_val():
 
 
 # ═══════════════════════════ Gather ═══════════════════════════
+
 
 @REQUIRE_2GPU
 def test_fd_gather_disp():
@@ -300,6 +257,7 @@ def test_fd_gather_mesh():
 
 # ═══════════════════════════ Gravity ═══════════════════════════
 
+
 @REQUIRE_2GPU
 def test_fd_gravity_disp():
     """Gravity gradient w.r.t. particle displacement."""
@@ -326,6 +284,7 @@ def test_fd_gravity_omega_m():
 
 
 # ═══════════════════════════ Drift ═══════════════════════════
+
 
 @REQUIRE_2GPU
 def test_fd_drift_disp():
@@ -357,6 +316,7 @@ def test_fd_drift_vel():
 
 # ═══════════════════════════ Kick ═══════════════════════════
 
+
 @REQUIRE_2GPU
 def test_fd_kick_vel():
     """Kick gradient w.r.t. velocity."""
@@ -383,6 +343,7 @@ def test_fd_kick_acc():
 
 # ═══════════════════════════ Force ═══════════════════════════
 
+
 @REQUIRE_2GPU
 def test_fd_force_disp():
     """Force (gravity) gradient w.r.t. displacement."""
@@ -396,6 +357,7 @@ def test_fd_force_disp():
 
 
 # ═══════════════════════════ Integrate (one symplectic step) ═══════════════════════════
+
 
 @REQUIRE_2GPU
 def test_fd_integrate_disp():
@@ -414,6 +376,7 @@ def test_fd_integrate_disp():
 
 # ═══════════════════════════ Linear Modes ═══════════════════════════
 
+
 @REQUIRE_2GPU
 def test_fd_linear_modes():
     """Linear modes gradient w.r.t. real-space white noise input."""
@@ -427,6 +390,7 @@ def test_fd_linear_modes():
 
 
 # ═══════════════════════════ LPT ═══════════════════════════
+
 
 @REQUIRE_2GPU
 def test_fd_lpt_modes():
@@ -442,6 +406,7 @@ def test_fd_lpt_modes():
 
 
 # ═══════════════════════════ N-body (full manual adjoint) ═══════════════════════════
+
 
 @REQUIRE_2GPU
 def test_fd_nbody_disp():
@@ -467,6 +432,7 @@ def test_fd_nbody_omega_m():
 
 # ═══════════════════════════ Cosmology / Boltzmann ═══════════════════════════
 
+
 def test_fd_E2():
     """E2(a) gradient w.r.t. scale factor."""
     conf = init_conf(num_ptcl=4, mesh_shape=1, box_size=100.0)
@@ -474,7 +440,7 @@ def test_fd_E2():
     a = jnp.asarray(0.5, dtype=conf.cosmo_dtype)
 
     def loss(a_val):
-        return 0.5 * E2(a_val, cosmo) ** 2
+        return 0.5 * E2(a_val, cosmo)**2
 
     _check_fd(loss, a, eps=1e-6)
 
@@ -486,7 +452,7 @@ def test_fd_growth():
     a = jnp.asarray(0.5, dtype=conf.cosmo_dtype)
 
     def loss(a_val):
-        return 0.5 * growth_fn(a_val, cosmo, conf) ** 2
+        return 0.5 * growth_fn(a_val, cosmo, conf)**2
 
     _check_fd(loss, a, eps=1e-6)
 
@@ -498,7 +464,7 @@ def test_fd_linear_power_As():
     k = jnp.asarray(0.1, dtype=conf.cosmo_dtype)
 
     def loss(As):
-        return 0.5 * boltzmann_linear_power(k, None, cosmo.replace(A_s_1e9=As), conf) ** 2
+        return 0.5 * boltzmann_linear_power(k, None, cosmo.replace(A_s_1e9=As), conf)**2
 
     _check_fd(loss, cosmo.A_s_1e9, eps=1e-5)
 
@@ -510,7 +476,7 @@ def test_fd_linear_power_ns():
     k = jnp.asarray(0.1, dtype=conf.cosmo_dtype)
 
     def loss(ns):
-        return 0.5 * boltzmann_linear_power(k, None, cosmo.replace(n_s=ns), conf) ** 2
+        return 0.5 * boltzmann_linear_power(k, None, cosmo.replace(n_s=ns), conf)**2
 
     _check_fd(loss, cosmo.n_s, eps=1e-5)
 
@@ -522,7 +488,7 @@ def test_fd_linear_power_omega_m():
     k = jnp.asarray(0.1, dtype=conf.cosmo_dtype)
 
     def loss(om):
-        return 0.5 * boltzmann_linear_power(k, None, cosmo.replace(Omega_m=om), conf) ** 2
+        return 0.5 * boltzmann_linear_power(k, None, cosmo.replace(Omega_m=om), conf)**2
 
     _check_fd(loss, cosmo.Omega_m, eps=1e-5)
 

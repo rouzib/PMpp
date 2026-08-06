@@ -12,9 +12,8 @@ from pmpp.power_spectrum import delta_to_cross_correlation, delta_to_pk, particl
 def _reference_pk(delta, box_size, mas="CIC"):
     pk = PKL.Pk(np.array(delta, dtype=np.float32, copy=True, order="C"), float(box_size), 0, mas, 1, False)
     return (
-        np.asarray(pk.k3D, dtype=np.float64),
-        np.asarray(pk.Pk[:, 0], dtype=np.float64),
-        np.asarray(pk.Nmodes3D, dtype=np.int32),
+        np.asarray(pk.k3D, dtype=np.float64), np.asarray(pk.Pk[:, 0],
+                                                         dtype=np.float64), np.asarray(pk.Nmodes3D, dtype=np.int32),
     )
 
 
@@ -49,10 +48,7 @@ def test_delta_to_pk_matches_pkl_on_small_random_field():
     box_size = 25.0
     nmesh = 32
     conf = Configuration(
-        ptcl_spacing=box_size / nmesh,
-        ptcl_grid_shape=(nmesh, nmesh, nmesh),
-        mesh_shape=1,
-        float_dtype=jnp.float32,
+        ptcl_spacing=box_size / nmesh, ptcl_grid_shape=(nmesh, nmesh, nmesh), mesh_shape=1, float_dtype=jnp.float32,
     )
 
     rng = np.random.default_rng(0)
@@ -69,10 +65,7 @@ def test_delta_to_cross_correlation_identity_and_sign():
     box_size = 25.0
     nmesh = 16
     conf = Configuration(
-        ptcl_spacing=box_size / nmesh,
-        ptcl_grid_shape=(nmesh, nmesh, nmesh),
-        mesh_shape=1,
-        float_dtype=jnp.float32,
+        ptcl_spacing=box_size / nmesh, ptcl_grid_shape=(nmesh, nmesh, nmesh), mesh_shape=1, float_dtype=jnp.float32,
     )
 
     rng = np.random.default_rng(4)
@@ -80,16 +73,10 @@ def test_delta_to_cross_correlation_identity_and_sign():
     delta -= delta.mean(dtype=np.float64)
 
     _, r_same, pk_cross_same, pk_a_same, pk_b_same, _ = delta_to_cross_correlation(
-        jnp.asarray(delta),
-        jnp.asarray(delta),
-        conf,
-        mas="CIC",
+        jnp.asarray(delta), jnp.asarray(delta), conf, mas="CIC",
     )
     _, r_opposite, pk_cross_opposite, pk_a_opposite, pk_b_opposite, _ = delta_to_cross_correlation(
-        jnp.asarray(delta),
-        -jnp.asarray(delta),
-        conf,
-        mas="CIC",
+        jnp.asarray(delta), -jnp.asarray(delta), conf, mas="CIC",
     )
 
     np.testing.assert_allclose(np.asarray(r_same), 1.0, atol=2e-6, rtol=2e-6)
@@ -104,14 +91,11 @@ def test_particles_to_pk_matches_scatter_plus_pkl():
     box_size = 25.0
     nmesh = 16
     conf = Configuration(
-        ptcl_spacing=box_size / nmesh,
-        ptcl_grid_shape=(nmesh, nmesh, nmesh),
-        mesh_shape=1,
-        float_dtype=jnp.float32,
+        ptcl_spacing=box_size / nmesh, ptcl_grid_shape=(nmesh, nmesh, nmesh), mesh_shape=1, float_dtype=jnp.float32,
     )
 
     rng = np.random.default_rng(1)
-    positions = rng.uniform(0.0, box_size, size=(nmesh ** 3, 3)).astype(np.float32)
+    positions = rng.uniform(0.0, box_size, size=(nmesh**3, 3)).astype(np.float32)
     ptcl = Particles.from_pos(conf, jnp.asarray(positions))
 
     k, pk, _ = particles_to_pk(ptcl, conf, mas="CIC")
@@ -129,10 +113,7 @@ def test_delta_to_pk_directional_derivative_matches_finite_difference():
     box_size = 25.0
     nmesh = 8
     conf = Configuration(
-        ptcl_spacing=box_size / nmesh,
-        ptcl_grid_shape=(nmesh, nmesh, nmesh),
-        mesh_shape=1,
-        float_dtype=jnp.float32,
+        ptcl_spacing=box_size / nmesh, ptcl_grid_shape=(nmesh, nmesh, nmesh), mesh_shape=1, float_dtype=jnp.float32,
     )
 
     rng = np.random.default_rng(2)
@@ -147,11 +128,7 @@ def test_delta_to_pk_directional_derivative_matches_finite_difference():
         return jnp.sum(weights * pk)
 
     _directional_fd_check(
-        loss_fn,
-        jnp.asarray(delta0),
-        jnp.asarray(direction),
-        eps=jnp.asarray(3e-3, dtype=jnp.float32),
-        rtol=2e-2,
+        loss_fn, jnp.asarray(delta0), jnp.asarray(direction), eps=jnp.asarray(3e-3, dtype=jnp.float32), rtol=2e-2,
         atol=2e-4,
     )
 
@@ -160,18 +137,15 @@ def test_particles_to_pk_directional_derivative_matches_finite_difference():
     box_size = 25.0
     nmesh = 6
     conf = Configuration(
-        ptcl_spacing=box_size / nmesh,
-        ptcl_grid_shape=(nmesh, nmesh, nmesh),
-        mesh_shape=1,
-        float_dtype=jnp.float32,
+        ptcl_spacing=box_size / nmesh, ptcl_grid_shape=(nmesh, nmesh, nmesh), mesh_shape=1, float_dtype=jnp.float32,
     )
 
-    grid = np.stack(np.meshgrid(
-        np.arange(nmesh, dtype=np.int16),
-        np.arange(nmesh, dtype=np.int16),
-        np.arange(nmesh, dtype=np.int16),
-        indexing="ij",
-    ), axis=-1).reshape(-1, 3)
+    grid = np.stack(
+        np.meshgrid(
+            np.arange(nmesh, dtype=np.int16), np.arange(nmesh, dtype=np.int16), np.arange(nmesh, dtype=np.int16),
+            indexing="ij",
+        ), axis=-1
+    ).reshape(-1, 3)
     base_pmid = jnp.asarray(grid, dtype=conf.pmid_dtype)
     rng = np.random.default_rng(3)
     max_disp = 0.1 * float(conf.cell_size)
@@ -185,10 +159,6 @@ def test_particles_to_pk_directional_derivative_matches_finite_difference():
         return jnp.sum(weights * pk)
 
     _directional_fd_check(
-        loss_fn,
-        jnp.asarray(disp0),
-        jnp.asarray(direction),
-        eps=jnp.asarray(5e-3, dtype=jnp.float32),
-        rtol=5e-2,
+        loss_fn, jnp.asarray(disp0), jnp.asarray(direction), eps=jnp.asarray(5e-3, dtype=jnp.float32), rtol=5e-2,
         atol=2e-4,
     )

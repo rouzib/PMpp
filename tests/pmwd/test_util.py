@@ -11,8 +11,7 @@ from .particles import Particles
 from .util import is_float0_array, float0_like
 
 
-def gen_ptcl(conf, disp_std=None, vel_std=None, acc_std=None,
-             attr_shape=None, attr_mean=1, attr_std=0, seed=0):
+def gen_ptcl(conf, disp_std=None, vel_std=None, acc_std=None, attr_shape=None, attr_mean=1, attr_std=0, seed=0):
     ptcl = Particles.gen_grid(conf)
 
     key = random.PRNGKey(seed)
@@ -35,9 +34,8 @@ def gen_ptcl(conf, disp_std=None, vel_std=None, acc_std=None,
 
     attr = None
     if attr_shape is not None:
-        attr_shape = (conf.ptcl_num,) + attr_shape
-        attr = attr_mean + attr_std * random.normal(attr_key, shape=attr_shape,
-                                                    dtype=dtype)
+        attr_shape = (conf.ptcl_num, ) + attr_shape
+        attr = attr_mean + attr_std * random.normal(attr_key, shape=attr_shape, dtype=dtype)
 
     return ptcl.replace(disp=disp, vel=vel, acc=acc, attr=attr)
 
@@ -85,9 +83,9 @@ def check_close(xs, ys, atol=None, rtol=None, err_msg=''):
     return tree_map(_safe_sub, xs, ys)
 
 
-def check_custom_vjp(fun, primals, partial_args=(), partial_kwargs={},
-                     cot_out_mean=None, cot_out_std=None,
-                     atol=None, rtol=None):
+def check_custom_vjp(
+    fun, primals, partial_args=(), partial_kwargs={}, cot_out_mean=None, cot_out_std=None, atol=None, rtol=None
+):
     """Compare custom and automatic vjp's of a decorated function.
 
     Setting matching leaves of ``cot_out_mean`` and ``cot_out_std`` pytrees to zeros

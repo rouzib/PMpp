@@ -4,29 +4,16 @@ import jax.numpy as jnp
 
 from .configuration import Configuration
 from .cosmo import (
-    E2,
-    H_deriv,
-    add_cosmology_cotangents,
-    cosmology_param_cotangent,
-    cosmology_param_names,
-    cosmology_param_values,
-    project_cosmology_param_cotangent,
-    scale_cosmology_cotangent,
-    sub_cosmology_cotangents,
-    replace_cosmology_params,
+    E2, H_deriv, add_cosmology_cotangents, cosmology_param_cotangent, cosmology_param_names, cosmology_param_values,
+    project_cosmology_param_cotangent, scale_cosmology_cotangent, sub_cosmology_cotangents, replace_cosmology_params,
     zero_cosmology_param_cotangent,
 )
 from .gravity import gravity, duplicate_slot_counts
 from .growth import growth
 from .particles import Particles
 from .corrections import (
-    add_nbody_correction_cotangents,
-    apply_local_pair_correction,
-    apply_phase_space_correction,
-    has_phase_space_correction,
-    local_pair_correction,
-    long_range_correction,
-    phase_space_correction,
+    add_nbody_correction_cotangents, apply_local_pair_correction, apply_phase_space_correction,
+    has_phase_space_correction, local_pair_correction, long_range_correction, phase_space_correction,
     prepare_phase_space_context,
 )
 from .utils import raise_error
@@ -35,28 +22,17 @@ from .utils import raise_error
 def _assert_halo_move_succeeded(has_failed, max_ptcl_moved):
     """Fail closed if a particle mover reports truncated routing."""
     _ = jax.lax.cond(
-        jnp.any(has_failed),
-        lambda _: raise_error(
+        jnp.any(has_failed), lambda _: raise_error(
             "[ERROR] Particle migration reported a static-capacity failure. "
-            "max_particles_moved={x}.",
-            x=jnp.max(max_ptcl_moved),
-        ),
-        lambda _: None,
-        operand=None,
+            "max_particles_moved={x}.", x=jnp.max(max_ptcl_moved),
+        ), lambda _: None, operand=None,
     )
 
 
 def _halo_move_float_outputs(ptcl, disp, vel, acc, conf):
     """Run halo movement and expose only floating outputs to JAX VJP."""
     _, disp, vel, acc, _, _, _, _ = conf.mGPU_halo_moving(
-        ptcl.pmid,
-        ptcl.disp,
-        disp,
-        vel,
-        acc,
-        conf.halo_start,
-        conf.halo_end,
-        ptcl.unused_index,
+        ptcl.pmid, ptcl.disp, disp, vel, acc, conf.halo_start, conf.halo_end, ptcl.unused_index,
     )
     return disp, vel, acc
 
@@ -64,14 +40,7 @@ def _halo_move_float_outputs(ptcl, disp, vel, acc, conf):
 def _halo_move_float_outputs_with_aux(ptcl, disp, vel, acc, conf):
     """Run halo movement with integer/bool routing metadata returned as aux."""
     pmid, disp, vel, acc, halo_mask, unused_indexes, _, _ = conf.mGPU_halo_moving(
-        ptcl.pmid,
-        ptcl.disp,
-        disp,
-        vel,
-        acc,
-        conf.halo_start,
-        conf.halo_end,
-        ptcl.unused_index,
+        ptcl.pmid, ptcl.disp, disp, vel, acc, conf.halo_start, conf.halo_end, ptcl.unused_index,
     )
     return (disp, vel, acc), (pmid, halo_mask, unused_indexes)
 
@@ -79,13 +48,8 @@ def _halo_move_float_outputs_with_aux(ptcl, disp, vel, acc, conf):
 def _halo_move_outputs_vjp_with_aux(ptcl, disp, vel, acc, conf):
     """Create a VJP for halo movement while preserving the new particle layout."""
     (float_outputs, halo_move_vjp, aux) = vjp(
-        lambda disp_in, vel_in, acc_in: _halo_move_float_outputs_with_aux(
-            ptcl, disp_in, vel_in, acc_in, conf
-        ),
-        disp,
-        vel,
-        acc,
-        has_aux=True,
+        lambda disp_in, vel_in, acc_in: _halo_move_float_outputs_with_aux(ptcl, disp_in, vel_in, acc_in, conf), disp,
+        vel, acc, has_aux=True,
     )
     return float_outputs, aux, halo_move_vjp
 
@@ -93,12 +57,7 @@ def _halo_move_outputs_vjp_with_aux(ptcl, disp, vel, acc, conf):
 def _halo_move_vjp(ptcl, disp, vel, acc, disp_cot, vel_cot, acc_cot, conf):
     """Pull cotangents through the halo-movement operation."""
     _, halo_move_vjp = vjp(
-        lambda disp_in, vel_in, acc_in: _halo_move_float_outputs(
-            ptcl, disp_in, vel_in, acc_in, conf
-        ),
-        disp,
-        vel,
-        acc,
+        lambda disp_in, vel_in, acc_in: _halo_move_float_outputs(ptcl, disp_in, vel_in, acc_in, conf), disp, vel, acc,
     )
     return halo_move_vjp((disp_cot, vel_cot, acc_cot))
 
@@ -122,8 +81,7 @@ def partition_duplicate_slot_cot(ptcl, ptcl_cot, conf):
     """
     counts = jax.lax.stop_gradient(duplicate_slot_counts(ptcl, conf)).astype(ptcl_cot.disp.dtype)
     return ptcl_cot.replace(
-        disp=jnp.where(counts != 0, ptcl_cot.disp / counts, 0),
-        vel=jnp.where(counts != 0, ptcl_cot.vel / counts, 0),
+        disp=jnp.where(counts != 0, ptcl_cot.disp / counts, 0), vel=jnp.where(counts != 0, ptcl_cot.vel / counts, 0),
         acc=jnp.where(counts != 0, ptcl_cot.acc / counts, 0),
     )
 
@@ -146,24 +104,18 @@ def duplicate_partitioned_slot_cot(ptcl, ptcl_cot, conf):
         Cotangent expanded to the duplicated-slot convention.
     """
     counts = jax.lax.stop_gradient(duplicate_slot_counts(ptcl, conf)).astype(ptcl_cot.disp.dtype)
-    return ptcl_cot.replace(
-        disp=ptcl_cot.disp * counts,
-        vel=ptcl_cot.vel * counts,
-        acc=ptcl_cot.acc * counts,
-    )
+    return ptcl_cot.replace(disp=ptcl_cot.disp * counts, vel=ptcl_cot.vel * counts, acc=ptcl_cot.acc * counts, )
 
 
 def _G_D(a, cosmo, conf):
     """Growth factor of ZA canonical velocity in [H_0]."""
-    return a ** 2 * jnp.sqrt(E2(a, cosmo)) * growth(a, cosmo, conf, deriv=1)
+    return a**2 * jnp.sqrt(E2(a, cosmo)) * growth(a, cosmo, conf, deriv=1)
 
 
 def _G_K(a, cosmo, conf):
     """Growth factor of ZA accelerations in [H_0^2]."""
-    return a ** 3 * E2(a, cosmo) * (
-            growth(a, cosmo, conf, deriv=2)
-            + (2 + H_deriv(a, cosmo)) * growth(a, cosmo, conf, deriv=1)
-    )
+    return a**3 * E2(a, cosmo
+                     ) * (growth(a, cosmo, conf, deriv=2) + (2 + H_deriv(a, cosmo)) * growth(a, cosmo, conf, deriv=1))
 
 
 def drift_factor(a_vel, a_prev, a_next, cosmo, conf):
@@ -223,11 +175,7 @@ def _drift_factor_param_grad(a_vel, a_prev, a_next, cosmo, conf):
     param_values = cosmology_param_values(cosmo, param_names)
     factor, param_cot = value_and_grad(
         lambda params: drift_factor(
-            a_vel,
-            a_prev,
-            a_next,
-            replace_cosmology_params(cosmo, param_names, params),
-            conf,
+            a_vel, a_prev, a_next, replace_cosmology_params(cosmo, param_names, params), conf,
         )
     )(param_values)
     return factor, cosmology_param_cotangent(cosmo, param_names, param_cot)
@@ -241,13 +189,8 @@ def _kick_factor_param_grad(a_acc, a_prev, a_next, cosmo, conf):
     param_names = cosmology_param_names(cosmo)
     param_values = cosmology_param_values(cosmo, param_names)
     factor, param_cot = value_and_grad(
-        lambda params: kick_factor(
-            a_acc,
-            a_prev,
-            a_next,
-            replace_cosmology_params(cosmo, param_names, params),
-            conf,
-        )
+        lambda params: kick_factor(a_acc, a_prev, a_next, replace_cosmology_params(cosmo, param_names, params), conf,
+                                   )
     )(param_values)
     return factor, cosmology_param_cotangent(cosmo, param_names, param_cot)
 
@@ -284,28 +227,14 @@ def drift(a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configuration):
         return ptcl.replace(disp=disp)
 
     pmid, disp, vel, acc, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
-        ptcl.pmid,
-        ptcl.disp,
-        disp,
-        ptcl.vel,
-        ptcl.acc,
-        conf.halo_start,
-        conf.halo_end,
-        ptcl.unused_index,
+        ptcl.pmid, ptcl.disp, disp, ptcl.vel, ptcl.acc, conf.halo_start, conf.halo_end, ptcl.unused_index,
     )
     _assert_halo_move_succeeded(has_failed, max_ptcl_moved)
     return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, halo_mask=halo_mask, unused_index=unused_indexes)
 
 
 def drift_for_force(
-    a_vel,
-    a_prev,
-    a_next,
-    ptcl: Particles,
-    cosmo,
-    conf: Configuration,
-    correction=None,
-    apply_phase=False,
+    a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configuration, correction=None, apply_phase=False,
 ):
     """Apply a drift whose output is immediately consumed by a force stage.
 
@@ -341,12 +270,7 @@ def drift_for_force(
         # still satisfies that invariant; the residual itself is applied only
         # after the raw drift below.
         phase_context = prepare_phase_space_context(
-            phase,
-            a_next,
-            ptcl,
-            cosmo,
-            conf,
-            local_pair=local_pair_correction(correction),
+            phase, a_next, ptcl, cosmo, conf, local_pair=local_pair_correction(correction),
         )
 
     factor = drift_factor(a_vel, a_prev, a_next, cosmo, conf)
@@ -356,13 +280,7 @@ def drift_for_force(
     if phase is not None:
         drifted = ptcl.replace(disp=disp)
         drifted = apply_phase_space_correction(
-            phase,
-            a_next,
-            drifted,
-            cosmo,
-            conf,
-            factor,
-            local_pair=local_pair_correction(correction),
+            phase, a_next, drifted, cosmo, conf, factor, local_pair=local_pair_correction(correction),
             context=phase_context,
         )
         disp = drifted.disp
@@ -380,42 +298,20 @@ def drift_for_force(
         no_acc_move = getattr(conf, "mGPU_halo_moving_no_acc", None)
         if no_acc_move is not None and conf.multigpu_mode == "mesh_halo":
             pmid, disp, vel, halo_mask, unused_indexes, has_failed, max_ptcl_moved = no_acc_move(
-                ptcl.pmid,
-                ptcl.disp,
-                disp,
-                vel,
-                conf.halo_start,
-                conf.halo_end,
-                ptcl.unused_index,
+                ptcl.pmid, ptcl.disp, disp, vel, conf.halo_start, conf.halo_end, ptcl.unused_index,
             )
             _assert_halo_move_succeeded(has_failed, max_ptcl_moved)
             return drifted.replace(
-                pmid=pmid,
-                disp=disp,
-                vel=vel,
-                acc=jnp.zeros_like(vel),
-                halo_mask=halo_mask,
+                pmid=pmid, disp=disp, vel=vel, acc=jnp.zeros_like(vel), halo_mask=halo_mask,
                 unused_index=unused_indexes,
             )
 
         pmid, disp, vel, acc, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
-            ptcl.pmid,
-            ptcl.disp,
-            disp,
-            vel,
-            acc,
-            conf.halo_start,
-            conf.halo_end,
-            ptcl.unused_index,
+            ptcl.pmid, ptcl.disp, disp, vel, acc, conf.halo_start, conf.halo_end, ptcl.unused_index,
         )
         _assert_halo_move_succeeded(has_failed, max_ptcl_moved)
         return drifted.replace(
-            pmid=pmid,
-            disp=disp,
-            vel=vel,
-            acc=acc,
-            halo_mask=halo_mask,
-            unused_index=unused_indexes,
+            pmid=pmid, disp=disp, vel=vel, acc=acc, halo_mask=halo_mask, unused_index=unused_indexes,
         )
 
     if conf.use_mGPU and (conf.replicated_mesh or conf.static_mesh_halo_width > 0):
@@ -426,13 +322,7 @@ def drift_for_force(
         return drift(a_vel, a_prev, a_next, ptcl, cosmo, conf)
 
     pmid, disp, vel, halo_mask, unused_indexes, has_failed, max_ptcl_moved = no_acc_move(
-        ptcl.pmid,
-        ptcl.disp,
-        disp,
-        ptcl.vel,
-        conf.halo_start,
-        conf.halo_end,
-        ptcl.unused_index,
+        ptcl.pmid, ptcl.disp, disp, ptcl.vel, conf.halo_start, conf.halo_end, ptcl.unused_index,
     )
     _assert_halo_move_succeeded(has_failed, max_ptcl_moved)
     acc = jnp.zeros_like(vel)
@@ -470,12 +360,8 @@ def drift_adj(a_vel, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
     vel_before_halo = ptcl.vel
     acc_before_halo = ptcl.acc
 
-    if (
-        (not conf.use_mGPU)
-        or conf.replicated_mesh
-        or conf.static_mesh_halo_width > 0
-        or conf.mGPU_halo_moving is None
-    ):
+    if ((not conf.use_mGPU) or conf.replicated_mesh or conf.static_mesh_halo_width > 0
+        or conf.mGPU_halo_moving is None):
         ptcl_out = ptcl.replace(disp=disp_before_halo)
         disp = ptcl_cot.disp
         vel = ptcl_cot.vel
@@ -487,21 +373,11 @@ def drift_adj(a_vel, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
         return ptcl_out, ptcl_cot, cosmo_cot
 
     (disp_out, vel_out, acc_out), (pmid, halo_mask, unused_indexes), halo_move_vjp = (
-        _halo_move_outputs_vjp_with_aux(
-            ptcl,
-            disp_before_halo,
-            vel_before_halo,
-            acc_before_halo,
-            conf,
-        )
+        _halo_move_outputs_vjp_with_aux(ptcl, disp_before_halo, vel_before_halo, acc_before_halo, conf,
+                                        )
     )
     ptcl_out = ptcl.replace(
-        pmid=pmid,
-        disp=disp_out,
-        vel=vel_out,
-        acc=acc_out,
-        halo_mask=halo_mask,
-        unused_index=unused_indexes,
+        pmid=pmid, disp=disp_out, vel=vel_out, acc=acc_out, halo_mask=halo_mask, unused_index=unused_indexes,
     )
 
     disp, vel, acc = halo_move_vjp((ptcl_cot.disp, ptcl_cot.vel, ptcl_cot.acc))
@@ -546,12 +422,8 @@ def drift_adj_from_output(a_vel, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_co
     """
     factor, cosmo_cot_drift = _drift_factor_param_grad(a_vel, a_prev, a_next, cosmo, conf)
     factor = factor.astype(conf.float_dtype)
-    if (
-        (not conf.use_mGPU)
-        or conf.replicated_mesh
-        or conf.static_mesh_halo_width > 0
-        or conf.mGPU_reconstruct_pre_drift is None
-    ):
+    if ((not conf.use_mGPU) or conf.replicated_mesh or conf.static_mesh_halo_width > 0
+        or conf.mGPU_reconstruct_pre_drift is None):
         vel_before_halo = ptcl.vel
         acc_before_halo = ptcl.acc
         disp_input = ptcl.disp - vel_before_halo * factor
@@ -567,69 +439,30 @@ def drift_adj_from_output(a_vel, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_co
 
     fused_pullback = getattr(conf, "mGPU_reconstruct_pre_drift_pullback", None)
     if fused_pullback is not None:
-        (
-            pmid,
-            disp_input,
-            vel_before_halo,
-            acc_before_halo,
-            unused_indexes,
-            halo_mask_input,
-            disp,
-            vel,
-            acc,
-        ) = fused_pullback(
-            ptcl.pmid,
-            ptcl.disp,
-            ptcl.vel,
-            ptcl.acc,
-            ptcl.unused_index,
-            factor,
-            ptcl_cot.disp,
-            ptcl_cot.vel,
-            ptcl_cot.acc,
-        )
+        (pmid, disp_input, vel_before_halo, acc_before_halo, unused_indexes, halo_mask_input, disp, vel, acc,
+         ) = fused_pullback(
+             ptcl.pmid, ptcl.disp, ptcl.vel, ptcl.acc, ptcl.unused_index, factor, ptcl_cot.disp, ptcl_cot.vel,
+             ptcl_cot.acc,
+         )
         ptcl = ptcl.replace(
-            pmid=pmid,
-            disp=disp_input,
-            vel=vel_before_halo,
-            acc=acc_before_halo,
-            halo_mask=halo_mask_input,
+            pmid=pmid, disp=disp_input, vel=vel_before_halo, acc=acc_before_halo, halo_mask=halo_mask_input,
             unused_index=unused_indexes,
         )
     else:
         # The adjoint scan only has the post-drift state, so rebuild the exact
         # canonical pre-drift layout before pulling the cotangent through halo move.
         pmid, disp_input, vel_before_halo, acc_before_halo, unused_indexes, halo_mask_input = conf.mGPU_reconstruct_pre_drift(
-            ptcl.pmid,
-            ptcl.disp,
-            ptcl.vel,
-            ptcl.acc,
-            conf.halo_start,
-            conf.halo_end,
-            ptcl.unused_index,
-            factor,
+            ptcl.pmid, ptcl.disp, ptcl.vel, ptcl.acc, conf.halo_start, conf.halo_end, ptcl.unused_index, factor,
         )
         ptcl = ptcl.replace(
-            pmid=pmid,
-            disp=disp_input,
-            vel=vel_before_halo,
-            acc=acc_before_halo,
-            halo_mask=halo_mask_input,
+            pmid=pmid, disp=disp_input, vel=vel_before_halo, acc=acc_before_halo, halo_mask=halo_mask_input,
             unused_index=unused_indexes,
         )
         disp_before_halo = disp_input + vel_before_halo * factor
 
         disp, vel, acc = conf.mGPU_halo_move_pullback(
-            ptcl.pmid,
-            ptcl.disp,
-            disp_before_halo,
-            vel_before_halo,
-            acc_before_halo,
-            conf.halo_end,
-            ptcl.unused_index,
-            ptcl_cot.disp,
-            ptcl_cot.vel,
-            ptcl_cot.acc,
+            ptcl.pmid, ptcl.disp, disp_before_halo, vel_before_halo, acc_before_halo, conf.halo_end, ptcl.unused_index,
+            ptcl_cot.disp, ptcl_cot.vel, ptcl_cot.acc,
         )
     vel_cot = vel + disp * factor
     ptcl_cot = ptcl_cot.replace(disp=disp, vel=vel_cot, acc=acc)
@@ -715,13 +548,7 @@ def kick_adj(a_acc, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
 
 def force_acceleration(a, ptcl, cosmo, conf, correction=None):
     """Evaluate long- and short-range acceleration branches."""
-    acc = gravity(
-        a,
-        ptcl,
-        cosmo,
-        conf,
-        correction=long_range_correction(correction),
-    )
+    acc = gravity(a, ptcl, cosmo, conf, correction=long_range_correction(correction), )
     local = local_pair_correction(correction)
     if local is not None:
         acc = acc + apply_local_pair_correction(local, a, ptcl, cosmo, conf)
@@ -785,20 +612,13 @@ def force_adj(a, ptcl, ptcl_cot, cosmo, conf, correction=None):
     else:
         if conf.nbody_cosmo_grad:
             acc, gravity_vjp = vjp(
-                lambda ptcl_in, cosmo_in, correction_in: force_acceleration(
-                    a, ptcl_in, cosmo_in, conf, correction=correction_in
-                ),
-                ptcl,
-                cosmo,
-                correction,
+                lambda ptcl_in, cosmo_in, correction_in:
+                force_acceleration(a, ptcl_in, cosmo_in, conf, correction=correction_in), ptcl, cosmo, correction,
             )
         else:
             acc, gravity_vjp = vjp(
-                lambda ptcl_in, correction_in: force_acceleration(
-                    a, ptcl_in, cosmo, conf, correction=correction_in
-                ),
-                ptcl,
-                correction,
+                lambda ptcl_in, correction_in: force_acceleration(a, ptcl_in, cosmo, conf, correction=correction_in),
+                ptcl, correction,
             )
 
     ptcl = ptcl.replace(acc=acc)
@@ -811,7 +631,7 @@ def force_adj(a, ptcl, ptcl_cot, cosmo, conf, correction=None):
         if conf.nbody_cosmo_grad:
             _, ptcl_cot_force, cosmo_cot_force, _ = gravity_vjp(acc_out_cot)
         else:
-            (ptcl_cot_force,) = gravity_vjp(acc_out_cot)
+            (ptcl_cot_force, ) = gravity_vjp(acc_out_cot)
             cosmo_cot_force = zero_cosmology_param_cotangent(cosmo)
     else:
         if conf.nbody_cosmo_grad:
@@ -827,8 +647,6 @@ def force_adj(a, ptcl, ptcl_cot, cosmo, conf, correction=None):
     cosmo_cot_force = project_cosmology_param_cotangent(cosmo_cot_force)
 
     return ptcl, ptcl_cot, cosmo_cot_force, correction_cot_force
-
-
 
 
 def integrate(a_prev, a_next, ptcl, cosmo, conf, correction=None):
@@ -860,13 +678,7 @@ def integrate(a_prev, a_next, ptcl, cosmo, conf, correction=None):
             D += d
             a_disp_next = a_prev * (1 - D) + a_next * D
             ptcl = drift_for_force(
-                a_vel,
-                a_disp,
-                a_disp_next,
-                ptcl,
-                cosmo,
-                conf,
-                correction=correction,
+                a_vel, a_disp, a_disp_next, ptcl, cosmo, conf, correction=correction,
                 apply_phase=split_index == last_drift_index,
             )
             a_disp = a_disp_next
@@ -880,8 +692,6 @@ def integrate(a_prev, a_next, ptcl, cosmo, conf, correction=None):
             a_vel = a_vel_next
 
     return ptcl
-
-
 
 
 def _integrate_stage_schedule(a_prev, a_next, conf):
@@ -905,17 +715,7 @@ def _integrate_stage_schedule(a_prev, a_next, conf):
     return stages
 
 
-def integrate_adj(
-    a_prev,
-    a_next,
-    ptcl,
-    ptcl_cot,
-    cosmo,
-    cosmo_cot,
-    conf,
-    correction=None,
-    correction_cot=None,
-):
+def integrate_adj(a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf, correction=None, correction_cot=None, ):
     """Reverse one macro-step of the symplectic integrator.
 
     Parameters
@@ -953,37 +753,18 @@ def integrate_adj(
         if stage[0] == "kick":
             _, a_acc_stage, a_vel_stage, a_vel_next = stage
             ptcl, ptcl_cot, cosmo_cot = kick_adj(
-                a_acc_stage,
-                a_vel_stage,
-                a_vel_next,
-                ptcl,
-                ptcl_cot,
-                cosmo,
-                cosmo_cot,
-                conf,
+                a_acc_stage, a_vel_stage, a_vel_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf,
             )
             continue
 
         _, a_vel_stage, a_disp_stage, a_disp_next, a_acc_in = stage
         ptcl, ptcl_cot, cosmo_cot_force_stage, correction_cot_force_stage = force_adj(
-            a_disp_next,
-            ptcl,
-            ptcl_cot,
-            cosmo,
-            conf,
-            correction=correction,
+            a_disp_next, ptcl, ptcl_cot, cosmo, conf, correction=correction,
         )
         cosmo_cot = add_cosmology_cotangents(cosmo_cot, cosmo_cot_force_stage)
         correction_cot = add_nbody_correction_cotangents(correction_cot, correction_cot_force_stage)
         ptcl, ptcl_cot, cosmo_cot = drift_adj_from_output(
-            a_vel_stage,
-            a_disp_stage,
-            a_disp_next,
-            ptcl,
-            ptcl_cot,
-            cosmo,
-            cosmo_cot,
-            conf,
+            a_vel_stage, a_disp_stage, a_disp_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf,
         )
 
         # The force stage overwrites acceleration, so restore the incoming

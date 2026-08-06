@@ -12,11 +12,8 @@ from .FFT_distributed import create_batched_transposed_real_ffts, create_ffts
 from .cuda_routing import supported_configuration as cuda_routing_supported
 from .gather import initialize_mGPU_gather
 from .halo_moving import (
-    initialize_mGPU_compute_halo_mask,
-    initialize_mGPU_halo_move_pullback,
-    initialize_mGPU_halo_movement_canonical,
-    initialize_mGPU_halo_movement_no_acc,
-    initialize_mGPU_reconstruct_pre_drift,
+    initialize_mGPU_compute_halo_mask, initialize_mGPU_halo_move_pullback, initialize_mGPU_halo_movement_canonical,
+    initialize_mGPU_halo_movement_no_acc, initialize_mGPU_reconstruct_pre_drift,
     initialize_mGPU_reconstruct_pre_drift_pullback,
 )
 from .scatter import initialize_mGPU_scatter
@@ -93,7 +90,9 @@ class MultiGPUConfiguration:
     gather: Callable = _uninitialized_runtime_callable
 
 
-def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUConfiguration | None = None) -> MultiGPUConfiguration | None:
+def build_multigpu_configuration(
+    conf: "Configuration", runtime_seed: MultiGPUConfiguration | None = None
+) -> MultiGPUConfiguration | None:
     """Derive static multi-GPU topology from the user-facing configuration.
 
     This function computes slab ownership, halo extents, communication
@@ -136,25 +135,16 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
     devices_index = tuple(device.id for device in devices)
     mesh_positions = tuple(range(num_devices))
 
-    mode = (
-        runtime_seed.mode
-        if runtime_seed is not None and runtime_seed.mode is not None
-        else conf.multigpu_mode
-    )
+    mode = (runtime_seed.mode if runtime_seed is not None and runtime_seed.mode is not None else conf.multigpu_mode)
     if mode not in {"particle_halo", "mesh_halo"}:
         raise ValueError(f"Unsupported multigpu_mode={mode!r}. Expected 'particle_halo' or 'mesh_halo'.")
     requested_cuda_routing = (
-        runtime_seed.cuda_routing
-        if runtime_seed is not None and runtime_seed.cuda_routing is not None
-        else False
+        runtime_seed.cuda_routing if runtime_seed is not None and runtime_seed.cuda_routing is not None else False
     )
     # Qualification is evaluated once while the static configuration is being
     # built. A missing/incompatible optional library simply resolves to False;
     # the portable JAX routing path remains the automatic fallback.
-    cuda_routing = bool(
-        requested_cuda_routing
-        and cuda_routing_supported(conf, num_devices=num_devices, mode=mode)
-    )
+    cuda_routing = bool(requested_cuda_routing and cuda_routing_supported(conf, num_devices=num_devices, mode=mode))
 
     local_mesh_shape = (conf.mesh_shape[0] // num_devices, conf.mesh_shape[1], conf.mesh_shape[2])
     global_nMesh = conf.mesh_shape[0]
@@ -164,21 +154,14 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
         raise ValueError("replicated_mesh and static_mesh_halo_width are mutually exclusive.")
     if static_mesh_halo_width < 0:
         raise ValueError("static_mesh_halo_width must be non-negative.")
-    ptcl_halo_width = 0 if num_devices == 1 else max(
-        1,
-        int(round(conf.mesh_shape[0] / conf.ptcl_grid_shape[0])),
-    )
+    ptcl_halo_width = 0 if num_devices == 1 else max(1, int(round(conf.mesh_shape[0] / conf.ptcl_grid_shape[0])), )
     mesh_halo_width = 0 if num_devices == 1 else max(1, static_mesh_halo_width)
     if num_devices > 1 and mesh_halo_width > local_mesh_shape[0]:
         raise ValueError(
             "mesh_halo_width cannot exceed the local x-slab width for one-hop ring exchange: "
             f"mesh_halo_width={mesh_halo_width}, local_x={local_mesh_shape[0]}."
         )
-    local_mesh_with_halo_shape = (
-        local_mesh_shape[0] + 2 * mesh_halo_width,
-        local_mesh_shape[1],
-        local_mesh_shape[2],
-    )
+    local_mesh_with_halo_shape = (local_mesh_shape[0] + 2 * mesh_halo_width, local_mesh_shape[1], local_mesh_shape[2], )
 
     slice_start = [(global_nMesh // num_devices * mesh_pos) % global_nMesh for mesh_pos in mesh_positions]
     slice_end = [(global_nMesh // num_devices * (mesh_pos + 1)) % global_nMesh for mesh_pos in mesh_positions]
@@ -189,10 +172,8 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
 
     offsets = jnp.array(slice_start)
     scatter_offsets = jnp.array([[offset, 0.0, 0.0] for offset in offsets]) * conf.cell_size
-    mesh_halo_offsets = jnp.array(
-        [[offset - mesh_halo_width, 0.0, 0.0] for offset in offsets],
-        dtype=conf.float_dtype,
-    ) * conf.cell_size
+    mesh_halo_offsets = jnp.array([[offset - mesh_halo_width, 0.0, 0.0] for offset in offsets], dtype=conf.float_dtype,
+                                  ) * conf.cell_size
 
     if conf.max_ptcl_per_slice is None:
         scaling = 1.3 + (num_devices.bit_length() - 3) * 0.1
@@ -207,8 +188,7 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
     max_share_ptcl = min(conf.max_share_ptcl, max_ptcl_per_slice // 2)
     if conf.max_halo_share_ptcl is None:
         max_halo_share_ptcl = min(
-            max_ptcl_per_slice,
-            (max_ptcl_per_slice * ptcl_halo_width + local_mesh_shape[0] - 1) // local_mesh_shape[0],
+            max_ptcl_per_slice, (max_ptcl_per_slice * ptcl_halo_width + local_mesh_shape[0] - 1) // local_mesh_shape[0],
         )
     else:
         max_halo_share_ptcl = min(conf.max_halo_share_ptcl, max_ptcl_per_slice)
@@ -217,32 +197,16 @@ def build_multigpu_configuration(conf: "Configuration", runtime_seed: MultiGPUCo
 
     base_runtime = runtime_seed if runtime_seed is not None else MultiGPUConfiguration()
     return base_runtime.replace(
-        compute_mesh=compute_mesh,
-        num_devices=num_devices,
-        devices=devices,
-        devices_index=devices_index,
-        local_mesh_shape=local_mesh_shape,
-        local_mesh_with_halo_shape=local_mesh_with_halo_shape,
-        mode=mode,
-        cuda_routing=cuda_routing,
-        store_particle_halos=store_particle_halos,
-        ptcl_halo_width=ptcl_halo_width,
-        mesh_halo_width=mesh_halo_width,
-        owned_slice_start=jnp.array(owned_slice_start),
-        owned_slice_end=jnp.array(owned_slice_end),
-        slice_start=jnp.array(halo_start)[:, 0],
+        compute_mesh=compute_mesh, num_devices=num_devices, devices=devices, devices_index=devices_index,
+        local_mesh_shape=local_mesh_shape, local_mesh_with_halo_shape=local_mesh_with_halo_shape, mode=mode,
+        cuda_routing=cuda_routing, store_particle_halos=store_particle_halos, ptcl_halo_width=ptcl_halo_width,
+        mesh_halo_width=mesh_halo_width, owned_slice_start=jnp.array(owned_slice_start),
+        owned_slice_end=jnp.array(owned_slice_end), slice_start=jnp.array(halo_start)[:, 0],
         slice_end=jnp.array(halo_end)[:, 1] if num_devices > 1 else jnp.array([global_nMesh]),
-        halo_start=jnp.array(halo_start),
-        halo_end=jnp.array(halo_end),
-        offsets=offsets,
-        scatter_offsets=scatter_offsets,
-        mesh_halo_offsets=mesh_halo_offsets,
-        max_ptcl_per_slice=max_ptcl_per_slice,
-        max_share_ptcl=max_share_ptcl,
-        max_halo_share_ptcl=max_halo_share_ptcl,
-        max_share_gather_ptcl=max_share_gather_ptcl,
-        left_perm=left_perm,
-        right_perm=right_perm,
+        halo_start=jnp.array(halo_start), halo_end=jnp.array(halo_end), offsets=offsets,
+        scatter_offsets=scatter_offsets, mesh_halo_offsets=mesh_halo_offsets, max_ptcl_per_slice=max_ptcl_per_slice,
+        max_share_ptcl=max_share_ptcl, max_halo_share_ptcl=max_halo_share_ptcl,
+        max_share_gather_ptcl=max_share_gather_ptcl, left_perm=left_perm, right_perm=right_perm,
     )
 
 
@@ -261,24 +225,16 @@ def initialize_multigpu_runtime(conf: "Configuration", runtime: MultiGPUConfigur
     MultiGPUConfiguration
         Runtime object augmented with compiled distributed helper callables.
     """
-    rfftn_jit, irfftn_jit, _, _, rfftn_transposed_jit, irfftn_transposed_jit = create_ffts(
-        runtime.compute_mesh,
-    )
-    _, irfftn_transposed_batched_jit = create_batched_transposed_real_ffts(
-        runtime.compute_mesh,
-    )
+    rfftn_jit, irfftn_jit, _, _, rfftn_transposed_jit, irfftn_transposed_jit = create_ffts(runtime.compute_mesh, )
+    _, irfftn_transposed_batched_jit = create_batched_transposed_real_ffts(runtime.compute_mesh, )
     return runtime.replace(
-        rfftn=rfftn_jit,
-        irfftn=irfftn_jit,
-        rfftn_transposed=rfftn_transposed_jit,
-        irfftn_transposed=irfftn_transposed_jit,
-        irfftn_transposed_batched=irfftn_transposed_batched_jit,
+        rfftn=rfftn_jit, irfftn=irfftn_jit, rfftn_transposed=rfftn_transposed_jit,
+        irfftn_transposed=irfftn_transposed_jit, irfftn_transposed_batched=irfftn_transposed_batched_jit,
         halo_moving=initialize_mGPU_halo_movement_canonical(conf),
         halo_moving_no_acc=initialize_mGPU_halo_movement_no_acc(conf),
         reconstruct_pre_drift=initialize_mGPU_reconstruct_pre_drift(conf),
         reconstruct_pre_drift_pullback=initialize_mGPU_reconstruct_pre_drift_pullback(conf),
         halo_move_pullback=initialize_mGPU_halo_move_pullback(conf),
-        compute_halo_mask=initialize_mGPU_compute_halo_mask(conf),
-        scatter=initialize_mGPU_scatter(conf),
+        compute_halo_mask=initialize_mGPU_compute_halo_mask(conf), scatter=initialize_mGPU_scatter(conf),
         gather=initialize_mGPU_gather(conf),
     )

@@ -57,8 +57,7 @@ def _L(kvec, pot_m, pot_n, conf):
         L = jnp.zeros(conf.ptcl_grid_shape, dtype=conf.float_dtype)
     else:
         L = jnp.zeros(
-            conf.ptcl_grid_shape,
-            dtype=conf.float_dtype,
+            conf.ptcl_grid_shape, dtype=conf.float_dtype,
             device=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None)),
         )
 
@@ -108,7 +107,7 @@ def _L(kvec, pot_m, pot_n, conf):
     return L
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(5,))
+@partial(jax.custom_vjp, nondiff_argnums=(5, ))
 def _attach_lpt_halo_move_vjp(disp_before, vel_before, disp_after, vel_after, ptcl_before, conf):
     """Attach the halo-move pullback to LPT outputs.
 
@@ -132,33 +131,17 @@ def _attach_lpt_halo_move_vjp_bwd(conf, res, cotangents):
     scratch_acc = disp_before[:, :0]
 
     disp_before_cot, vel_before_cot, _ = _halo_move_vjp(
-        ptcl_before,
-        disp_before,
-        vel_before,
-        scratch_acc,
-        disp_cot,
-        vel_cot,
-        scratch_acc,
-        conf,
+        ptcl_before, disp_before, vel_before, scratch_acc, disp_cot, vel_cot, scratch_acc, conf,
     )
 
-    return (
-        disp_before_cot,
-        vel_before_cot,
-        jnp.zeros_like(disp_cot),
-        jnp.zeros_like(vel_cot),
-        None,
-    )
+    return (disp_before_cot, vel_before_cot, jnp.zeros_like(disp_cot), jnp.zeros_like(vel_cot), None, )
 
 
-_attach_lpt_halo_move_vjp.defvjp(
-    _attach_lpt_halo_move_vjp_fwd,
-    _attach_lpt_halo_move_vjp_bwd,
-)
+_attach_lpt_halo_move_vjp.defvjp(_attach_lpt_halo_move_vjp_fwd, _attach_lpt_halo_move_vjp_bwd, )
 
 
-@partial(jax.jit, static_argnames=('conf',))
-@partial(jax.checkpoint, static_argnums=(2,))
+@partial(jax.jit, static_argnames=('conf', ))
+@partial(jax.checkpoint, static_argnums=(2, ))
 def lpt(modes, cosmo, conf):
     """Lagrangian perturbation theory at ``conf.lpt_order``.
 
@@ -203,10 +186,7 @@ def lpt(modes, cosmo, conf):
 
     kvec = conf.kvec_spacing
     if conf.compute_mesh is not None:
-        modes = jax.lax.with_sharding_constraint(
-            modes,
-            NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
-        )
+        modes = jax.lax.with_sharding_constraint(modes, NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)), )
 
     pot = []
 
@@ -235,21 +215,18 @@ def lpt(modes, cosmo, conf):
     disp = ptcl.disp
     vel = ptcl.vel
     ptcl_grid_shape = jnp.array(conf.ptcl_grid_shape, dtype=jnp.int32)
-    ptcl_grid_coord = jnp.rint(
-        (ptcl.pmid.astype(conf.float_dtype) * conf.cell_size + ptcl.disp) / conf.ptcl_spacing
-    ).astype(jnp.int32)
+    ptcl_grid_coord = jnp.rint((ptcl.pmid.astype(conf.float_dtype) * conf.cell_size + ptcl.disp) / conf.ptcl_spacing
+                               ).astype(jnp.int32)
     ptcl_grid_coord %= ptcl_grid_shape
-    ptcl_idx = (
-        (ptcl_grid_coord[:, 0] * ptcl_grid_shape[1] + ptcl_grid_coord[:, 1]) * ptcl_grid_shape[2]
-        + ptcl_grid_coord[:, 2]
-    )
+    ptcl_idx = ((ptcl_grid_coord[:, 0] * ptcl_grid_shape[1] + ptcl_grid_coord[:, 1]) * ptcl_grid_shape[2] +
+                ptcl_grid_coord[:, 2])
     ptcl_idx = jnp.where(ptcl.unused_index, jnp.int32(-1), ptcl_idx)
     valid_slots = ~ptcl.unused_index
 
     for order in range(1, 1 + conf.lpt_order):
         D = growth(a, cosmo, conf, order=order)
         dD_dlna = growth(a, cosmo, conf, order=order, deriv=1)
-        a2HDp = a ** 2 * jnp.sqrt(E2(a, cosmo)) * dD_dlna
+        a2HDp = a**2 * jnp.sqrt(E2(a, cosmo)) * dD_dlna
         D = D.astype(conf.float_dtype)
         a2HDp = a2HDp.astype(conf.float_dtype)
 
@@ -272,31 +249,13 @@ def lpt(modes, cosmo, conf):
     vel_before_halo = vel
     scratch_acc = disp[:, :0]
     pmid, disp, vel, acc, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
-        ptcl.pmid,
-        ptcl.disp,
-        disp,
-        vel,
-        scratch_acc,
-        conf.halo_start,
-        conf.halo_end,
-        ptcl.unused_index,
+        ptcl.pmid, ptcl.disp, disp, vel, scratch_acc, conf.halo_start, conf.halo_end, ptcl.unused_index,
     )
     ptcl_after = ptcl.replace(
-        pmid=pmid,
-        disp=disp,
-        vel=vel,
-        acc=None,
-        halo_mask=halo_mask,
-        unused_index=unused_indexes,
+        pmid=pmid, disp=disp, vel=vel, acc=None, halo_mask=halo_mask, unused_index=unused_indexes,
     )
     disp, vel = _attach_lpt_halo_move_vjp(
-        disp_before_halo,
-        vel_before_halo,
-        ptcl_after.disp,
-        ptcl_after.vel,
-        ptcl,
-        conf,
+        disp_before_halo, vel_before_halo, ptcl_after.disp, ptcl_after.vel, ptcl, conf,
     )
 
-    return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=None, halo_mask=halo_mask,
-                        unused_index=unused_indexes)
+    return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=None, halo_mask=halo_mask, unused_index=unused_indexes)

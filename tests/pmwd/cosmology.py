@@ -161,24 +161,10 @@ class Cosmology:
         return self.conf.rho_crit * self.Omega_m * self.conf.ptcl_cell_vol
 
 
-SimpleLCDM = partial(
-    Cosmology,
-    A_s_1e9=2.0,
-    n_s=0.96,
-    Omega_m=0.3,
-    Omega_b=0.05,
-    h=0.7,
-)
+SimpleLCDM = partial(Cosmology, A_s_1e9=2.0, n_s=0.96, Omega_m=0.3, Omega_b=0.05, h=0.7, )
 SimpleLCDM.__doc__ = "Simple ΛCDM cosmology, for convenience and subject to change."
 
-Planck18 = partial(
-    Cosmology,
-    A_s_1e9=2.105,
-    n_s=0.9665,
-    Omega_m=0.3111,
-    Omega_b=0.04897,
-    h=0.6766,
-)
+Planck18 = partial(Cosmology, A_s_1e9=2.105, n_s=0.9665, Omega_m=0.3111, Omega_b=0.04897, h=0.6766, )
 Planck18.__doc__ = "Planck 2018 cosmology, arXiv:1807.06209 Table 2 last column."
 
 
@@ -219,7 +205,7 @@ def E2(a, cosmo):
     return cosmo.Omega_m * a**-3 + cosmo.Omega_k * a**-2 + cosmo.Omega_de * de_a
 
 
-@partial(jnp.vectorize, excluded=(1,))
+@partial(jnp.vectorize, excluded=(1, ))
 def H_deriv(a, cosmo):
     r"""Hubble parameter derivatives, :math:`\mathrm{d}\ln H / \mathrm{d}\ln a`, at
     given scale factors.

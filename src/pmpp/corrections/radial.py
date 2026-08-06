@@ -9,12 +9,8 @@ from jax.tree_util import tree_map
 
 from ..utils import is_float0_array, pytree_dataclass
 from .common import (
-    HaikuModuleBase,
-    correction_cosmo_features,
-    default_cosmo_features,
-    normalized_k_magnitude_transposed,
-    require_haiku,
-    hk,
+    HaikuModuleBase, correction_cosmo_features, default_cosmo_features, normalized_k_magnitude_transposed,
+    require_haiku, hk,
 )
 
 
@@ -68,9 +64,9 @@ class NeuralSplineFourierFilter(HaikuModuleBase):
         w = hk.Linear(self.n_knots + 1, **output_init_kwargs)(w)
         k = hk.Linear(self.n_knots - 1)(k)
 
-        k = jnp.concatenate([jnp.zeros((1,)), jnp.cumsum(jax.nn.softmax(k))])
-        w = jnp.concatenate([jnp.zeros((1,)), w])
-        ak = jnp.concatenate([jnp.zeros((3,)), k, jnp.ones((3,))])
+        k = jnp.concatenate([jnp.zeros((1, )), jnp.cumsum(jax.nn.softmax(k))])
+        w = jnp.concatenate([jnp.zeros((1, )), w])
+        ak = jnp.concatenate([jnp.zeros((3, )), k, jnp.ones((3, ))])
 
         return _deBoorVectorized(jnp.clip(x / jnp.sqrt(3.0), 0.0, 1.0 - 1e-4), ak, w, 3)
 
@@ -91,9 +87,7 @@ def radial_transform(n_knots, latent_size, output_init_scale):
     return hk.without_apply_rng(
         hk.transform(
             lambda x, a, c: NeuralSplineFourierFilter(
-                n_knots=n_knots,
-                latent_size=latent_size,
-                output_init_scale=output_init_scale,
+                n_knots=n_knots, latent_size=latent_size, output_init_scale=output_init_scale,
             )(x, a, c)
         )
     )
@@ -102,8 +96,7 @@ def radial_transform(n_knots, latent_size, output_init_scale):
 @partial(
     pytree_dataclass,
     aux_fields=("n_knots", "latent_size", "output_init_scale", "allow_missing_sigma8", "sigma8_value", "dtype"),
-    frozen=True,
-    eq=False,
+    frozen=True, eq=False,
 )
 class RadialPotentialCorrection:
     """Trainable rotationally invariant multiplicative potential correction."""
@@ -122,22 +115,14 @@ class RadialPotentialCorrection:
         dtype = jnp.dtype(self.dtype)
         object.__setattr__(self, "dtype", dtype)
         object.__setattr__(
-            self,
-            "params",
+            self, "params",
             tree_map(lambda x: x if x is None or is_float0_array(x) else jnp.asarray(x, dtype=dtype), self.params),
         )
 
 
 def init_radial_potential_correction(
-    key,
-    latent_size=16,
-    n_knots=16,
-    output_init_scale=None,
-    allow_missing_sigma8=False,
-    sigma8_value=0.8,
-    dtype=jnp.float32,
-    conf=None,
-    **unused_kwargs,
+    key, latent_size=16, n_knots=16, output_init_scale=None, allow_missing_sigma8=False, sigma8_value=0.8,
+    dtype=jnp.float32, conf=None, **unused_kwargs,
 ):
     """Initialize a radial Fourier-space potential correction.
 
@@ -176,20 +161,10 @@ def init_radial_potential_correction(
         x = jnp.linspace(0.0, jnp.sqrt(3.0), 16, dtype=dtype)
     else:
         x = normalized_k_magnitude_transposed(conf).astype(dtype)
-    params = transform.init(
-        key,
-        x,
-        jnp.ones((1,), dtype=dtype),
-        default_cosmo_features(dtype),
-    )
+    params = transform.init(key, x, jnp.ones((1, ), dtype=dtype), default_cosmo_features(dtype), )
     return RadialPotentialCorrection(
-        params=params,
-        n_knots=n_knots,
-        latent_size=latent_size,
-        output_init_scale=output_init_scale,
-        allow_missing_sigma8=allow_missing_sigma8,
-        sigma8_value=float(sigma8_value),
-        dtype=dtype,
+        params=params, n_knots=n_knots, latent_size=latent_size, output_init_scale=output_init_scale,
+        allow_missing_sigma8=allow_missing_sigma8, sigma8_value=float(sigma8_value), dtype=dtype,
     )
 
 
@@ -212,9 +187,7 @@ def sample_radial_potential_transfer(correction, radius_fraction, a, cosmo, conf
     x = radius_fraction * jnp.asarray(jnp.sqrt(3.0), dtype=correction.dtype)
     transform = radial_transform(correction.n_knots, correction.latent_size, correction.output_init_scale)
     residual = transform.apply(
-        correction.params,
-        x,
-        jnp.asarray(a, dtype=correction.dtype),
+        correction.params, x, jnp.asarray(a, dtype=correction.dtype),
         correction_cosmo_features(correction, cosmo, correction.dtype),
     )
     transfer = 1.0 + residual
@@ -233,13 +206,11 @@ def evaluate_radial_potential_transfer(correction, a, cosmo, conf):
     conf
         Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     if correction is None:
-        return jnp.ones(tuple(conf.mesh_shape[:-1]) + (conf.mesh_shape[-1] // 2 + 1,), dtype=conf.float_dtype)
+        return jnp.ones(tuple(conf.mesh_shape[:-1]) + (conf.mesh_shape[-1] // 2 + 1, ), dtype=conf.float_dtype)
     k_norm = normalized_k_magnitude_transposed(conf)
     transform = radial_transform(correction.n_knots, correction.latent_size, correction.output_init_scale)
     residual = transform.apply(
-        correction.params,
-        k_norm.astype(correction.dtype),
-        jnp.asarray(a, dtype=correction.dtype),
+        correction.params, k_norm.astype(correction.dtype), jnp.asarray(a, dtype=correction.dtype),
         correction_cosmo_features(correction, cosmo, correction.dtype),
     )
     return 1.0 + residual

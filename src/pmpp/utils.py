@@ -83,13 +83,11 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
     if aux_fields is None:
         aux_fields = ()
     elif isinstance(aux_fields, str):
-        aux_fields = (aux_fields,)
+        aux_fields = (aux_fields, )
     elif aux_fields is Ellipsis:
         aux_fields = [field.name for field in dataclasses.fields(cls)]
-    aux_data_names = [field.name for field in dataclasses.fields(cls)
-                      if field.name in aux_fields]
-    children_names = [field.name for field in dataclasses.fields(cls)
-                      if field.name not in aux_fields]
+    aux_data_names = [field.name for field in dataclasses.fields(cls) if field.name in aux_fields]
+    children_names = [field.name for field in dataclasses.fields(cls) if field.name not in aux_fields]
 
     if aux_invert:
         aux_data_names, children_names = children_names, aux_data_names
@@ -143,8 +141,7 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
         children
             Dynamic pytree children restored into the dataclass instance.
         """
-        return cls(**dict(zip(children_names, children)),
-                   **dict(zip(aux_data_names, aux_data)))
+        return cls(**dict(zip(children_names, children)), **dict(zip(aux_data_names, aux_data)))
 
     register_pytree_node(cls, tree_flatten, tree_unflatten)
 
@@ -173,10 +170,7 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
             return all(is_placeholder(x) for x in tree_leaves(tree))
 
         # unnecessary to test for None's since they are empty pytree nodes
-        return tree_leaves(self) and leaves_all(
-            lambda x: type(x) is object or isinstance(x, str),
-            self,
-        )
+        return tree_leaves(self) and leaves_all(lambda x: type(x) is object or isinstance(x, str), self, )
 
     cls._is_transforming = _is_transforming
 
@@ -241,8 +235,8 @@ def create_compute_mesh(devices):
     jax.sharding.Mesh
         One-dimensional mesh named by ``AXIS_NAME``.
     """
-    device_mesh = mesh_utils.create_device_mesh((len(devices),), devices=devices)
-    return Mesh(device_mesh, axis_names=(AXIS_NAME,))  # "gpus" is necessary for all other
+    device_mesh = mesh_utils.create_device_mesh((len(devices), ), devices=devices)
+    return Mesh(device_mesh, axis_names=(AXIS_NAME, ))  # "gpus" is necessary for all other
 
 
 def distribute_array_on_gpus(array: Array, compute_mesh: Mesh, partition: P) -> Array:
@@ -263,8 +257,9 @@ def distribute_array_on_gpus(array: Array, compute_mesh: Mesh, partition: P) -> 
         Array materialized on ``compute_mesh`` with the requested sharding.
     """
     sharding = NamedSharding(compute_mesh, partition)
-    array_parts_device = [jax.device_put(array[i], device=d) for d, i in
-                          sharding.addressable_devices_indices_map(array.shape).items()]
+    array_parts_device = [
+        jax.device_put(array[i], device=d) for d, i in sharding.addressable_devices_indices_map(array.shape).items()
+    ]
     array_distributed = jax.make_array_from_single_device_arrays(array.shape, sharding, array_parts_device)
     return array_distributed
 

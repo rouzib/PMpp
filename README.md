@@ -28,6 +28,9 @@ source ~/.venvs/pmpp/bin/activate
 python -m pip install --upgrade pip
 python -m pip install pmpp jupyter
 
+# Optional: compile accelerated routing for this machine. This requires nvcc.
+pmpp-build-cuda-routing
+
 # The checkout supplies the notebooks; PM++ itself remains pip-installed.
 git clone https://github.com/rouzib/PMpp.git ~/PMpp
 cd ~/PMpp
@@ -192,6 +195,26 @@ float32 GPU setups; unsupported platforms warn and fall back to reference JAX.
 CUDA routing is selected automatically when its optional FFI is qualified.
 See [the optimization guide](docs/source/user_guide/optimizations.md) for the
 measured forward and AD recommendations.
+
+## Development
+
+Install the development and documentation tools from an editable checkout:
+
+```bash
+python -m pip install -e ".[dev,docs]"
+```
+
+PM++ uses YAPF 0.43.0 with the project style defined in `pyproject.toml`.
+Format the active package and maintained tests, then verify that no formatting
+changes remain:
+
+```bash
+python -m yapf --in-place --recursive src tests
+python -m yapf --diff --recursive src tests
+```
+
+See the [contributor guide](docs/source/development/contributing.md) for the
+complete implementation, validation, and documentation workflow.
 
 ## Testing
 

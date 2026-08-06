@@ -4,6 +4,18 @@ Run the smallest test that exercises a change, then expand toward the full
 scientific path. Use the same JAX backend/device count as the code path under
 test and run heavy multi-GPU jobs one process at a time.
 
+## Formatting check
+
+Before running solver tests, verify that the active package and test suite match
+the YAPF configuration in `pyproject.toml`:
+
+```bash
+python -m yapf --diff --recursive src tests
+```
+
+Apply any required formatting with
+`python -m yapf --in-place --recursive src tests`, then rerun the check.
+
 ## Core focused checks
 
 ```bash

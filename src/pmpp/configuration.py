@@ -12,19 +12,12 @@ from jax.typing import DTypeLike
 from mcfit import TophatVar
 
 from .fft import fftfreq
-from .multigpu_configuration import (
-    MultiGPUConfiguration,
-    build_multigpu_configuration,
-    initialize_multigpu_runtime,
-)
+from .multigpu_configuration import (MultiGPUConfiguration, build_multigpu_configuration, initialize_multigpu_runtime, )
 from .pallas_cic import pallas_cic_supported
 from .utils import build_particle_nyquist_filter, pytree_dataclass
 
 
-@partial(pytree_dataclass,
-         aux_fields=Ellipsis,
-         frozen=True,
-         eq=False)
+@partial(pytree_dataclass, aux_fields=Ellipsis, frozen=True, eq=False)
 class Configuration:
     """Configuration parameters, "immutable" as a frozen dataclass.
 
@@ -221,8 +214,7 @@ class Configuration:
 
     growth_rtol: Optional[float] = None
     growth_atol: Optional[float] = None
-    growth_inistep: Union[float, None,
-    Tuple[Optional[float], Optional[float]]] = (1, None)
+    growth_inistep: Union[float, None, Tuple[Optional[float], Optional[float]]] = (1, None)
 
     lpt_order: int = 2
     lpt_cache_strains: bool = True
@@ -236,7 +228,7 @@ class Configuration:
 
     symp_splits: Tuple[Tuple[float, float], ...] = ((0, 0.5), (1, 0.5))
 
-    chunk_size: int = 2 ** 24
+    chunk_size: int = 2**24
 
     to_save_z: List[int] = None
     to_save_a: List[int] = None
@@ -260,8 +252,10 @@ class Configuration:
             raise ValueError('particle and mesh grid dimensions differ')
         if any(sm < sp for sp, sm in zip(self.ptcl_grid_shape, self.mesh_shape)):
             raise ValueError('mesh grid cannot be smaller than particle grid')
-        if any(self.ptcl_grid_shape[0] * sm != self.mesh_shape[0] * sp
-               for sp, sm in zip(self.ptcl_grid_shape[1:], self.mesh_shape[1:])):
+        if any(
+            self.ptcl_grid_shape[0] * sm != self.mesh_shape[0] * sp
+            for sp, sm in zip(self.ptcl_grid_shape[1:], self.mesh_shape[1:])
+        ):
             raise ValueError('particle and mesh grid aspect ratios differ')
 
         object.__setattr__(self, 'cosmo_dtype', jnp.dtype(self.cosmo_dtype))
@@ -277,9 +271,7 @@ class Configuration:
             warnings.warn(
                 "Pallas CIC was requested but is unavailable for this configuration; "
                 "using the reference JAX CIC implementation. Pallas requires a "
-                "float32 GPU backend on the qualified JAX 0.6 minor line.",
-                RuntimeWarning,
-                stacklevel=2,
+                "float32 GPU backend on the qualified JAX 0.6 minor line.", RuntimeWarning, stacklevel=2,
             )
 
         if self.a_custom is not None and not isinstance(self.a_custom, tuple):
@@ -288,9 +280,7 @@ class Configuration:
         if self.growth_a_custom is not None and not isinstance(self.growth_a_custom, tuple):
             with jax.ensure_compile_time_eval():
                 object.__setattr__(
-                    self,
-                    'growth_a_custom',
-                    tuple(float(a) for a in np.asarray(self.growth_a_custom).tolist()),
+                    self, 'growth_a_custom', tuple(float(a) for a in np.asarray(self.growth_a_custom).tolist()),
                 )
 
         # ~ 1.5e-8 for float64, 3.5e-4 for float32
@@ -309,8 +299,9 @@ class Configuration:
         with jax.ensure_compile_time_eval():
             kvec = fftfreq(self.mesh_shape, self.cell_size, dtype=self.float_dtype)
             object.__setattr__(self, "kvec", kvec)
-            object.__setattr__(self, "kvec_spacing",
-                               fftfreq(self.ptcl_grid_shape, self.ptcl_spacing, dtype=self.float_dtype))
+            object.__setattr__(
+                self, "kvec_spacing", fftfreq(self.ptcl_grid_shape, self.ptcl_spacing, dtype=self.float_dtype)
+            )
             object.__setattr__(self, "particle_nyquist_masks", build_particle_nyquist_filter(kvec, self))
 
         object.__setattr__(self, "nMesh", self.mesh_shape[0])
@@ -323,7 +314,6 @@ class Configuration:
 
         if self.slice_to_save is not None:
             object.__setattr__(self, "slice_to_save", jnp.array(self.slice_to_save))
-
 
         # with jax.ensure_compile_time_eval():
         #     object.__setattr__(
@@ -362,10 +352,7 @@ class Configuration:
         if runtime_seed is None:
             if self.compute_mesh is None:
                 return None
-            return MultiGPUConfiguration(
-                compute_mesh=self.compute_mesh,
-                mode=self.multigpu_mode,
-            )
+            return MultiGPUConfiguration(compute_mesh=self.compute_mesh, mode=self.multigpu_mode, )
 
         if runtime_seed.compute_mesh is None and self.compute_mesh is not None:
             runtime_seed = runtime_seed.replace(compute_mesh=self.compute_mesh)
@@ -451,7 +438,7 @@ class Configuration:
     @property
     def ptcl_cell_vol(self):
         """Lagrangian particle grid cell volume in [L^dim]."""
-        return self.ptcl_spacing ** self.dim
+        return self.ptcl_spacing**self.dim
 
     @property
     def ptcl_num(self):
@@ -508,30 +495,29 @@ class Configuration:
     @property
     def G(self):
         """Gravitational constant in [L^3 / M / T^2]."""
-        return self.G_SI * self.M / (self.L * self.V ** 2)
+        return self.G_SI * self.M / (self.L * self.V**2)
 
     @property
     def rho_crit(self):
         """Critical density in [M / L^3]."""
-        return 3 * self.H_0 ** 2 / (8 * jnp.pi * self.G)
+        return 3 * self.H_0**2 / (8 * jnp.pi * self.G)
 
     @property
     def transfer_k_num(self):
         """Number of transfer function wavenumbers, including a leading 0."""
-        return 1 + math.ceil((self.transfer_lgk_max - self.transfer_lgk_min)
-                             / self.transfer_lgk_maxstep) + 1
+        return 1 + math.ceil((self.transfer_lgk_max - self.transfer_lgk_min) / self.transfer_lgk_maxstep) + 1
 
     @property
     def transfer_lgk_step(self):
         """Transfer function wavenumber step size in [1/L] in log10."""
-        return ((self.transfer_lgk_max - self.transfer_lgk_min)
-                / (self.transfer_k_num - 2))
+        return ((self.transfer_lgk_max - self.transfer_lgk_min) / (self.transfer_k_num - 2))
 
     @property
     def transfer_k(self):
         """Transfer function wavenumbers in [1/L], of ``cosmo_dtype``."""
-        k = jnp.logspace(self.transfer_lgk_min, self.transfer_lgk_max,
-                         num=self.transfer_k_num - 1, dtype=self.cosmo_dtype)
+        k = jnp.logspace(
+            self.transfer_lgk_min, self.transfer_lgk_max, num=self.transfer_k_num - 1, dtype=self.cosmo_dtype
+        )
         return jnp.concatenate((jnp.array([0]), k))
 
     @property
@@ -557,16 +543,14 @@ class Configuration:
     @property
     def a_lpt(self):
         """LPT light cone scale factor steps, including ``a_start``, of ``cosmo_dtype``."""
-        return jnp.linspace(0, self.a_start, num=self.a_lpt_num + 1,
-                            dtype=self.cosmo_dtype)
+        return jnp.linspace(0, self.a_start, num=self.a_lpt_num + 1, dtype=self.cosmo_dtype)
 
     @property
     def a_nbody(self):
         """N-body time integration scale factor steps, including ``a_start``, of ``cosmo_dtype``."""
         if self.a_custom is not None:
             return jnp.array(self.a_custom, dtype=self.cosmo_dtype)
-        return jnp.linspace(self.a_start, self.a_stop, num=1 + self.a_nbody_num,
-                            dtype=self.cosmo_dtype)
+        return jnp.linspace(self.a_start, self.a_stop, num=1 + self.a_nbody_num, dtype=self.cosmo_dtype)
 
     @property
     def growth_a(self):

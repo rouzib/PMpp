@@ -47,13 +47,7 @@ def maybe_shard_map_mesh_local_op(local_fn, conf, in_specs, out_specs, check_rep
     """
     if conf.compute_mesh is None or conf.num_devices == 1:
         return local_fn
-    return shard_map(
-        local_fn,
-        mesh=conf.compute_mesh,
-        in_specs=in_specs,
-        out_specs=out_specs,
-        check_rep=check_rep,
-    )
+    return shard_map(local_fn, mesh=conf.compute_mesh, in_specs=in_specs, out_specs=out_specs, check_rep=check_rep, )
 
 
 def zero_pad_owned_mesh_halo(mesh_owned, halo_width: int):
@@ -73,7 +67,7 @@ def zero_pad_owned_mesh_halo(mesh_owned, halo_width: int):
     """
     if halo_width <= 0:
         return mesh_owned
-    pad_width = ((halo_width, halo_width),) + ((0, 0),) * (mesh_owned.ndim - 1)
+    pad_width = ((halo_width, halo_width), ) + ((0, 0), ) * (mesh_owned.ndim - 1)
     return jnp.pad(mesh_owned, pad_width)
 
 
@@ -125,17 +119,11 @@ def extend_owned_mesh_from_halo_edges(mesh_owned, incoming_left, incoming_right,
     if halo_width <= 0:
         return mesh_owned
 
-    pad_width = ((halo_width, halo_width),) + ((0, 0),) * (mesh_owned.ndim - 1)
+    pad_width = ((halo_width, halo_width), ) + ((0, 0), ) * (mesh_owned.ndim - 1)
     mesh_halo = jnp.pad(mesh_owned, pad_width)
+    mesh_halo = jax.lax.dynamic_update_slice(mesh_halo, incoming_left, (0, ) + (0, ) * (mesh_owned.ndim - 1), )
     mesh_halo = jax.lax.dynamic_update_slice(
-        mesh_halo,
-        incoming_left,
-        (0,) + (0,) * (mesh_owned.ndim - 1),
-    )
-    mesh_halo = jax.lax.dynamic_update_slice(
-        mesh_halo,
-        incoming_right,
-        (halo_width + mesh_owned.shape[0],) + (0,) * (mesh_owned.ndim - 1),
+        mesh_halo, incoming_right, (halo_width + mesh_owned.shape[0], ) + (0, ) * (mesh_owned.ndim - 1),
     )
     return mesh_halo
 
@@ -157,12 +145,7 @@ def extend_owned_mesh_with_halo(mesh_owned, halo_width: int, left_perm, right_pe
     jax.Array
         Halo-extended mesh.
     """
-    incoming_left, incoming_right = exchange_owned_mesh_halo_edges(
-        mesh_owned,
-        halo_width,
-        left_perm,
-        right_perm,
-    )
+    incoming_left, incoming_right = exchange_owned_mesh_halo_edges(mesh_owned, halo_width, left_perm, right_perm, )
     return extend_owned_mesh_from_halo_edges(mesh_owned, incoming_left, incoming_right, halo_width)
 
 

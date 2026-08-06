@@ -38,43 +38,28 @@ try:
 except ImportError:
     pytest = None
 
-
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
 
 
 def _init_confs(lpt_order=1):
     box_size = 100.0
     num_ptcl = 8
-    ptcl_grid_shape = (num_ptcl,) * 3
+    ptcl_grid_shape = (num_ptcl, ) * 3
     ptcl_spacing = box_size / num_ptcl
 
     gpu_devices = [device for device in jax.devices() if device.platform == "gpu"][:2]
     compute_mesh = create_compute_mesh(gpu_devices)
 
     conf_pmpp = Configuration(
-        ptcl_spacing,
-        ptcl_grid_shape,
-        mesh_shape=1,
-        compute_mesh=compute_mesh,
-        max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * 2.2),
-        max_share_ptcl=4000,
-        max_share_gather_ptcl=8000,
-        a_start=1 / 60,
-        a_nbody_maxstep=1 / 60,
-        lpt_order=lpt_order,
-        pallas_cic=False,
-        cosmo_dtype=jnp.float64,
+        ptcl_spacing, ptcl_grid_shape, mesh_shape=1, compute_mesh=compute_mesh,
+        max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * 2.2), max_share_ptcl=4000, max_share_gather_ptcl=8000,
+        a_start=1 / 60, a_nbody_maxstep=1 / 60, lpt_order=lpt_order, pallas_cic=False, cosmo_dtype=jnp.float64,
         float_dtype=jnp.float64,
     )
     conf_pmwd = ConfigurationPMWD(
-        ptcl_spacing=conf_pmpp.ptcl_spacing,
-        ptcl_grid_shape=conf_pmpp.ptcl_grid_shape,
-        mesh_shape=conf_pmpp.mesh_shape,
-        a_start=conf_pmpp.a_start,
-        a_nbody_maxstep=conf_pmpp.a_nbody_maxstep,
-        lpt_order=conf_pmpp.lpt_order,
-        cosmo_dtype=jnp.float64,
-        float_dtype=jnp.float64,
+        ptcl_spacing=conf_pmpp.ptcl_spacing, ptcl_grid_shape=conf_pmpp.ptcl_grid_shape, mesh_shape=conf_pmpp.mesh_shape,
+        a_start=conf_pmpp.a_start, a_nbody_maxstep=conf_pmpp.a_nbody_maxstep, lpt_order=conf_pmpp.lpt_order,
+        cosmo_dtype=jnp.float64, float_dtype=jnp.float64,
     )
     return conf_pmpp, conf_pmwd
 
@@ -109,9 +94,7 @@ def test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients():
         modes_real_pmwd = white_noise_pmwd(0, conf_pmwd, real=True)
         modes_real_pmpp = white_noise_pmpp(0, conf_pmpp, real=True)
         assert np.allclose(
-            np.asarray(jax.device_get(modes_real_pmpp)),
-            np.asarray(jax.device_get(modes_real_pmwd)),
-            atol=1e-12,
+            np.asarray(jax.device_get(modes_real_pmpp)), np.asarray(jax.device_get(modes_real_pmwd)), atol=1e-12,
             rtol=1e-12,
         )
 
@@ -121,19 +104,16 @@ def test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients():
         dens_pmwd = _dens_pmwd(modes_real_pmwd, base_cosmo_pmwd, conf_pmwd)
         dens_pmpp = _dens_pmpp(modes_real_pmpp, base_cosmo_pmpp, conf_pmpp)
         assert np.allclose(
-            np.asarray(jax.device_get(dens_pmpp)),
-            np.asarray(jax.device_get(dens_pmwd)),
-            atol=1e-12,
-            rtol=1e-12,
+            np.asarray(jax.device_get(dens_pmpp)), np.asarray(jax.device_get(dens_pmwd)), atol=1e-12, rtol=1e-12,
         )
 
         def loss_pmwd(modes_real):
             dens = _dens_pmwd(modes_real, base_cosmo_pmwd, conf_pmwd)
-            return jnp.mean((dens - target_dens) ** 2)
+            return jnp.mean((dens - target_dens)**2)
 
         def loss_pmpp(modes_real):
             dens = _dens_pmpp(modes_real, base_cosmo_pmpp, conf_pmpp)
-            return jnp.mean((dens - target_dens) ** 2)
+            return jnp.mean((dens - target_dens)**2)
 
         grad_pmwd = np.asarray(jax.device_get(jax.jit(jax.grad(loss_pmwd))(modes_real_pmwd)))
         grad_pmpp = np.asarray(jax.device_get(jax.jit(jax.grad(loss_pmpp))(modes_real_pmpp)))
@@ -156,10 +136,8 @@ def test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients():
 
 if pytest is not None:
     test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason="LPT gradient test requires at least 1 GPU",
+        GPU_COUNT < 1, reason="LPT gradient test requires at least 1 GPU",
     )(test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients)
-
 
 if __name__ == "__main__":
     test_lpt_matches_pmwd_for_real_input_forward_and_mode_gradients()

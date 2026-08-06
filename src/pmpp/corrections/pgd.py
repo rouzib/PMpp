@@ -10,12 +10,7 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 from ..utils import AXIS_NAME, pytree_dataclass
 
 
-@partial(
-    pytree_dataclass,
-    aux_fields=("alpha0", "A", "B", "kl", "ks", "dtype"),
-    frozen=True,
-    eq=False,
-)
+@partial(pytree_dataclass, aux_fields=("alpha0", "A", "B", "kl", "ks", "dtype"), frozen=True, eq=False, )
 class PGDPotentialCorrection:
     """Band-limited FastPM-style PGD correction to the PM potential.
 
@@ -46,10 +41,8 @@ class PGDPotentialCorrection:
 
 
 @partial(
-    pytree_dataclass,
-    aux_fields=("A", "B", "alpha0_scale", "kl_min", "kl_max", "ks_min", "ks_max", "dtype"),
-    frozen=True,
-    eq=False,
+    pytree_dataclass, aux_fields=("A", "B", "alpha0_scale", "kl_min", "kl_max", "ks_min", "ks_max", "dtype"),
+    frozen=True, eq=False,
 )
 class TrainablePGDPotentialCorrection:
     """Trainable bounded FastPM-style PGD correction."""
@@ -105,12 +98,9 @@ def init_pgd_potential_correction(dtype=jnp.float32, **kwargs):
     kwargs
         Extra keyword options forwarded to the selected correction initializer."""
     return PGDPotentialCorrection(
-        alpha0=kwargs.get("alpha0", kwargs.get("pgd_alpha0", 0.1)),
-        A=kwargs.get("A", kwargs.get("pgd_A", 0.0)),
-        B=kwargs.get("B", kwargs.get("pgd_B", 0.0)),
-        kl=kwargs.get("kl", kwargs.get("pgd_kl", 0.1)),
-        ks=kwargs.get("ks", kwargs.get("pgd_ks", 1.0)),
-        dtype=dtype,
+        alpha0=kwargs.get("alpha0", kwargs.get("pgd_alpha0", 0.1)), A=kwargs.get("A", kwargs.get("pgd_A", 0.0)),
+        B=kwargs.get("B", kwargs.get("pgd_B", 0.0)), kl=kwargs.get("kl", kwargs.get("pgd_kl", 0.1)),
+        ks=kwargs.get("ks", kwargs.get("pgd_ks", 1.0)), dtype=dtype,
     )
 
 
@@ -140,16 +130,9 @@ def init_trainable_pgd_potential_correction(dtype=jnp.float32, **kwargs):
     ks_unit = (float(ks) - float(ks_min)) / (float(ks_max) - float(ks_min))
     return TrainablePGDPotentialCorrection(
         raw_alpha0=jnp.asarray(_atanh_scaled(alpha0, alpha0_scale), dtype=dtype),
-        raw_kl=jnp.asarray(_logit(kl_unit), dtype=dtype),
-        raw_ks=jnp.asarray(_logit(ks_unit), dtype=dtype),
-        A=kwargs.get("A", kwargs.get("pgd_A", 0.0)),
-        B=kwargs.get("B", kwargs.get("pgd_B", 0.0)),
-        alpha0_scale=alpha0_scale,
-        kl_min=kl_min,
-        kl_max=kl_max,
-        ks_min=ks_min,
-        ks_max=ks_max,
-        dtype=dtype,
+        raw_kl=jnp.asarray(_logit(kl_unit), dtype=dtype), raw_ks=jnp.asarray(_logit(ks_unit), dtype=dtype),
+        A=kwargs.get("A", kwargs.get("pgd_A", 0.0)), B=kwargs.get("B", kwargs.get("pgd_B", 0.0)),
+        alpha0_scale=alpha0_scale, kl_min=kl_min, kl_max=kl_max, ks_min=ks_min, ks_max=ks_max, dtype=dtype,
     )
 
 
@@ -182,23 +165,23 @@ def pgd_alpha(a, alpha0, A, B, dtype=jnp.float32):
     dtype
         Floating-point dtype for created arrays or model parameters."""
     a = jnp.asarray(a, dtype=dtype)
-    return jnp.asarray(alpha0, dtype=dtype) * (jnp.asarray(10.0, dtype=dtype) ** (jnp.asarray(A, dtype=dtype) * a**2 - jnp.asarray(B, dtype=dtype) * a))
+    return jnp.asarray(
+        alpha0, dtype=dtype
+    ) * (jnp.asarray(10.0, dtype=dtype)**(jnp.asarray(A, dtype=dtype) * a**2 - jnp.asarray(B, dtype=dtype) * a))
 
 
 def _k_squared_transposed(kvec, conf):
     """Return ``k^2`` on the transposed spectral layout without importing gravity."""
     kx, ky, kz = [jnp.squeeze(a) for a in kvec]
     if conf.compute_mesh is None:
-        return (kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(conf.float_dtype)
+        return (kx[:, None, None]**2 + ky[None, :, None]**2 + kz[None, None, :]**2).astype(conf.float_dtype)
 
     @partial(
-        jax.jit,
-        in_shardings=(
-            NamedSharding(conf.compute_mesh, P(None)),
-            NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
-            NamedSharding(conf.compute_mesh, P(None)),
-        ),
-        out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
+        jax.jit, in_shardings=(
+            NamedSharding(conf.compute_mesh,
+                          P(None)), NamedSharding(conf.compute_mesh,
+                                                  P(AXIS_NAME)), NamedSharding(conf.compute_mesh, P(None)),
+        ), out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
     )
     def create_k_magnitude_transposed(kx_replicated, ky_sharded, kz_replicated):
         """Build transposed-layout squared wavenumber magnitudes on each shard.
@@ -212,11 +195,7 @@ def _k_squared_transposed(kvec, conf):
         kz_replicated
             Replicated z-axis rFFT wavenumbers.
         """
-        local_shard = (
-            kx_replicated[:, None, None] ** 2
-            + ky_sharded[None, :, None] ** 2
-            + kz_replicated[None, None, :] ** 2
-        )
+        local_shard = (kx_replicated[:, None, None]**2 + ky_sharded[None, :, None]**2 + kz_replicated[None, None, :]**2)
         return local_shard.astype(conf.float_dtype)
 
     return create_k_magnitude_transposed(kx, ky, kz)
@@ -233,8 +212,8 @@ def evaluate_pgd_bandpass(correction, a, conf):
         Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     k2 = _k_squared_transposed(conf.kvec, conf).astype(correction.dtype)
     _, _, _, kl, ks = pgd_parameters(correction)
-    kl2 = jnp.asarray(kl, dtype=correction.dtype) ** 2
-    ks4 = jnp.asarray(ks, dtype=correction.dtype) ** 4
+    kl2 = jnp.asarray(kl, dtype=correction.dtype)**2
+    ks4 = jnp.asarray(ks, dtype=correction.dtype)**4
     safe_k2 = jnp.where(k2 > 0, k2, jnp.ones_like(k2))
     band = jnp.exp(-kl2 / safe_k2 - (safe_k2**2) / ks4)
     return jnp.where(k2 > 0, band, jnp.asarray(0.0, dtype=correction.dtype))

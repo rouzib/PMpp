@@ -97,7 +97,7 @@ def fftfwd(f, shape=None, axes=None, norm=None):
     if axes is not None:
         d = len(axes)
 
-    return norm ** d * jnp.fft.rfftn(f, s=shape, axes=axes, norm='backward')
+    return norm**d * jnp.fft.rfftn(f, s=shape, axes=axes, norm='backward')
 
 
 def fftinv(f, shape=None, axes=None, norm=None):
@@ -152,4 +152,4 @@ def fftinv(f, shape=None, axes=None, norm=None):
     if axes is not None:
         d = len(axes)
 
-    return norm ** -d * jnp.fft.irfftn(f, s=shape, axes=axes, norm='backward')
+    return norm**-d * jnp.fft.irfftn(f, s=shape, axes=axes, norm='backward')

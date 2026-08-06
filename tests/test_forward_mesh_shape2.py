@@ -42,21 +42,12 @@ try:
 except ImportError:
     pytest = None
 
-
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
 REQUIRES_ONE_GPU = "forward mesh-shape tests require at least 1 GPU"
 
 GEN_GRID_MESH_SHAPES = (1, 2, 5)
-SHORT_FORWARD_CASES = (
-    (1, 8, 1 / 32),
-    (2, 8, 1 / 32),
-)
-FULL_FORWARD_MASS_CASES = (
-    (1, 8, 1.0),
-    (2, 8, 1.0),
-    (2, 16, 1.0),
-    (5, 16, 1.0),
-)
+SHORT_FORWARD_CASES = ((1, 8, 1 / 32), (2, 8, 1 / 32), )
+FULL_FORWARD_MASS_CASES = ((1, 8, 1.0), (2, 8, 1.0), (2, 16, 1.0), (5, 16, 1.0), )
 
 
 def _require_two_gpus():
@@ -68,17 +59,11 @@ def _require_two_gpus():
 
 
 def _init_confs(
-    mesh_shape=2,
-    num_ptcl=8,
-    a_start=1 / 64,
-    a_stop=1 / 32,
-    a_nbody_maxstep=None,
-    max_ptcl_factor=3.0,
-    max_share_ptcl=12000,
-    max_share_gather_ptcl=30000,
+    mesh_shape=2, num_ptcl=8, a_start=1 / 64, a_stop=1 / 32, a_nbody_maxstep=None, max_ptcl_factor=3.0,
+    max_share_ptcl=12000, max_share_gather_ptcl=30000,
 ):
     box_size = 100.0
-    ptcl_grid_shape = (num_ptcl,) * 3
+    ptcl_grid_shape = (num_ptcl, ) * 3
     ptcl_spacing = box_size / num_ptcl
     if a_nbody_maxstep is None:
         a_nbody_maxstep = a_start
@@ -87,32 +72,16 @@ def _init_confs(
     compute_mesh = create_compute_mesh(gpu_devices)
 
     conf_pmpp = Configuration(
-        ptcl_spacing,
-        ptcl_grid_shape,
-        mesh_shape=mesh_shape,
-        multigpu=MultiGPUConfiguration(
-            compute_mesh=compute_mesh,
-            mode="particle_halo",
-        ),
-        max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * max_ptcl_factor),
-        max_share_ptcl=max_share_ptcl,
-        max_share_gather_ptcl=max_share_gather_ptcl,
-        a_start=a_start,
-        a_stop=a_stop,
-        a_nbody_maxstep=a_nbody_maxstep,
-        pallas_cic=False,
-        cosmo_dtype=jnp.float64,
-        float_dtype=jnp.float64,
+        ptcl_spacing, ptcl_grid_shape, mesh_shape=mesh_shape,
+        multigpu=MultiGPUConfiguration(compute_mesh=compute_mesh, mode="particle_halo",
+                                       ), max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * max_ptcl_factor),
+        max_share_ptcl=max_share_ptcl, max_share_gather_ptcl=max_share_gather_ptcl, a_start=a_start, a_stop=a_stop,
+        a_nbody_maxstep=a_nbody_maxstep, pallas_cic=False, cosmo_dtype=jnp.float64, float_dtype=jnp.float64,
     )
     conf_pmwd = ConfigurationPMWD(
-        ptcl_spacing=conf_pmpp.ptcl_spacing,
-        ptcl_grid_shape=conf_pmpp.ptcl_grid_shape,
-        mesh_shape=conf_pmpp.mesh_shape,
-        a_start=conf_pmpp.a_start,
-        a_stop=conf_pmpp.a_stop,
-        a_nbody_maxstep=conf_pmpp.a_nbody_maxstep,
-        cosmo_dtype=jnp.float64,
-        float_dtype=jnp.float64,
+        ptcl_spacing=conf_pmpp.ptcl_spacing, ptcl_grid_shape=conf_pmpp.ptcl_grid_shape, mesh_shape=conf_pmpp.mesh_shape,
+        a_start=conf_pmpp.a_start, a_stop=conf_pmpp.a_stop, a_nbody_maxstep=conf_pmpp.a_nbody_maxstep,
+        cosmo_dtype=jnp.float64, float_dtype=jnp.float64,
     )
     return conf_pmpp, conf_pmwd
 
@@ -175,10 +144,8 @@ def _expected_gen_grid_x(conf_pmpp):
     nmesh = int(conf_pmpp.nMesh)
     expected = {}
     for gpu_id, offset in zip(np.asarray(conf_pmpp.devices_index, dtype=int), np.asarray(conf_pmpp.offsets, dtype=int)):
-        expected[gpu_id] = np.asarray(
-            [int((offset - step + i * step) % nmesh) for i in range(count)],
-            dtype=np.float64,
-        )
+        expected[gpu_id] = np.asarray([int((offset - step + i * step) % nmesh) for i in range(count)], dtype=np.float64,
+                                      )
     return expected
 
 
@@ -196,8 +163,10 @@ def test_gen_grid_keeps_one_particle_slice_halo(mesh_shape):
         pmid = shard.data
         disp = ptcl.disp.addressable_shards[shard_index].data
         unused = ptcl.unused_index.addressable_shards[shard_index].data
-        x_mesh = np.asarray(jax.device_get(((pmid[:, 0] + disp[:, 0] * conf_pmpp.disp_size) % conf_pmpp.nMesh)[~unused]))
-        x_unique = x_mesh[:: conf_pmpp.ptcl_grid_shape[1] * conf_pmpp.ptcl_grid_shape[2]]
+        x_mesh = np.asarray(
+            jax.device_get(((pmid[:, 0] + disp[:, 0] * conf_pmpp.disp_size) % conf_pmpp.nMesh)[~unused])
+        )
+        x_unique = x_mesh[::conf_pmpp.ptcl_grid_shape[1] * conf_pmpp.ptcl_grid_shape[2]]
         assert np.array_equal(x_unique, expected_x[gpu_id])
 
 
@@ -231,26 +200,24 @@ def test_forward_conserves_mass_across_mesh_shapes(mesh_shape, num_ptcl, a_stop)
 
 if pytest is not None:
     test_gen_grid_keeps_one_particle_slice_halo = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason=REQUIRES_ONE_GPU,
+        GPU_COUNT < 1, reason=REQUIRES_ONE_GPU,
     )(pytest.mark.parametrize("mesh_shape", GEN_GRID_MESH_SHAPES)(test_gen_grid_keeps_one_particle_slice_halo))
     test_short_run_forward_matches_pmwd = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason=REQUIRES_ONE_GPU,
-    )(pytest.mark.parametrize(
-        ("mesh_shape", "num_ptcl", "a_stop"),
-        SHORT_FORWARD_CASES,
-        ids=[f"mesh{mesh_shape}_n{num_ptcl}" for mesh_shape, num_ptcl, _ in SHORT_FORWARD_CASES],
-    )(test_short_run_forward_matches_pmwd))
+        GPU_COUNT < 1, reason=REQUIRES_ONE_GPU,
+    )(
+        pytest.mark.parametrize(
+            ("mesh_shape", "num_ptcl", "a_stop"), SHORT_FORWARD_CASES,
+            ids=[f"mesh{mesh_shape}_n{num_ptcl}" for mesh_shape, num_ptcl, _ in SHORT_FORWARD_CASES],
+        )(test_short_run_forward_matches_pmwd)
+    )
     test_forward_conserves_mass_across_mesh_shapes = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason=REQUIRES_ONE_GPU,
-    )(pytest.mark.parametrize(
-        ("mesh_shape", "num_ptcl", "a_stop"),
-        FULL_FORWARD_MASS_CASES,
-        ids=[f"mesh{mesh_shape}_n{num_ptcl}_a{a_stop:g}" for mesh_shape, num_ptcl, a_stop in FULL_FORWARD_MASS_CASES],
-    )(test_forward_conserves_mass_across_mesh_shapes))
-
+        GPU_COUNT < 1, reason=REQUIRES_ONE_GPU,
+    )(
+        pytest.mark.parametrize(("mesh_shape", "num_ptcl", "a_stop"), FULL_FORWARD_MASS_CASES, ids=[
+            f"mesh{mesh_shape}_n{num_ptcl}_a{a_stop:g}" for mesh_shape, num_ptcl, a_stop in FULL_FORWARD_MASS_CASES
+        ],
+                                )(test_forward_conserves_mass_across_mesh_shapes)
+    )
 
 if __name__ == "__main__":
     for mesh_shape in GEN_GRID_MESH_SHAPES:

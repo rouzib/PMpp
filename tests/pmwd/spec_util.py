@@ -8,8 +8,9 @@ from .pm_util import fftfreq, fftfwd
 
 
 @partial(jit, static_argnames=('bins', 'cut_zero', 'cut_nyq', 'dtype', 'int_dtype'))
-def powspec(f, spacing, bins=1j/3, g=None, deconv=None, cut_zero=True, cut_nyq=True,
-            dtype=jnp.float_, int_dtype=jnp.uint32):
+def powspec(
+    f, spacing, bins=1j / 3, g=None, deconv=None, cut_zero=True, cut_nyq=True, dtype=jnp.float_, int_dtype=jnp.uint32
+):
     """Compute auto or cross power spectrum in 3D averaged in spherical bins.
 
     Parameters
@@ -68,7 +69,7 @@ def powspec(f, spacing, bins=1j/3, g=None, deconv=None, cut_zero=True, cut_nyq=T
         elif isinstance(bins, complex):
             kmaxable = all(s % 2 == 0 for s in grid_shape)  # extra bin just in case
             bin_num = math.ceil(math.log2(kmax / kfun) / bins.imag) + kmaxable
-            bins = kfun * 2 ** (bins.imag * jnp.arange(1 + bin_num))
+            bins = kfun * 2**(bins.imag * jnp.arange(1 + bin_num))
             right = False
             bcut = jnp.digitize(knyq if cut_nyq else kmax, bins, right=right).item() + 1
         else:
@@ -88,13 +89,13 @@ def powspec(f, spacing, bins=1j/3, g=None, deconv=None, cut_zero=True, cut_nyq=T
         P = f * g.conj()
 
     if P.ndim > 3:
-        P = P.sum(tuple(range(P.ndim-3)))
+        P = P.sum(tuple(range(P.ndim - 3)))
 
     kvec = fftfreq(grid_shape, None, dtype=P.real.dtype)
     k = jnp.sqrt(sum(k**2 for k in kvec))
 
     if deconv is not None:
-        P = math.prod((jnp.sinc(k) ** -deconv for k in kvec), start=P)  # numpy sinc has pi
+        P = math.prod((jnp.sinc(k)**-deconv for k in kvec), start=P)  # numpy sinc has pi
 
     #N = jnp.full_like(P, 2, dtype=jnp.uint8)
     N = jnp.full_like(P, 2, dtype=int_dtype)  # FIXME after google/jax/issues/18440
@@ -108,9 +109,9 @@ def powspec(f, spacing, bins=1j/3, g=None, deconv=None, cut_zero=True, cut_nyq=T
     b = jnp.digitize(k, bins, right=right)
     k = (k * N).astype(dtype)
     P = (P * N).astype(dtype)  # FIXME after google/jax/issues/18440
-    k = jnp.bincount(b, weights=k, length=1+bin_num)  # only k=0 goes to b=0
-    P = jnp.bincount(b, weights=P, length=1+bin_num)
-    N = jnp.bincount(b, weights=N, length=1+bin_num)
+    k = jnp.bincount(b, weights=k, length=1 + bin_num)  # only k=0 goes to b=0
+    P = jnp.bincount(b, weights=P, length=1 + bin_num)
+    N = jnp.bincount(b, weights=N, length=1 + bin_num)
 
     k = k[cut_zero:bcut]
     P = P[cut_zero:bcut]

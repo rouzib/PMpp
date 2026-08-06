@@ -26,7 +26,6 @@ try:
 except ImportError:
     pytest = None
 
-
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
 
 
@@ -37,12 +36,7 @@ def _particle_slot_mapping(ptcl_pmwd, conf):
     unused_slots = []
     for i in range(conf.num_devices):
         pmid_sliced, disp_sliced, pid_vel, _, unused_index, _ = Particles.distribute_ptcl_pos(
-            ptcl_pmwd.pmid,
-            ptcl_pmwd.disp,
-            pid_payload,
-            None,
-            conf,
-            i,
+            ptcl_pmwd.pmid, ptcl_pmwd.disp, pid_payload, None, conf, i,
         )
         del pmid_sliced, disp_sliced
         pid_slots.append(np.asarray(pid_vel[:, 0]))
@@ -74,29 +68,17 @@ def _slots_to_unique(grad_slots, pid_slots, valid_slots, ptcl_num):
 
 def _build_pair():
     conf = init_conf(
-        num_ptcl=6,
-        mesh_shape=1,
-        box_size=100.0,
-        num_devices=2,
-        max_ptcl_per_slice=1.6,
-        max_share_ptcl=20000,
-        max_share_gather_ptcl=50000,
-        multigpu_mode="mesh_halo",
+        num_ptcl=6, mesh_shape=1, box_size=100.0, num_devices=2, max_ptcl_per_slice=1.6, max_share_ptcl=20000,
+        max_share_gather_ptcl=50000, multigpu_mode="mesh_halo",
     )
     conf_pmwd = ConfigurationPMWD(
-        ptcl_spacing=conf.ptcl_spacing,
-        ptcl_grid_shape=conf.ptcl_grid_shape,
-        mesh_shape=conf.mesh_shape,
-        a_start=conf.a_start,
-        a_nbody_maxstep=conf.a_nbody_maxstep,
+        ptcl_spacing=conf.ptcl_spacing, ptcl_grid_shape=conf.ptcl_grid_shape, mesh_shape=conf.mesh_shape,
+        a_start=conf.a_start, a_nbody_maxstep=conf.a_nbody_maxstep,
     )
 
     ptcl_pmwd = ParticlesPMWD.gen_grid(conf_pmwd)
     disp = jax.random.uniform(
-        jax.random.PRNGKey(42),
-        shape=ptcl_pmwd.disp.shape,
-        minval=-0.45 * conf.cell_size,
-        maxval=0.45 * conf.cell_size,
+        jax.random.PRNGKey(42), shape=ptcl_pmwd.disp.shape, minval=-0.45 * conf.cell_size, maxval=0.45 * conf.cell_size,
     )
     ptcl_pmwd = ptcl_pmwd.replace(disp=disp.astype(conf.float_dtype))
     ptcl_pmpp = Particles.from_ptcl(ptcl_pmwd, conf)
@@ -117,10 +99,10 @@ def test_mesh_halo_scatter_matches_pmwd():
     assert np.allclose(dens_pmpp, dens_pmwd, atol=1e-6, rtol=1e-6)
 
     def loss_pmwd(disp):
-        return 0.5 * jnp.sum(scatter_pmwd(ptcl_pmwd.replace(disp=disp), conf_pmwd) ** 2)
+        return 0.5 * jnp.sum(scatter_pmwd(ptcl_pmwd.replace(disp=disp), conf_pmwd)**2)
 
     def loss_pmpp(disp):
-        return 0.5 * jnp.sum(scatter(ptcl_pmpp.replace(disp=disp), conf) ** 2)
+        return 0.5 * jnp.sum(scatter(ptcl_pmpp.replace(disp=disp), conf)**2)
 
     grad_pmwd = np.asarray(jax.device_get(jax.grad(loss_pmwd)(ptcl_pmwd.disp)))
     grad_pmpp_slots = np.asarray(jax.device_get(jax.grad(loss_pmpp)(ptcl_pmpp.disp)))
@@ -144,11 +126,11 @@ def test_mesh_halo_gather_matches_pmwd():
     assert np.allclose(values_pmpp, values_pmwd, atol=1e-6, rtol=1e-6)
 
     def disp_loss_pmwd(disp_array):
-        return 0.5 * jnp.sum(gather_pmwd(ptcl_pmwd.replace(disp=disp_array), conf_pmwd, mesh) ** 2)
+        return 0.5 * jnp.sum(gather_pmwd(ptcl_pmwd.replace(disp=disp_array), conf_pmwd, mesh)**2)
 
     def disp_loss_pmpp(disp_array):
         values = gather_pmpp(ptcl_pmpp.replace(disp=disp_array), conf, mesh)[first_slot_j]
-        return 0.5 * jnp.sum(values ** 2)
+        return 0.5 * jnp.sum(values**2)
 
     grad_disp_pmwd = np.asarray(jax.device_get(jax.grad(disp_loss_pmwd)(ptcl_pmwd.disp)))
     grad_disp_pmpp_slots = np.asarray(jax.device_get(jax.grad(disp_loss_pmpp)(ptcl_pmpp.disp)))
@@ -156,11 +138,11 @@ def test_mesh_halo_gather_matches_pmwd():
     assert np.allclose(grad_disp_pmpp, grad_disp_pmwd, atol=1e-6, rtol=1e-6)
 
     def mesh_loss_pmwd(mesh_array):
-        return 0.5 * jnp.sum(gather_pmwd(ptcl_pmwd, conf_pmwd, mesh_array) ** 2)
+        return 0.5 * jnp.sum(gather_pmwd(ptcl_pmwd, conf_pmwd, mesh_array)**2)
 
     def mesh_loss_pmpp(mesh_array):
         values = gather_pmpp(ptcl_pmpp, conf, mesh_array)[first_slot_j]
-        return 0.5 * jnp.sum(values ** 2)
+        return 0.5 * jnp.sum(values**2)
 
     grad_mesh_pmwd = np.asarray(jax.device_get(jax.grad(mesh_loss_pmwd)(mesh)))
     grad_mesh_pmpp = np.asarray(jax.device_get(jax.grad(mesh_loss_pmpp)(mesh)))
@@ -169,14 +151,11 @@ def test_mesh_halo_gather_matches_pmwd():
 
 if pytest is not None:
     test_mesh_halo_scatter_matches_pmwd = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason="mesh-halo scatter test requires at least 1 GPU",
+        GPU_COUNT < 1, reason="mesh-halo scatter test requires at least 1 GPU",
     )(test_mesh_halo_scatter_matches_pmwd)
     test_mesh_halo_gather_matches_pmwd = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason="mesh-halo gather test requires at least 1 GPU",
+        GPU_COUNT < 1, reason="mesh-halo gather test requires at least 1 GPU",
     )(test_mesh_halo_gather_matches_pmwd)
-
 
 if __name__ == "__main__":
     test_mesh_halo_scatter_matches_pmwd()

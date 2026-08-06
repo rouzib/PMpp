@@ -22,36 +22,80 @@ especially when reverse-mode AD is part of the workload.
 
 ## Requirements
 
-The extension is intentionally outside the normal Python wheel. The minimum
-requirements are:
+The PM++ wheel contains the CUDA source and build command, but not a precompiled
+shared library. Compiling the extension requires:
 
 - Python 3.10 or newer
 - JAX and `jaxlib` 0.6.x with CUDA support
 - the CUDA toolkit with `nvcc`, CUDA runtime headers, and CUB
 - CMake 3.24 or newer
-- at least two GPUs
+- `nvidia-smi` for automatic architecture detection, or an explicit
+  `--cuda-architectures` list
+
+The CUDA toolkit is a development dependency and is separate from the CUDA
+runtime libraries installed with JAX. The build command reports a clear error
+if `cmake`, `nvcc`, JAX, or `jaxlib` is missing. At least two GPUs are required
+to use and validate multi-GPU routing, although compilation itself does not
+depend on the number of GPUs.
 
 CUDA routing supports float32 and float64 simulation fields, `int16` or
 `int32` particle mesh indices (`pmid`), and `mesh_halo` mode. The indices are
 converted to int32 at the FFI boundary; the persistent PM++ particle arrays
 retain the configured integer dtype.
 
-## Build and select the extension
+## Install from PyPI and build CUDA routing
 
-Run the builder from a PM++ source checkout with the Python environment that
-will execute PM++. This command places the extension in the installed `pmpp`
-package's `_cuda` directory, where PM++ finds it automatically:
+Install PM++ first, then run the builder in the same Python environment before
+using PM++ for the first time:
+
+```bash
+python -m pip install pmpp
+pmpp-build-cuda-routing
+export PMPP_CUDA_ROUTING_BACKEND=bidir_mergepath
+```
+
+`python -m pmpp.build_cuda_routing` is equivalent to
+`pmpp-build-cuda-routing` and can be used when the console-script directory is
+not on `PATH`.
+
+The command detects every visible GPU compute capability with `nvidia-smi` and
+builds native code for each distinct architecture. It also embeds PTX for the
+newest detected architecture. If detection is unavailable, it falls back to
+the PM++ compatibility set `80;86;90;90-virtual`. An explicit list can be
+provided for a login node, cross-machine build, or a GPU hidden by the job
+scheduler:
+
+```bash
+pmpp-build-cuda-routing --cuda-architectures "80;86;90;90-virtual"
+```
+
+The builder configures CMake with the active Python executable and obtains the
+matching FFI headers from that environment's `jaxlib`. It compiles in a
+temporary build directory, then installs only
+`libpmpp_cuda_routing.so` and its ABI manifest under `pmpp/_cuda`. PM++ finds
+that package-local artifact automatically.
+
+Some system installations expose a read-only `site-packages` directory. In
+that case, the command installs the artifact in a versioned user cache under
+`$XDG_CACHE_HOME/pmpp` or `~/.cache/pmpp`; the PM++ loader searches the same
+location automatically. Set `PMPP_CUDA_ROUTING_CACHE` to choose a different
+cache directory. Re-running the command skips compilation when the installed
+manifest already matches the PM++ version, active `jaxlib`, and detected
+architectures. Use `--force` to rebuild it.
+
+### Build from a source checkout
+
+Developers can still call the lower-level builder directly. The target below
+places the resulting artifact in the importable package directory:
 
 ```bash
 python cuda/build_cuda_routing.py \
   --build-dir "$(python -c 'from pathlib import Path; import pmpp; print(Path(pmpp.__file__).resolve().parent / "_cuda")')"
-export PMPP_CUDA_ROUTING_BACKEND=bidir_mergepath
 ```
 
-The builder configures CMake with that Python executable, obtains the matching
-`jaxlib` headers, and prints the resulting library and manifest paths. The CUDA
-source is distributed with the source package, not the normal wheel, so the
-build command must be run from a source checkout.
+The installed command is preferred for PyPI users because it selects the
+active interpreter, detects GPU architectures, handles read-only package
+directories, and avoids leaving CMake files beside the installed artifact.
 
 CUDA routing is optional. Leaving `cuda_routing` unset keeps the portable JAX
 route. Request the extension explicitly after building it:
@@ -107,7 +151,7 @@ before PM++ is imported.
 
 ## If it is not installed or cannot be used
 
-Nothing needs to be rebuilt to run without CUDA routing. A normal `pip install`
+Nothing needs to be compiled to run without CUDA routing. A normal `pip install`
 does not invoke CMake or require `nvcc`. If the shared library is missing,
 stale, incompatible, disabled, or the configuration does not meet the runtime
 requirements, PM++ automatically retains the packed portable JAX router.

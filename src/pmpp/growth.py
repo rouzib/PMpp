@@ -65,9 +65,9 @@ def _linear_interp_jvp(primals, tangents):
     if not isinstance(x_dot, jax.custom_derivatives.SymbolicZero) and not is_float0_array(x_dot):
         y_dot = y_dot + _linear_interp_slope(x, xp, fp) * x_dot
     if not isinstance(xp_dot, jax.custom_derivatives.SymbolicZero) and not is_float0_array(xp_dot):
-        y_dot = y_dot + jax.jvp(lambda xp_arg: _linear_interp_primal(x, xp_arg, fp), (xp,), (xp_dot,))[1]
+        y_dot = y_dot + jax.jvp(lambda xp_arg: _linear_interp_primal(x, xp_arg, fp), (xp, ), (xp_dot, ))[1]
     if not isinstance(fp_dot, jax.custom_derivatives.SymbolicZero) and not is_float0_array(fp_dot):
-        y_dot = y_dot + jax.jvp(lambda fp_arg: _linear_interp_primal(x, xp, fp_arg), (fp,), (fp_dot,))[1]
+        y_dot = y_dot + jax.jvp(lambda fp_arg: _linear_interp_primal(x, xp, fp_arg), (fp, ), (fp_dot, ))[1]
 
     return y, y_dot
 
@@ -106,6 +106,6 @@ def growth(a, cosmo, conf, order=1, deriv=0):
     a = jnp.asarray(a)
     float_dtype = jnp.promote_types(a.dtype, float)
 
-    D = a ** order * _linear_interp(a, conf.growth_a, cosmo.growth[order - 1][deriv])
+    D = a**order * _linear_interp(a, conf.growth_a, cosmo.growth[order - 1][deriv])
 
     return D.astype(float_dtype)

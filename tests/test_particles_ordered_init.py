@@ -8,12 +8,7 @@ from pmpp.utils import pmid_to_idx
 
 
 def test_from_ordered_pos_preserves_unique_grid_anchor_under_collisions():
-    conf = Configuration(
-        ptcl_spacing=1.0,
-        ptcl_grid_shape=(4, 4, 4),
-        mesh_shape=1,
-        float_dtype=jnp.float32,
-    )
+    conf = Configuration(ptcl_spacing=1.0, ptcl_grid_shape=(4, 4, 4), mesh_shape=1, float_dtype=jnp.float32, )
 
     axes = [jnp.arange(n, dtype=conf.float_dtype) * conf.ptcl_spacing for n in conf.ptcl_grid_shape]
     pos = jnp.stack(jnp.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, conf.dim)

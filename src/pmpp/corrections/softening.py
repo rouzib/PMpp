@@ -8,12 +8,7 @@ import jax.numpy as jnp
 from ..utils import pytree_dataclass
 
 
-@partial(
-    pytree_dataclass,
-    aux_fields=("strength", "start", "stop", "mode", "dtype"),
-    frozen=True,
-    eq=False,
-)
+@partial(pytree_dataclass, aux_fields=("strength", "start", "stop", "mode", "dtype"), frozen=True, eq=False, )
 class HighKSofteningCorrection:
     """Smoothly damp force response near the particle Nyquist scale.
 
@@ -44,11 +39,10 @@ def init_high_k_softening_correction(dtype=jnp.float32, **kwargs):
     kwargs
         Extra keyword options forwarded to the selected correction initializer."""
     return HighKSofteningCorrection(
-        strength=kwargs.get("strength", kwargs.get("softening_strength", 0.0)),
-        start=kwargs.get("start", kwargs.get("softening_start", 0.7)),
+        strength=kwargs.get("strength", kwargs.get("softening_strength",
+                                                   0.0)), start=kwargs.get("start", kwargs.get("softening_start", 0.7)),
         stop=kwargs.get("stop", kwargs.get("softening_stop", 1.0)),
-        mode=kwargs.get("mode", kwargs.get("softening_mode", "smoothstep")),
-        dtype=dtype,
+        mode=kwargs.get("mode", kwargs.get("softening_mode", "smoothstep")), dtype=dtype,
     )
 
 

@@ -25,7 +25,10 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 ```{note}
 The standard package uses the portable JAX router. For the optional compiled
-extension, see the [CUDA routing guide](../user_guide/cuda_routing.md).
+extension, install a CUDA development toolkit and run
+`pmpp-build-cuda-routing` once in the PM++ environment. See the
+[CUDA routing guide](../user_guide/cuda_routing.md) for requirements,
+architecture detection, and verification.
 ```
 
 ## Verify the backend

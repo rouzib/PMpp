@@ -29,10 +29,10 @@ def get_test_conf():
 def test_scatter():
     conf = get_test_conf()
 
-    conf_pmwd = Configuration_pmwd(ptcl_spacing=conf.ptcl_spacing,
-                                   ptcl_grid_shape=conf.ptcl_grid_shape,
-                                   mesh_shape=conf.mesh_shape, a_start=conf.a_start,
-                                   a_nbody_maxstep=conf.a_nbody_maxstep)
+    conf_pmwd = Configuration_pmwd(
+        ptcl_spacing=conf.ptcl_spacing, ptcl_grid_shape=conf.ptcl_grid_shape, mesh_shape=conf.mesh_shape,
+        a_start=conf.a_start, a_nbody_maxstep=conf.a_nbody_maxstep
+    )
 
     # 1. Initialize Particles
     key = jax.random.PRNGKey(42)
@@ -50,7 +50,7 @@ def test_scatter():
         mesh = fn(p_temp, conf)
 
         # Return scalar
-        return 0.5 * jnp.sum(mesh ** 2)
+        return 0.5 * jnp.sum(mesh**2)
 
     print("\n--- Starting Scatter Gradient Test ---")
 

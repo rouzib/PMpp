@@ -47,13 +47,13 @@ def _L(kvec, pot_m, pot_n, conf):
     for i in range(conf.dim):
         strain_m = _strain(kvec, i, i, pot_m, conf)
 
-        for j in range(conf.dim-1, i, -1):
+        for j in range(conf.dim - 1, i, -1):
             strain_n = _strain(kvec, j, j, pot_n, conf)
 
             L += strain_m * strain_n
 
         if not m_eq_n:
-            for j in range(i-1, -1, -1):
+            for j in range(i - 1, -1, -1):
                 strain_n = _strain(kvec, j, j, pot_n, conf)
 
                 L += strain_m * strain_n
@@ -63,8 +63,8 @@ def _L(kvec, pot_m, pot_n, conf):
 
     # Assuming strain sourced by scalar potential only, symmetric about ``i`` and ``j``,
     # for lpt_order <=3, i.e., m, n <= 2
-    for i in range(conf.dim-1):
-        for j in range(i+1, conf.dim):
+    for i in range(conf.dim - 1):
+        for j in range(i + 1, conf.dim):
             strain_m = _strain(kvec, i, j, pot_m, conf)
 
             strain_n = strain_m
@@ -187,7 +187,7 @@ def lpt(modes, cosmo, conf):
     a = conf.a_start
     ptcl = Particles.gen_grid(conf, vel=True)
 
-    for order in range(1, 1+conf.lpt_order):
+    for order in range(1, 1 + conf.lpt_order):
         D = growth(a, cosmo, conf, order=order)
         dD_dlna = growth(a, cosmo, conf, order=order, deriv=1)
         a2HDp = a**2 * jnp.sqrt(E2(a, cosmo)) * dD_dlna
@@ -196,7 +196,7 @@ def lpt(modes, cosmo, conf):
         a2HDp = a2HDp.astype(conf.float_dtype)
 
         for i, k in enumerate(kvec):
-            grad = neg_grad(k, pot[order-1], conf.ptcl_spacing)
+            grad = neg_grad(k, pot[order - 1], conf.ptcl_spacing)
 
             grad = fftinv(grad, shape=conf.ptcl_grid_shape)
             grad = grad.astype(conf.float_dtype)  # no jnp.complex32

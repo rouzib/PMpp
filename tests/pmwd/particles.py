@@ -68,8 +68,7 @@ class Particles:
             if name == 'attr':
                 value = tree_map(lambda x: jnp.asarray(x, dtype=dtype), value)
             else:
-                value = (value if value is None or is_float0_array(value)
-                         else jnp.asarray(value, dtype=dtype))
+                value = (value if value is None or is_float0_array(value) else jnp.asarray(value, dtype=dtype))
             object.__setattr__(self, name, value)
 
     def __len__(self):
@@ -175,7 +174,7 @@ class Particles:
         if wrap:
             pmid = pmid % jnp.array(conf.mesh_shape, dtype=conf.pmid_dtype)
 
-        strides = tuple(accumulate((1,) + conf.mesh_shape[:0:-1], mul))[::-1]
+        strides = tuple(accumulate((1, ) + conf.mesh_shape[:0:-1], mul))[::-1]
 
         raveled_id = sum(i.astype(dtype) * s for i, s in zip(pmid.T, strides))
 
@@ -209,8 +208,7 @@ class Particles:
         return pos
 
 
-def ptcl_enmesh(ptcl, conf, offset=0, cell_size=None, mesh_shape=None,
-                wrap=True, drop=True, grad=False):
+def ptcl_enmesh(ptcl, conf, offset=0, cell_size=None, mesh_shape=None, wrap=True, drop=True, grad=False):
     """Compute multilinear mesh indices and fractions given particles.
 
     See ``pm_util.enmesh``.
@@ -250,8 +248,7 @@ def ptcl_enmesh(ptcl, conf, offset=0, cell_size=None, mesh_shape=None,
         mesh_shape = conf.mesh_shape
     drop_shape = mesh_shape if drop else None
 
-    return enmesh(ptcl.pmid, ptcl.disp, conf.cell_size, wrap_shape,
-                  offset, cell_size, drop_shape, grad)
+    return enmesh(ptcl.pmid, ptcl.disp, conf.cell_size, wrap_shape, offset, cell_size, drop_shape, grad)
 
 
 def ptcl_pos(ptcl, conf, dtype=float, wrap=True):

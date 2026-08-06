@@ -68,8 +68,7 @@ def _scatter_chunk(carry, chunk):
     chan_axis = tuple(range(-chan_ndim, 0))
 
     # multilinear mesh indices and fractions
-    ind, frac = enmesh(pmid, disp, conf.cell_size, conf.mesh_shape,
-                       offset, cell_size, spatial_shape, False)
+    ind, frac = enmesh(pmid, disp, conf.cell_size, conf.mesh_shape, offset, cell_size, spatial_shape, False)
 
     if val.ndim != 0:
         val = val[:, jnp.newaxis]  # insert neighbor axis
@@ -101,8 +100,7 @@ def _scatter_chunk_adj(carry, chunk):
     chan_axis = tuple(range(-chan_ndim, 0))
 
     # multilinear mesh indices and fractions
-    ind, frac, frac_grad = enmesh(pmid, disp, conf.cell_size, conf.mesh_shape,
-                                  offset, cell_size, spatial_shape, True)
+    ind, frac, frac_grad = enmesh(pmid, disp, conf.cell_size, conf.mesh_shape, offset, cell_size, spatial_shape, True)
 
     if val.ndim != 0:
         val = val[:, jnp.newaxis]  # insert neighbor axis
@@ -125,6 +123,7 @@ def _scatter_fwd(pmid, disp, conf, mesh, val, offset, cell_size):
     mesh = _scatter(pmid, disp, conf, mesh, val, offset, cell_size)
     return mesh, (pmid, disp, conf, val, offset, cell_size)
 
+
 def _scatter_bwd(res, mesh_cot):
     pmid, disp, conf, val, offset, cell_size = res
 
@@ -146,5 +145,6 @@ def _scatter_bwd(res, mesh_cot):
     val_cot = _chunk_cat(val_cot_0, val_cot)
 
     return None, disp_cot, None, mesh_cot, val_cot, None, None
+
 
 _scatter.defvjp(_scatter_fwd, _scatter_bwd)

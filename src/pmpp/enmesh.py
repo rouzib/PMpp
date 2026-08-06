@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 
+
 def _chunk_split(ptcl_num, chunk_size, *arrays):
     """Split and reshape particle arrays into chunks and remainders, with the remainders
     preceding the chunks. 0D ones are duplicated as full arrays in the chunks."""
@@ -16,8 +17,7 @@ def _chunk_split(ptcl_num, chunk_size, *arrays):
         chunks = [x[remainder_size:] if x.ndim != 0 else x for x in arrays]
 
     # `scan` triggers errors in scatter and gather without the `full`
-    chunks = [x.reshape(chunk_num, chunk_size, *x.shape[1:]) if x.ndim != 0
-              else jnp.full(chunk_num, x) for x in chunks]
+    chunks = [x.reshape(chunk_num, chunk_size, *x.shape[1:]) if x.ndim != 0 else jnp.full(chunk_num, x) for x in chunks]
     return remainder, chunks
 
 
@@ -95,10 +95,7 @@ def enmesh(i1, d1, a1, s1, b12, a2, s2, grad):
         s2 = jnp.array(s2, dtype=i1.dtype)
 
     dim = i1.shape[1]
-    neighbors = (jnp.arange(2 ** dim, dtype=i1.dtype)[:, jnp.newaxis]
-                 >> jnp.arange(dim, dtype=i1.dtype)
-                 ) & 1
-
+    neighbors = (jnp.arange(2**dim, dtype=i1.dtype)[:, jnp.newaxis] >> jnp.arange(dim, dtype=i1.dtype)) & 1
     """neighbors = jnp.array([[0, 0, 0],
                            [1, 0, 0],
                            [0, 1, 0],
@@ -132,7 +129,6 @@ def enmesh(i1, d1, a1, s1, b12, a2, s2, grad):
         i12, d12 = jnp.divmod(b12, a1)
         i1 -= i12.astype(i1.dtype)
         d1 -= d12.astype(d1.dtype)
-
         """jax.debug.print("[GPU {a}] i12={i12}, d12={d12}, i1={i1}", a=jax.lax.axis_index('gpus'), i12=i12, d12=d12,
                         i1=i1)"""
 

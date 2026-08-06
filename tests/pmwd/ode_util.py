@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """JAX-based Dormand-Prince ODE integration with adaptive stepsize.
 
 Integrate systems of ordinary differential equations (ODEs) using the JAX
@@ -24,7 +23,6 @@ https://doi.org/10.1090/S0025-5718-1986-0815836-3
 
 Adjoint algorithm based on Appendix C of https://arxiv.org/pdf/1806.07366.pdf
 """
-
 
 from functools import partial
 import operator as op
@@ -52,7 +50,7 @@ def ravel_first_arg(f, unravel):
 @lu.transformation
 def ravel_first_arg_(unravel, y_flat, *args):
     y = unravel(y_flat)
-    ans = yield (y,) + args, {}
+    ans = yield (y, ) + args, {}
     ans_flat, _ = ravel_pytree(ans)
     yield ans_flat
 
@@ -60,18 +58,18 @@ def ravel_first_arg_(unravel, y_flat, *args):
 def interp_fit_dopri(y0, y1, k, dt):
     # Fit a polynomial to the results of a Runge-Kutta step.
     dps_c_mid = jnp.array([
-        6025192743 / 30085553152 / 2, 0, 51252292925 / 65400821598 / 2,
-        -2691868925 / 45128329728 / 2, 187940372067 / 1594534317056 / 2,
-        -1776094331 / 19743644256 / 2, 11237099 / 235043384 / 2], dtype=y0.dtype)
+        6025192743 / 30085553152 / 2, 0, 51252292925 / 65400821598 / 2, -2691868925 / 45128329728 / 2,
+        187940372067 / 1594534317056 / 2, -1776094331 / 19743644256 / 2, 11237099 / 235043384 / 2
+    ], dtype=y0.dtype)
     y_mid = y0 + dt.astype(y0.dtype) * jnp.dot(dps_c_mid, k)
     return jnp.asarray(fit_4th_order_polynomial(y0, y1, y_mid, k[0], k[-1], dt))
 
 
 def fit_4th_order_polynomial(y0, y1, y_mid, dy0, dy1, dt):
     dt = dt.astype(y0.dtype)
-    a = -2.*dt*dy0 + 2.*dt*dy1 - 8.*y0 - 8.*y1 + 16.*y_mid
-    b = 5.*dt*dy0 - 3.*dt*dy1 + 18.*y0 + 14.*y1 - 32.*y_mid
-    c = -4.*dt*dy0 + dt*dy1 - 11.*y0 - 5.*y1 + 16.*y_mid
+    a = -2. * dt * dy0 + 2. * dt * dy1 - 8. * y0 - 8. * y1 + 16. * y_mid
+    b = 5. * dt * dy0 - 3. * dt * dy1 + 18. * y0 + 14. * y1 - 32. * y_mid
+    c = -4. * dt * dy0 + dt * dy1 - 11. * y0 - 5. * y1 + 16. * y_mid
     d = dt * dy0
     e = y0
     return a, b, c, d, e
@@ -93,9 +91,8 @@ def initial_step_size(fun, t0, y0, order, rtol, atol, f0):
     f1 = fun(y1, t0 + h0)
     d2 = jnp.linalg.norm((f1 - f0) / scale.astype(dtype)) / h0
 
-    h1 = jnp.where((d1 <= 1e-15) & (d2 <= 1e-15),
-                   jnp.maximum(1e-6, h0 * 1e-3),
-                   (0.01 / jnp.maximum(d1, d2)) ** (1. / (order + 1.)))
+    h1 = jnp.where((d1 <= 1e-15) & (d2 <= 1e-15), jnp.maximum(1e-6, h0 * 1e-3),
+                   (0.01 / jnp.maximum(d1, d2))**(1. / (order + 1.)))
 
     return jnp.minimum(100. * h0, h1)
 
@@ -103,24 +100,20 @@ def initial_step_size(fun, t0, y0, order, rtol, atol, f0):
 def runge_kutta_step(func, y0, f0, t0, dt):
     # Dopri5 Butcher tableaux
     alpha = jnp.array([1 / 5, 3 / 10, 4 / 5, 8 / 9, 1., 1., 0], dtype=dt.dtype)
-    beta = jnp.array(
-        [[1 / 5, 0, 0, 0, 0, 0, 0], [3 / 40, 9 / 40, 0, 0, 0, 0, 0],
-         [44 / 45, -56 / 15, 32 / 9, 0, 0, 0, 0],
-         [19372 / 6561, -25360 / 2187, 64448 / 6561, -212 / 729, 0, 0, 0],
-         [9017 / 3168, -355 / 33, 46732 / 5247, 49 / 176, -5103 / 18656, 0, 0],
-         [35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0]],
-        dtype=f0.dtype)
-    c_sol = jnp.array(
-        [35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0],
-        dtype=f0.dtype)
+    beta = jnp.array([[1 / 5, 0, 0, 0, 0, 0, 0], [3 / 40, 9 / 40, 0, 0, 0, 0, 0], [
+        44 / 45, -56 / 15, 32 / 9, 0, 0, 0, 0
+    ], [19372 / 6561, -25360 / 2187, 64448 / 6561, -212 / 729, 0, 0, 0],
+                      [9017 / 3168, -355 / 33, 46732 / 5247, 49 / 176, -5103 / 18656, 0, 0
+                       ], [35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0]], dtype=f0.dtype)
+    c_sol = jnp.array([35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0], dtype=f0.dtype)
     c_error = jnp.array([
-        35 / 384 - 1951 / 21600, 0, 500 / 1113 - 22642 / 50085, 125 / 192 -
-        451 / 720, -2187 / 6784 - -12231 / 42400, 11 / 84 - 649 / 6300, -1. / 60.
+        35 / 384 - 1951 / 21600, 0, 500 / 1113 - 22642 / 50085, 125 / 192 - 451 / 720, -2187 / 6784 - -12231 / 42400,
+        11 / 84 - 649 / 6300, -1. / 60.
     ], dtype=f0.dtype)
 
     def body_fun(i, k):
-        ti = t0 + dt * alpha[i-1]
-        yi = y0 + dt.astype(f0.dtype) * jnp.dot(beta[i-1, :], k)
+        ti = t0 + dt * alpha[i - 1]
+        yi = y0 + dt.astype(f0.dtype) * jnp.dot(beta[i - 1, :], k)
         ft = func(yi, ti)
         return k.at[i, :].set(ft)
 
@@ -135,9 +128,9 @@ def runge_kutta_step(func, y0, f0, t0, dt):
 
 def abs2(x):
     if jnp.iscomplexobj(x):
-        return x.real ** 2 + x.imag ** 2
+        return x.real**2 + x.imag**2
     else:
-        return x ** 2
+        return x**2
 
 
 def mean_error_ratio(error_estimate, rtol, atol, y0, y1):
@@ -146,18 +139,15 @@ def mean_error_ratio(error_estimate, rtol, atol, y0, y1):
     return jnp.sqrt(jnp.mean(abs2(err_ratio)))
 
 
-def optimal_step_size(last_step, mean_error_ratio, safety=0.9, ifactor=10.0,
-                      dfactor=0.2, order=5.0):
+def optimal_step_size(last_step, mean_error_ratio, safety=0.9, ifactor=10.0, dfactor=0.2, order=5.0):
     """Compute optimal Runge-Kutta stepsize."""
     dfactor = jnp.where(mean_error_ratio < 1, 1.0, dfactor)
 
-    factor = jnp.minimum(ifactor,
-                         jnp.maximum(mean_error_ratio**(-1.0 / order) * safety, dfactor))
+    factor = jnp.minimum(ifactor, jnp.maximum(mean_error_ratio**(-1.0 / order) * safety, dfactor))
     return jnp.where(mean_error_ratio == 0, last_step * ifactor, last_step * factor)
 
 
-def odeint(func, y0, t, *args, rtol=1.4e-8, atol=1.4e-8, mxstep=jnp.inf, hmax=jnp.inf,
-           dt0=None):
+def odeint(func, y0, t, *args, rtol=1.4e-8, atol=1.4e-8, mxstep=jnp.inf, hmax=jnp.inf, dt0=None):
     """Adaptive stepsize (Dormand-Prince) Runge-Kutta odeint implementation.
 
     Args:
@@ -183,13 +173,11 @@ def odeint(func, y0, t, *args, rtol=1.4e-8, atol=1.4e-8, mxstep=jnp.inf, hmax=jn
     """
     for arg in tree_leaves(args):
         if not isinstance(arg, core.Tracer) and not core.valid_jaxtype(arg):
-            raise TypeError(
-                f"The contents of odeint *args must be arrays or scalars, but got {arg}.")
+            raise TypeError(f"The contents of odeint *args must be arrays or scalars, but got {arg}.")
     if not jnp.issubdtype(t.dtype, jnp.floating):
         raise TypeError(f"t must be an array of floats, but got {t}.")
 
-    converted, consts = custom_derivatives.closure_convert(
-        func, y0, t[0], *args)
+    converted, consts = custom_derivatives.closure_convert(func, y0, t[0], *args)
     return _odeint_wrapper(converted, rtol, atol, mxstep, hmax, dt0, y0, t, *args, *consts)
 
 
@@ -203,7 +191,9 @@ def _odeint_wrapper(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args):
 
 @partial(jax.custom_vjp, nondiff_argnums=(0, 1, 2, 3, 4, 5))
 def _odeint(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args):
-    def func_(y, t): return func(y, t, *args)
+
+    def func_(y, t):
+        return func(y, t, *args)
 
     def scan_fun(carry, target_t):
 
@@ -213,23 +203,20 @@ def _odeint(func, rtol, atol, mxstep, hmax, dt0, y0, ts, *args):
 
         def body_fun(state):
             i, y, f, t, dt, last_t, interp_coeff = state
-            next_y, next_f, next_y_error, k = runge_kutta_step(
-                func_, y, f, t, dt)
+            next_y, next_f, next_y_error, k = runge_kutta_step(func_, y, f, t, dt)
             next_t = t + dt
             error_ratio = mean_error_ratio(next_y_error, rtol, atol, y, next_y)
             new_interp_coeff = interp_fit_dopri(y, next_y, k, dt)
-            dt = jnp.clip(optimal_step_size(
-                dt, error_ratio), min=0., max=hmax)
+            dt = jnp.clip(optimal_step_size(dt, error_ratio), min=0., max=hmax)
 
-            new = [i + 1, next_y, next_f, next_t, dt,      t, new_interp_coeff]
-            old = [i + 1,      y,      f,      t, dt, last_t,     interp_coeff]
+            new = [i + 1, next_y, next_f, next_t, dt, t, new_interp_coeff]
+            old = [i + 1, y, f, t, dt, last_t, interp_coeff]
             return map(partial(jnp.where, error_ratio <= 1.), new, old)
 
         _, *carry = lax.while_loop(cond_fun, body_fun, [0] + carry)
         _, _, t, _, last_t, interp_coeff = carry
         relative_output_time = (target_t - last_t) / (t - last_t)
-        y_target = jnp.polyval(
-            interp_coeff, relative_output_time.astype(interp_coeff.dtype))
+        y_target = jnp.polyval(interp_coeff, relative_output_time.astype(interp_coeff.dtype))
         return carry, y_target
 
     f0 = func_(y0, ts[0])
@@ -272,18 +259,16 @@ def _odeint_rev(func, rtol, atol, mxstep, hmax, dt0, res, g):
         t0_bar = t0_bar - t_bar
         # Run augmented system backwards to previous observation
         _, y_bar, t0_bar, args_bar = odeint(
-            aug_dynamics, (ys[i], y_bar, t0_bar, args_bar),
-            jnp.array([-ts[i], -ts[i - 1]]),
-            *args, rtol=rtol, atol=atol, mxstep=mxstep, hmax=hmax, dt0=dt)
-        y_bar, t0_bar, args_bar = tree_map(
-            op.itemgetter(1), (y_bar, t0_bar, args_bar))
+            aug_dynamics, (ys[i], y_bar, t0_bar, args_bar), jnp.array([-ts[i], -ts[i - 1]]), *args, rtol=rtol,
+            atol=atol, mxstep=mxstep, hmax=hmax, dt0=dt
+        )
+        y_bar, t0_bar, args_bar = tree_map(op.itemgetter(1), (y_bar, t0_bar, args_bar))
         # Add gradient from current output
         y_bar = y_bar + g[i - 1]
         return (y_bar, t0_bar, args_bar), t_bar
 
     init_carry = (g[-1], 0., tree_map(jnp.zeros_like, args))
-    (y_bar, t0_bar, args_bar), rev_ts_bar = lax.scan(
-        scan_fun, init_carry, jnp.arange(len(ts) - 1, 0, -1))
+    (y_bar, t0_bar, args_bar), rev_ts_bar = lax.scan(scan_fun, init_carry, jnp.arange(len(ts) - 1, 0, -1))
     ts_bar = jnp.concatenate([jnp.array([t0_bar]), rev_ts_bar[::-1]])
     return (y_bar, ts_bar, *args_bar)
 

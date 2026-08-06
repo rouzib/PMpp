@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
@@ -19,7 +20,6 @@ try:
     import pytest
 except ImportError:
     pytest = None
-
 
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
 
@@ -42,9 +42,8 @@ def test_distributed_fft_matches_reference_for_forward_and_gradients():
         real_field_sharded = jax.device_put(real_field, sharding)
 
         spectrum = (
-            jax.random.normal(jax.random.PRNGKey(100 + real_shape[2]), spectrum_shape, dtype=jnp.float64)
-            + 1j
-            * jax.random.normal(jax.random.PRNGKey(200 + real_shape[2]), spectrum_shape, dtype=jnp.float64)
+            jax.random.normal(jax.random.PRNGKey(100 + real_shape[2]), spectrum_shape, dtype=jnp.float64) +
+            1j * jax.random.normal(jax.random.PRNGKey(200 + real_shape[2]), spectrum_shape, dtype=jnp.float64)
         ).astype(jnp.complex128)
         spectrum_sharded = jax.device_put(spectrum, sharding)
 
@@ -57,9 +56,8 @@ def test_distributed_fft_matches_reference_for_forward_and_gradients():
         assert np.allclose(irfftn_out, irfftn_ref, atol=1e-12, rtol=1e-12)
 
         rfftn_weights = (
-            jax.random.normal(jax.random.PRNGKey(300 + real_shape[2]), rfftn_ref.shape, dtype=jnp.float64)
-            + 1j
-            * jax.random.normal(jax.random.PRNGKey(400 + real_shape[2]), rfftn_ref.shape, dtype=jnp.float64)
+            jax.random.normal(jax.random.PRNGKey(300 + real_shape[2]), rfftn_ref.shape, dtype=jnp.float64) +
+            1j * jax.random.normal(jax.random.PRNGKey(400 + real_shape[2]), rfftn_ref.shape, dtype=jnp.float64)
         ).astype(jnp.complex128)
 
         def loss_rfftn_ref(inp):
@@ -73,9 +71,8 @@ def test_distributed_fft_matches_reference_for_forward_and_gradients():
         assert np.allclose(grad_rfftn_out, grad_rfftn_ref, atol=1e-12, rtol=1e-12)
 
         transposed_weights = (
-            jax.random.normal(jax.random.PRNGKey(350 + real_shape[2]), rfftn_ref.shape, dtype=jnp.float64)
-            + 1j
-            * jax.random.normal(jax.random.PRNGKey(450 + real_shape[2]), rfftn_ref.shape, dtype=jnp.float64)
+            jax.random.normal(jax.random.PRNGKey(350 + real_shape[2]), rfftn_ref.shape, dtype=jnp.float64) +
+            1j * jax.random.normal(jax.random.PRNGKey(450 + real_shape[2]), rfftn_ref.shape, dtype=jnp.float64)
         ).astype(jnp.complex128)
 
         def loss_rfftn_transposed_ref(inp):
@@ -84,12 +81,8 @@ def test_distributed_fft_matches_reference_for_forward_and_gradients():
         def loss_rfftn_transposed_mgpu(inp):
             return jnp.real(jnp.vdot(rfftn_transposed(inp), transposed_weights))
 
-        grad_transposed_ref = np.asarray(
-            jax.device_get(jax.grad(loss_rfftn_transposed_ref)(real_field))
-        )
-        grad_transposed_out = np.asarray(
-            jax.device_get(jax.grad(loss_rfftn_transposed_mgpu)(real_field_sharded))
-        )
+        grad_transposed_ref = np.asarray(jax.device_get(jax.grad(loss_rfftn_transposed_ref)(real_field)))
+        grad_transposed_out = np.asarray(jax.device_get(jax.grad(loss_rfftn_transposed_mgpu)(real_field_sharded)))
         assert np.allclose(grad_transposed_out, grad_transposed_ref, atol=1e-12, rtol=1e-12)
 
         irfftn_weights = jax.random.normal(jax.random.PRNGKey(500 + real_shape[2]), irfftn_ref.shape, dtype=jnp.float64)
@@ -123,43 +116,31 @@ def test_batched_transposed_irfftn_matches_scalar_transposed_path():
         spectrum_shape = (batch_size, real_shape[0], real_shape[1], real_shape[2] // 2 + 1)
 
         real_batch = jax.random.normal(
-            jax.random.PRNGKey(600 + real_shape[2]),
-            (batch_size,) + real_shape,
-            dtype=jnp.float64,
+            jax.random.PRNGKey(600 + real_shape[2]), (batch_size, ) + real_shape, dtype=jnp.float64,
         )
         real_batch_sharded = jax.device_put(real_batch, real_sharding)
-        scalar_rfftn = jnp.stack(
-            [rfftn_transposed(real_batch_sharded[i]) for i in range(batch_size)],
-            axis=0,
-        )
+        scalar_rfftn = jnp.stack([rfftn_transposed(real_batch_sharded[i]) for i in range(batch_size)], axis=0, )
         batched_rfftn_out = np.asarray(jax.device_get(batched_rfftn_transposed(real_batch_sharded)))
         scalar_rfftn_ref = np.asarray(jax.device_get(scalar_rfftn))
         assert np.allclose(batched_rfftn_out, scalar_rfftn_ref, atol=1e-12, rtol=1e-12)
 
         spectrum_batch = (
-            jax.random.normal(jax.random.PRNGKey(700 + real_shape[2]), spectrum_shape, dtype=jnp.float64)
-            + 1j
-            * jax.random.normal(jax.random.PRNGKey(800 + real_shape[2]), spectrum_shape, dtype=jnp.float64)
+            jax.random.normal(jax.random.PRNGKey(700 + real_shape[2]), spectrum_shape, dtype=jnp.float64) +
+            1j * jax.random.normal(jax.random.PRNGKey(800 + real_shape[2]), spectrum_shape, dtype=jnp.float64)
         ).astype(jnp.complex128)
         spectrum_batch_sharded = jax.device_put(spectrum_batch, spectrum_sharding)
 
         batched_irfftn_out = np.asarray(jax.device_get(batched_irfftn_transposed(spectrum_batch_sharded)))
         scalar_irfftn_out = np.asarray(
             jax.device_get(
-                jnp.stack(
-                    [irfftn_transposed(spectrum_batch_sharded[i]) for i in range(batch_size)],
-                    axis=0,
-                )
+                jnp.stack([irfftn_transposed(spectrum_batch_sharded[i]) for i in range(batch_size)], axis=0,
+                          )
             )
         )
         assert np.allclose(batched_irfftn_out, scalar_irfftn_out, atol=1e-12, rtol=1e-12)
 
         output_shape = batched_irfftn_out.shape
-        irfftn_weights = jax.random.normal(
-            jax.random.PRNGKey(900 + real_shape[2]),
-            output_shape,
-            dtype=jnp.float64,
-        )
+        irfftn_weights = jax.random.normal(jax.random.PRNGKey(900 + real_shape[2]), output_shape, dtype=jnp.float64, )
 
         def loss_scalar(inp):
             outs = [irfftn_transposed(inp[i]) for i in range(batch_size)]
@@ -175,14 +156,11 @@ def test_batched_transposed_irfftn_matches_scalar_transposed_path():
 
 if pytest is not None:
     test_distributed_fft_matches_reference_for_forward_and_gradients = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason="distributed FFT test requires at least 1 GPU",
+        GPU_COUNT < 1, reason="distributed FFT test requires at least 1 GPU",
     )(test_distributed_fft_matches_reference_for_forward_and_gradients)
     test_batched_transposed_irfftn_matches_scalar_transposed_path = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason="distributed FFT test requires at least 1 GPU",
+        GPU_COUNT < 1, reason="distributed FFT test requires at least 1 GPU",
     )(test_batched_transposed_irfftn_matches_scalar_transposed_path)
-
 
 if __name__ == "__main__":
     test_distributed_fft_matches_reference_for_forward_and_gradients()

@@ -114,32 +114,17 @@ def nbody_kappa(ptcl, cosmo, conf, reverse: bool = False):
                 Loop or custom-adjoint state tuple.
             """
             dens_tot = scatter(ptcl_step, conf_step)
-            dens = jnp.stack(
-                [
-                    jnp.sum(
-                        wraparound_slice(
-                            dens_tot,
-                            conf.slice_to_save[match_index],
-                            conf.slice_to_save[match_index + 1],
-                            max_slice_width,
-                            axis=axis,
-                        ),
+            dens = jnp.stack([
+                jnp.sum(
+                    wraparound_slice(
+                        dens_tot, conf.slice_to_save[match_index], conf.slice_to_save[match_index + 1], max_slice_width,
                         axis=axis,
-                    )
-                    for axis in range(3)
-                ],
-                axis=0,
-            )
+                    ), axis=axis,
+                ) for axis in range(3)
+            ], axis=0,
+                             )
             return state.at[match_index].set(dens)
 
         return lax.cond(match_index > -1, save_op, lambda state: state, saved_state)
 
-    return nbody_collect(
-        ptcl,
-        cosmo,
-        conf,
-        collector,
-        saved_maps,
-        reverse=reverse,
-        return_final=False,
-    )
+    return nbody_collect(ptcl, cosmo, conf, collector, saved_maps, reverse=reverse, return_final=False, )

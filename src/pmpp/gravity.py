@@ -8,10 +8,7 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 
 from .configuration import Configuration
 from .corrections import (
-    apply_potential_correction,
-    force_gradient_kernel,
-    force_green_kernel,
-    force_uses_interlacing,
+    apply_potential_correction, force_gradient_kernel, force_green_kernel, force_uses_interlacing,
 )
 from .gather import _gather, gather, gather_stacked_mesh_halo
 from .scatter import scatter, reduce_grad_across_gpus
@@ -40,16 +37,15 @@ def get_k_squared(kvec, conf):
     """
     kx, ky, kz = [jnp.squeeze(a) for a in kvec]
     if conf.compute_mesh is None:
-        return (kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(conf.float_dtype)
+        return (kx[:, None, None]**2 + ky[None, :, None]**2 + kz[None, None, :]**2).astype(conf.float_dtype)
 
-    @partial(jax.jit,
-             in_shardings=(
-                     NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
-                     NamedSharding(conf.compute_mesh, P(None)),
-                     NamedSharding(conf.compute_mesh, P(None)),
-             ),
-             out_shardings=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None))
-             )
+    @partial(
+        jax.jit, in_shardings=(
+            NamedSharding(conf.compute_mesh,
+                          P(AXIS_NAME)), NamedSharding(conf.compute_mesh,
+                                                       P(None)), NamedSharding(conf.compute_mesh, P(None)),
+        ), out_shardings=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None))
+    )
     def create_k_magnitude_sharded(kx_sharded, ky_replicated, kz_replicated):
         """Creates the magnitude of the k-vector in a JIT-compatible and
         memory-efficient, sharded manner.
@@ -68,7 +64,7 @@ def get_k_squared(kvec, conf):
         ky_b = ky_replicated[None, :, None]
         kz_b = kz_replicated[None, None, :]
 
-        local_shard = jnp.array(kx_b ** 2 + ky_b ** 2 + kz_b ** 2)
+        local_shard = jnp.array(kx_b**2 + ky_b**2 + kz_b**2)
         return local_shard.astype(conf.float_dtype)
 
     return create_k_magnitude_sharded(kx, ky, kz)
@@ -91,16 +87,14 @@ def get_k_squared_transposed(kvec, conf):
     """
     kx, ky, kz = [jnp.squeeze(a) for a in kvec]
     if conf.compute_mesh is None:
-        return (kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(conf.float_dtype)
+        return (kx[:, None, None]**2 + ky[None, :, None]**2 + kz[None, None, :]**2).astype(conf.float_dtype)
 
     @partial(
-        jax.jit,
-        in_shardings=(
-            NamedSharding(conf.compute_mesh, P(None)),
-            NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
-            NamedSharding(conf.compute_mesh, P(None)),
-        ),
-        out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
+        jax.jit, in_shardings=(
+            NamedSharding(conf.compute_mesh,
+                          P(None)), NamedSharding(conf.compute_mesh,
+                                                  P(AXIS_NAME)), NamedSharding(conf.compute_mesh, P(None)),
+        ), out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
     )
     def create_k_magnitude_transposed(kx_replicated, ky_sharded, kz_replicated):
         """Build transposed-layout squared wavenumber magnitudes on each shard.
@@ -118,7 +112,7 @@ def get_k_squared_transposed(kvec, conf):
         ky_b = ky_sharded[None, :, None]
         kz_b = kz_replicated[None, None, :]
 
-        local_shard = jnp.array(kx_b ** 2 + ky_b ** 2 + kz_b ** 2)
+        local_shard = jnp.array(kx_b**2 + ky_b**2 + kz_b**2)
         return local_shard.astype(conf.float_dtype)
 
     return create_k_magnitude_transposed(kx, ky, kz)
@@ -149,20 +143,14 @@ def get_discrete_k_squared_transposed(kvec, conf):
     ky_eff = 2 * jnp.sin(ky * cell_size / 2) / cell_size
     kz_eff = 2 * jnp.sin(kz * cell_size / 2) / cell_size
     if conf.compute_mesh is None:
-        return (
-            kx_eff[:, None, None] ** 2
-            + ky_eff[None, :, None] ** 2
-            + kz_eff[None, None, :] ** 2
-        ).astype(conf.float_dtype)
+        return (kx_eff[:, None, None]**2 + ky_eff[None, :, None]**2 + kz_eff[None, None, :]**2).astype(conf.float_dtype)
 
     @partial(
-        jax.jit,
-        in_shardings=(
-            NamedSharding(conf.compute_mesh, P(None)),
-            NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
-            NamedSharding(conf.compute_mesh, P(None)),
-        ),
-        out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
+        jax.jit, in_shardings=(
+            NamedSharding(conf.compute_mesh,
+                          P(None)), NamedSharding(conf.compute_mesh,
+                                                  P(AXIS_NAME)), NamedSharding(conf.compute_mesh, P(None)),
+        ), out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
     )
     def create_discrete_k_magnitude_transposed(kx_replicated, ky_sharded, kz_replicated):
         """Build transposed-layout discrete-gradient wavenumber magnitudes on each shard.
@@ -176,11 +164,7 @@ def get_discrete_k_squared_transposed(kvec, conf):
         kz_replicated
             Replicated z-axis rFFT wavenumbers.
         """
-        local_shard = (
-            kx_replicated[:, None, None] ** 2
-            + ky_sharded[None, :, None] ** 2
-            + kz_replicated[None, None, :] ** 2
-        )
+        local_shard = (kx_replicated[:, None, None]**2 + ky_sharded[None, :, None]**2 + kz_replicated[None, None, :]**2)
         return local_shard.astype(conf.float_dtype)
 
     return create_discrete_k_magnitude_transposed(kx_eff, ky_eff, kz_eff)
@@ -233,7 +217,7 @@ def laplace(kvec, src, conf, cosmo=None):
     """
     k2 = get_k_squared(kvec, conf)
 
-    pot = jnp.where(k2 != 0, - src / k2, 0)
+    pot = jnp.where(k2 != 0, -src / k2, 0)
 
     return pot
 
@@ -297,7 +281,7 @@ def laplace_transposed(kvec, src, conf, cosmo=None):
     """
     k2 = get_k_squared_transposed(kvec, conf)
 
-    pot = jnp.where(k2 != 0, - src / k2, 0)
+    pot = jnp.where(k2 != 0, -src / k2, 0)
 
     return pot
 
@@ -417,7 +401,7 @@ def _spectral_gradient_components_from_potential(pot, conf: Configuration, gradi
 def _laplace_replicated(kvec, src, conf: Configuration):
     """Poisson solve for a replicated standard spectral layout."""
     kx, ky, kz = [jnp.squeeze(a).astype(conf.float_dtype) for a in kvec]
-    k2 = kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2
+    k2 = kx[:, None, None]**2 + ky[None, :, None]**2 + kz[None, None, :]**2
     return src * jnp.where(k2 != 0, -1 / k2, 0).astype(conf.float_dtype)
 
 
@@ -470,7 +454,9 @@ def _gravity_potential_interlaced(ptcl, omega_m, conf: Configuration, a=None, co
     dens0 = (scatter(ptcl, conf) - 1) * factor
     offset = jnp.asarray(conf.cell_size / 2, dtype=conf.float_dtype)
     dens1 = (scatter(ptcl, conf, offset=offset) - 1) * factor
-    dens_hat = 0.5 * (_density_hat_from_real(dens0, conf) + _density_hat_from_real(dens1, conf) * _interlacing_phase(conf))
+    dens_hat = 0.5 * (
+        _density_hat_from_real(dens0, conf) + _density_hat_from_real(dens1, conf) * _interlacing_phase(conf)
+    )
     dens_hat = apply_particle_nyquist_filter(dens_hat, conf.particle_nyquist_masks)
     pot = laplace_transposed_with_kernel(conf.kvec, dens_hat, conf, force_green_kernel(correction))
     return apply_potential_correction(pot, a, cosmo, conf, correction, source_real=dens0)
@@ -526,24 +512,14 @@ def _gradient_meshes_from_potential(pot, conf: Configuration, use_batched=True, 
 
 
 def _acceleration_from_potential(
-    pot,
-    ptcl,
-    conf: Configuration,
-    use_batched=True,
-    use_vmap_gather=False,
-    gradient_kernel="spectral",
+    pot, ptcl, conf: Configuration, use_batched=True, use_vmap_gather=False, gradient_kernel="spectral",
 ):
     """Gather force-mesh components at particle positions."""
     if use_batched and _can_use_batched_gradient_fft(conf):
         grad_meshes = _batched_gradient_meshes_from_potential(pot, conf, gradient_kernel)
         return gather_stacked_mesh_halo(ptcl, conf, jnp.moveaxis(grad_meshes, 0, -1))
 
-    grad_meshes = _gradient_meshes_from_potential(
-        pot,
-        conf,
-        use_batched=False,
-        gradient_kernel=gradient_kernel,
-    )
+    grad_meshes = _gradient_meshes_from_potential(pot, conf, use_batched=False, gradient_kernel=gradient_kernel, )
 
     if use_vmap_gather:
         stacked_grad_meshes = jnp.stack(grad_meshes, axis=0)
@@ -558,13 +534,10 @@ def _acceleration_from_density_hat(dens_hat, ptcl, conf: Configuration):
     spectral_grads = _spectral_gradient_components_from_density_hat(dens_hat, conf)
     if conf.replicated_mesh:
         grad_meshes = jnp.fft.irfftn(spectral_grads, axes=(1, 2, 3)).astype(conf.float_dtype)
-        acc = jnp.stack(
-            [_gather(ptcl.pmid, ptcl.disp, conf, mesh, 0, 0, None) for mesh in grad_meshes],
-            axis=-1,
-        )
+        acc = jnp.stack([_gather(ptcl.pmid, ptcl.disp, conf, mesh, 0, 0, None) for mesh in grad_meshes], axis=-1, )
         if ptcl.unused_index is None:
             return acc
-        mask = ptcl.unused_index.reshape(ptcl.unused_index.shape + (1,) * (acc.ndim - 1))
+        mask = ptcl.unused_index.reshape(ptcl.unused_index.shape + (1, ) * (acc.ndim - 1))
         return jnp.where(mask, jnp.zeros_like(acc), acc)
 
     if _can_use_batched_gradient_fft(conf):
@@ -588,11 +561,7 @@ def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration, a=None, correc
     pot = _gravity_potential_from_density(dens, cosmo.Omega_m, conf, a=a, cosmo=cosmo, correction=correction)
     use_batched = correction is None or conf.corrected_force_batched_fft
     return _acceleration_from_potential(
-        pot,
-        ptcl,
-        conf,
-        use_batched=use_batched,
-        use_vmap_gather=correction is not None and not use_batched,
+        pot, ptcl, conf, use_batched=use_batched, use_vmap_gather=correction is not None and not use_batched,
         gradient_kernel=force_gradient_kernel(correction),
     )
 
@@ -617,17 +586,9 @@ def _reduce_gather_disp_cot(pmid, disp, unused_index, disp_cot, conf: Configurat
         return disp_cot
 
     @partial(
-        shard_map,
-        mesh=conf.compute_mesh,
-        in_specs=(
-            P(AXIS_NAME, None),
-            P(AXIS_NAME, None),
-            P(AXIS_NAME),
-            P(AXIS_NAME, None),
-            None,
-        ),
-        out_specs=P(AXIS_NAME, None),
-        check_rep=False,
+        shard_map, mesh=conf.compute_mesh,
+        in_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), P(AXIS_NAME, None), None,
+                  ), out_specs=P(AXIS_NAME, None), check_rep=False,
     )
     def reduce_local(disp_cot_local, pmid_local, unused_local, disp_local, conf_local):
         """Accumulate local displacement cotangents for owned particles.
@@ -649,9 +610,7 @@ def _reduce_gather_disp_cot(pmid, disp, unused_index, disp_cot, conf: Configurat
         return reduce_grad_across_gpus(disp_cot_local, pmid_local, disp_local, valid_mask, conf_local)
 
     unused_index = (
-        jnp.zeros(disp_cot.shape[0], dtype=jnp.bool_)
-        if unused_index is None
-        else jax.lax.stop_gradient(unused_index)
+        jnp.zeros(disp_cot.shape[0], dtype=jnp.bool_) if unused_index is None else jax.lax.stop_gradient(unused_index)
     )
     pmid = jax.lax.stop_gradient(pmid)
     return reduce_local(disp_cot, pmid, unused_index, disp, conf)
@@ -700,17 +659,9 @@ def duplicate_slot_counts(ptcl, conf: Configuration):
         return jnp.ones_like(ptcl.disp)
 
     @partial(
-        shard_map,
-        mesh=conf.compute_mesh,
-        in_specs=(
-            P(AXIS_NAME, None),
-            P(AXIS_NAME, None),
-            P(AXIS_NAME),
-            P(AXIS_NAME, None),
-            None,
-        ),
-        out_specs=P(AXIS_NAME, None),
-        check_rep=False,
+        shard_map, mesh=conf.compute_mesh,
+        in_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), P(AXIS_NAME, None), None,
+                  ), out_specs=P(AXIS_NAME, None), check_rep=False,
     )
     def count_local(counts_local, pmid_local, unused_local, disp_local, conf_local):
         """Count local gather contributions for owned particles.
@@ -733,8 +684,7 @@ def duplicate_slot_counts(ptcl, conf: Configuration):
 
     unused_index = (
         jnp.zeros(ptcl.disp.shape[0], dtype=jnp.bool_)
-        if ptcl.unused_index is None
-        else jax.lax.stop_gradient(ptcl.unused_index)
+        if ptcl.unused_index is None else jax.lax.stop_gradient(ptcl.unused_index)
     )
     pmid = jax.lax.stop_gradient(ptcl.pmid)
     counts = count_local(jnp.ones_like(ptcl.disp), pmid, unused_index, ptcl.disp, conf)
@@ -766,12 +716,7 @@ def gravity(a, ptcl, cosmo, conf: Configuration, correction=None):
     """
     if force_uses_interlacing(correction):
         pot = _gravity_potential_interlaced(ptcl, cosmo.Omega_m, conf, a=a, cosmo=cosmo, correction=correction)
-        return _acceleration_from_potential(
-            pot,
-            ptcl,
-            conf,
-            gradient_kernel=force_gradient_kernel(correction),
-        )
+        return _acceleration_from_potential(pot, ptcl, conf, gradient_kernel=force_gradient_kernel(correction), )
 
     dens = scatter(ptcl, conf)
     return _gravity_from_density(dens, ptcl, cosmo, conf, a=a, correction=correction)

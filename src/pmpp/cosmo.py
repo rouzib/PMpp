@@ -46,11 +46,11 @@ def E2(a, cosmo):
     """
     a = jnp.asarray(a, dtype=cosmo.conf.cosmo_dtype)
 
-    de_a = a ** (-3 * (1 + cosmo.w_0 + cosmo.w_a)) * jnp.exp(-3 * cosmo.w_a * (1 - a))
-    return cosmo.Omega_m * a ** -3 + cosmo.Omega_k * a ** -2 + cosmo.Omega_de * de_a
+    de_a = a**(-3 * (1 + cosmo.w_0 + cosmo.w_a)) * jnp.exp(-3 * cosmo.w_a * (1 - a))
+    return cosmo.Omega_m * a**-3 + cosmo.Omega_k * a**-2 + cosmo.Omega_de * de_a
 
 
-@partial(jnp.vectorize, excluded=(1,))
+@partial(jnp.vectorize, excluded=(1, ))
 def H_deriv(a, cosmo):
     r"""Hubble parameter derivatives, :math:`\mathrm{d}\ln H / \mathrm{d}\ln a`, at
     given scale factors.
@@ -97,7 +97,7 @@ def Omega_m_a(a, cosmo):
     """
     a = jnp.asarray(a, dtype=cosmo.conf.cosmo_dtype)
 
-    return cosmo.Omega_m / (a ** 3 * E2(a, cosmo))
+    return cosmo.Omega_m / (a**3 * E2(a, cosmo))
 
 
 @partial(pytree_dataclass, aux_fields="conf", frozen=True)
@@ -198,7 +198,7 @@ class Cosmology:
         cosmo = cls(conf, 1, *args, **kwargs)
         cosmo = boltzmann(cosmo, conf)
 
-        A_s_1e9 = (sigma8 / cosmo.sigma8) ** 2
+        A_s_1e9 = (sigma8 / cosmo.sigma8)**2
 
         return cls(conf, A_s_1e9, *args, **kwargs)
 
@@ -259,26 +259,9 @@ class Cosmology:
         return self.conf.rho_crit * self.Omega_m * self.conf.ptcl_cell_vol
 
 
-SimpleLCDM = partial(
-    Cosmology,
-    A_s_1e9=2.0,
-    n_s=0.96,
-    Omega_m=0.3,
-    Omega_b=0.05,
-    h=0.7,
-)
+SimpleLCDM = partial(Cosmology, A_s_1e9=2.0, n_s=0.96, Omega_m=0.3, Omega_b=0.05, h=0.7, )
 
-
-_COSMO_PARAM_FIELDS = (
-    "A_s_1e9",
-    "n_s",
-    "Omega_m",
-    "Omega_b",
-    "h",
-    "Omega_k_",
-    "w_0_",
-    "w_a_",
-)
+_COSMO_PARAM_FIELDS = ("A_s_1e9", "n_s", "Omega_m", "Omega_b", "h", "Omega_k_", "w_0_", "w_a_", )
 
 
 def cosmology_param_names(cosmo):
@@ -439,17 +422,11 @@ def add_cosmology_cotangents(lhs, rhs):
     lhs = project_cosmology_param_cotangent(lhs)
     rhs = project_cosmology_param_cotangent(rhs)
     return lhs.replace(
-        A_s_1e9=lhs.A_s_1e9 + rhs.A_s_1e9,
-        n_s=lhs.n_s + rhs.n_s,
-        Omega_m=lhs.Omega_m + rhs.Omega_m,
-        Omega_b=lhs.Omega_b + rhs.Omega_b,
-        h=lhs.h + rhs.h,
-        Omega_k_=_combine_optional_cotangents(lhs.Omega_k_, rhs.Omega_k_, add),
-        w_0_=_combine_optional_cotangents(lhs.w_0_, rhs.w_0_, add),
-        w_a_=_combine_optional_cotangents(lhs.w_a_, rhs.w_a_, add),
-        transfer=None,
-        growth=None,
-        varlin=None,
+        A_s_1e9=lhs.A_s_1e9 + rhs.A_s_1e9, n_s=lhs.n_s + rhs.n_s, Omega_m=lhs.Omega_m + rhs.Omega_m,
+        Omega_b=lhs.Omega_b + rhs.Omega_b, h=lhs.h + rhs.h,
+        Omega_k_=_combine_optional_cotangents(lhs.Omega_k_, rhs.Omega_k_,
+                                              add), w_0_=_combine_optional_cotangents(lhs.w_0_, rhs.w_0_, add),
+        w_a_=_combine_optional_cotangents(lhs.w_a_, rhs.w_a_, add), transfer=None, growth=None, varlin=None,
     )
 
 
@@ -469,17 +446,11 @@ def sub_cosmology_cotangents(lhs, rhs):
     lhs = project_cosmology_param_cotangent(lhs)
     rhs = project_cosmology_param_cotangent(rhs)
     return lhs.replace(
-        A_s_1e9=lhs.A_s_1e9 - rhs.A_s_1e9,
-        n_s=lhs.n_s - rhs.n_s,
-        Omega_m=lhs.Omega_m - rhs.Omega_m,
-        Omega_b=lhs.Omega_b - rhs.Omega_b,
-        h=lhs.h - rhs.h,
-        Omega_k_=_combine_optional_cotangents(lhs.Omega_k_, rhs.Omega_k_, sub),
-        w_0_=_combine_optional_cotangents(lhs.w_0_, rhs.w_0_, sub),
-        w_a_=_combine_optional_cotangents(lhs.w_a_, rhs.w_a_, sub),
-        transfer=None,
-        growth=None,
-        varlin=None,
+        A_s_1e9=lhs.A_s_1e9 - rhs.A_s_1e9, n_s=lhs.n_s - rhs.n_s, Omega_m=lhs.Omega_m - rhs.Omega_m,
+        Omega_b=lhs.Omega_b - rhs.Omega_b, h=lhs.h - rhs.h,
+        Omega_k_=_combine_optional_cotangents(lhs.Omega_k_, rhs.Omega_k_,
+                                              sub), w_0_=_combine_optional_cotangents(lhs.w_0_, rhs.w_0_, sub),
+        w_a_=_combine_optional_cotangents(lhs.w_a_, rhs.w_a_, sub), transfer=None, growth=None, varlin=None,
     )
 
 
@@ -500,15 +471,8 @@ def scale_cosmology_cotangent(cot, scalar):
     """
     cot = project_cosmology_param_cotangent(cot)
     return cot.replace(
-        A_s_1e9=cot.A_s_1e9 * scalar,
-        n_s=cot.n_s * scalar,
-        Omega_m=cot.Omega_m * scalar,
-        Omega_b=cot.Omega_b * scalar,
-        h=cot.h * scalar,
-        Omega_k_=None if cot.Omega_k_ is None else cot.Omega_k_ * scalar,
-        w_0_=None if cot.w_0_ is None else cot.w_0_ * scalar,
-        w_a_=None if cot.w_a_ is None else cot.w_a_ * scalar,
-        transfer=None,
-        growth=None,
-        varlin=None,
+        A_s_1e9=cot.A_s_1e9 * scalar, n_s=cot.n_s * scalar, Omega_m=cot.Omega_m * scalar, Omega_b=cot.Omega_b * scalar,
+        h=cot.h * scalar, Omega_k_=None if cot.Omega_k_ is None else cot.Omega_k_ * scalar,
+        w_0_=None if cot.w_0_ is None else cot.w_0_ * scalar, w_a_=None if cot.w_a_ is None else cot.w_a_ * scalar,
+        transfer=None, growth=None, varlin=None,
     )

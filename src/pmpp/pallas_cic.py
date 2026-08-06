@@ -44,9 +44,7 @@ def pallas_cic_supported(dtype) -> bool:
     """Return whether optimized CIC forward and backward paths are usable here."""
 
     return (
-        pallas_available()
-        and _tested_pallas_jax()
-        and any(device.platform == "gpu" for device in jax.devices())
+        pallas_available() and _tested_pallas_jax() and any(device.platform == "gpu" for device in jax.devices())
         and jnp.dtype(dtype) == jnp.dtype(jnp.float32)
     )
 
@@ -58,9 +56,7 @@ def _require_pallas(dtype):
             "jax.experimental.pallas."
         )
     if not any(device.platform == "gpu" for device in jax.devices()):
-        raise RuntimeError(
-            "Pallas CIC currently targets the GPU backend; no GPU JAX device is visible."
-        )
+        raise RuntimeError("Pallas CIC currently targets the GPU backend; no GPU JAX device is visible.")
     dtype = jnp.dtype(dtype)
     if dtype != jnp.dtype(jnp.float32):
         raise RuntimeError(
@@ -76,7 +72,7 @@ def _shape_tuple(shape: Iterable[int]) -> tuple[int, ...]:
 def _offset_array(offset, dim: int, dtype):
     """Normalize scalar/vector offsets without changing their physical units."""
 
-    return jnp.broadcast_to(jnp.asarray(offset, dtype=dtype), (dim,))
+    return jnp.broadcast_to(jnp.asarray(offset, dtype=dtype), (dim, ))
 
 
 def _choose_block_size(particle_count: int) -> int:
@@ -101,7 +97,7 @@ def _pad_particles(array, padded_count: int, *, value=0):
 
 def _valid_particles(valid_mask, particle_count: int, padded_count: int):
     if valid_mask is None:
-        valid_mask = jnp.ones((particle_count,), dtype=jnp.bool_)
+        valid_mask = jnp.ones((particle_count, ), dtype=jnp.bool_)
     else:
         valid_mask = jnp.asarray(valid_mask, dtype=jnp.bool_)
         if valid_mask.ndim != 1 or valid_mask.shape[0] != particle_count:
@@ -120,14 +116,10 @@ def _particle_extent(particle_count: int, block_size: int) -> int:
 def _particle_block_spec(block_size: int, trailing_shape: tuple[int, ...]):
     """BlockSpec for a leading particle tile (indices are in block units)."""
 
-    return pl.BlockSpec(
-        (block_size,) + trailing_shape,
-        lambda block: (block,) + (0,) * len(trailing_shape),
-    )
+    return pl.BlockSpec((block_size, ) + trailing_shape, lambda block: (block, ) + (0, ) * len(trailing_shape), )
 
 
-def _make_cic_coordinate_helper(*, spatial_shape, global_shape, cell_size_is_explicit,
-                                cell_dtype, block_size: int):
+def _make_cic_coordinate_helper(*, spatial_shape, global_shape, cell_size_is_explicit, cell_dtype, block_size: int):
     """Create the statically unrolled CIC coordinate/weight helper."""
 
     spatial_shape = _shape_tuple(spatial_shape)
@@ -136,10 +128,7 @@ def _make_cic_coordinate_helper(*, spatial_shape, global_shape, cell_size_is_exp
     if dim != 3:
         raise NotImplementedError("Pallas CIC currently supports three spatial dimensions")
 
-    neighbour_bits = tuple(
-        tuple((bits >> axis) & 1 for axis in range(dim))
-        for bits in range(2**dim)
-    )
+    neighbour_bits = tuple(tuple((bits >> axis) & 1 for axis in range(dim)) for bits in range(2**dim))
     a1 = float(cell_dtype)
 
     def _axis_weight_grad(delta):
@@ -151,22 +140,15 @@ def _make_cic_coordinate_helper(*, spatial_shape, global_shape, cell_size_is_exp
         sign = jnp.where(delta < 0, 1.0, jnp.where(delta > 0, -1.0, 0.0))
         return weight, sign
 
-    def _particle_coordinates(
-        pmid_ref, disp_ref, offset_ref, cell_ref, particle, lane_valid
-    ):
+    def _particle_coordinates(pmid_ref, disp_ref, offset_ref, cell_ref, particle, lane_valid):
         work_dtype = jnp.float32
         pmid = tuple(
-            pl.load(pmid_ref, (particle, axis), mask=lane_valid, other=0).astype(jnp.int32)
-            for axis in range(dim)
+            pl.load(pmid_ref, (particle, axis), mask=lane_valid, other=0).astype(jnp.int32) for axis in range(dim)
         )
         disp = tuple(
-            pl.load(disp_ref, (particle, axis), mask=lane_valid, other=0).astype(work_dtype)
-            for axis in range(dim)
+            pl.load(disp_ref, (particle, axis), mask=lane_valid, other=0).astype(work_dtype) for axis in range(dim)
         )
-        offset = tuple(
-            pl.load(offset_ref, (axis,)).astype(work_dtype)
-            for axis in range(dim)
-        )
+        offset = tuple(pl.load(offset_ref, (axis, )).astype(work_dtype) for axis in range(dim))
 
         indices = []
         fractions = []
@@ -180,11 +162,7 @@ def _make_cic_coordinate_helper(*, spatial_shape, global_shape, cell_size_is_exp
                 axis_grads = []
                 for axis, bit in enumerate(bits):
                     length = jnp.asarray(global_shape[axis], dtype=work_dtype)
-                    position = (
-                        pmid[axis].astype(work_dtype) * a1
-                        + disp[axis]
-                        - offset[axis]
-                    )
+                    position = (pmid[axis].astype(work_dtype) * a1 + disp[axis] - offset[axis])
                     position = jnp.mod(position, length * a1)
                     neighbour_position = jnp.mod(position + bit * a2, length * a1)
                     idx = jnp.floor(neighbour_position / a2).astype(jnp.int32)
@@ -201,12 +179,12 @@ def _make_cic_coordinate_helper(*, spatial_shape, global_shape, cell_size_is_exp
                     axis_grads.append(grad)
                 indices.append(tuple(idx_axes))
                 fractions.append(axis_weights[0] * axis_weights[1] * axis_weights[2])
-                fraction_grads.append(tuple(
-                    axis_grads[axis]
-                    * axis_weights[(axis + 1) % dim]
-                    * axis_weights[(axis + 2) % dim]
-                    for axis in range(dim)
-                ))
+                fraction_grads.append(
+                    tuple(
+                        axis_grads[axis] * axis_weights[(axis + 1) % dim] * axis_weights[(axis + 2) % dim]
+                        for axis in range(dim)
+                    )
+                )
             return tuple(indices), tuple(fractions), tuple(fraction_grads), a2
 
         # Common PM++ path (a2=None in enmesh): both grids have the particle
@@ -234,12 +212,12 @@ def _make_cic_coordinate_helper(*, spatial_shape, global_shape, cell_size_is_exp
                 axis_grads.append(grad)
             indices.append(tuple(idx_axes))
             fractions.append(axis_weights[0] * axis_weights[1] * axis_weights[2])
-            fraction_grads.append(tuple(
-                axis_grads[axis]
-                * axis_weights[(axis + 1) % dim]
-                * axis_weights[(axis + 2) % dim]
-                for axis in range(dim)
-            ))
+            fraction_grads.append(
+                tuple(
+                    axis_grads[axis] * axis_weights[(axis + 1) % dim] * axis_weights[(axis + 2) % dim]
+                    for axis in range(dim)
+                )
+            )
         return tuple(indices), tuple(fractions), tuple(fraction_grads), jnp.asarray(a1, dtype=work_dtype)
 
     return spatial_shape, global_shape, block_size, _particle_coordinates
@@ -252,50 +230,39 @@ def _bounds_mask(index, spatial_shape):
     return valid
 
 
-def _make_cic_forward_kernel(*, spatial_shape, global_shape, channel_shape,
-                             cell_size_is_explicit, cell_dtype, scatter: bool,
-                             block_size: int, particle_count: int):
+def _make_cic_forward_kernel(
+    *, spatial_shape, global_shape, channel_shape, cell_size_is_explicit, cell_dtype, scatter: bool, block_size: int,
+    particle_count: int
+):
     spatial_shape, global_shape, _, coordinates = _make_cic_coordinate_helper(
-        spatial_shape=spatial_shape,
-        global_shape=global_shape,
-        cell_size_is_explicit=cell_size_is_explicit,
-        cell_dtype=cell_dtype,
-        block_size=block_size,
+        spatial_shape=spatial_shape, global_shape=global_shape, cell_size_is_explicit=cell_size_is_explicit,
+        cell_dtype=cell_dtype, block_size=block_size,
     )
 
     if scatter:
 
-        def kernel(pmid_ref, disp_ref, valid_ref, val_ref, offset_ref, cell_ref,
-                   mesh_in_ref, mesh_ref):
+        def kernel(pmid_ref, disp_ref, valid_ref, val_ref, offset_ref, cell_ref, mesh_in_ref, mesh_ref):
             del mesh_in_ref
             block = pl.program_id(0)
             lanes = jnp.arange(block_size, dtype=jnp.int32)
             lane_valid = (block * block_size + lanes) < particle_count
-            particle_valid = lane_valid & pl.load(valid_ref, (lanes,), mask=lane_valid, other=False)
-            indices, fractions, _, _ = coordinates(
-                pmid_ref, disp_ref, offset_ref, cell_ref, lanes, lane_valid
-            )
+            particle_valid = lane_valid & pl.load(valid_ref, (lanes, ), mask=lane_valid, other=False)
+            indices, fractions, _, _ = coordinates(pmid_ref, disp_ref, offset_ref, cell_ref, lanes, lane_valid)
             scalar_val = val_ref.shape == ()
             for index, fraction in zip(indices, fractions):
                 valid = particle_valid & _bounds_mask(index, spatial_shape)
                 if channel_shape:
                     for channel in np.ndindex(channel_shape):
                         value = (
-                            pl.load(val_ref, channel)
-                            if scalar_val
-                            else pl.load(
-                                val_ref,
-                                (lanes,) + channel,
-                                mask=particle_valid,
-                                other=0,
+                            pl.load(val_ref, channel) if scalar_val else pl.load(
+                                val_ref, (lanes, ) + channel, mask=particle_valid, other=0,
                             )
                         )
                         pl.atomic_add(mesh_ref, index + channel, value * fraction, mask=valid)
                 else:
                     value = (
-                        pl.load(val_ref, ())
-                        if scalar_val
-                        else pl.load(val_ref, (lanes,), mask=particle_valid, other=0)
+                        pl.load(val_ref,
+                                ()) if scalar_val else pl.load(val_ref, (lanes, ), mask=particle_valid, other=0)
                     )
                     pl.atomic_add(mesh_ref, index, value * fraction, mask=valid)
 
@@ -305,104 +272,88 @@ def _make_cic_forward_kernel(*, spatial_shape, global_shape, channel_shape,
         block = pl.program_id(0)
         lanes = jnp.arange(block_size, dtype=jnp.int32)
         lane_valid = (block * block_size + lanes) < particle_count
-        particle_valid = lane_valid & pl.load(valid_ref, (lanes,), mask=lane_valid, other=False)
-        indices, fractions, _, _ = coordinates(
-            pmid_ref, disp_ref, offset_ref, cell_ref, lanes, lane_valid
-        )
+        particle_valid = lane_valid & pl.load(valid_ref, (lanes, ), mask=lane_valid, other=False)
+        indices, fractions, _, _ = coordinates(pmid_ref, disp_ref, offset_ref, cell_ref, lanes, lane_valid)
         for channel in np.ndindex(channel_shape) if channel_shape else [()]:
-            result = jnp.zeros((block_size,), dtype=jnp.float32)
+            result = jnp.zeros((block_size, ), dtype=jnp.float32)
             for index, fraction in zip(indices, fractions):
                 valid = _bounds_mask(index, spatial_shape)
-                result = result + pl.load(
-                    mesh_ref, index + channel, mask=valid & particle_valid, other=0
-                ) * fraction
-            pl.store(out_ref, (lanes,) + channel, result, mask=lane_valid)
+                result = result + pl.load(mesh_ref, index + channel, mask=valid & particle_valid, other=0) * fraction
+            pl.store(out_ref, (lanes, ) + channel, result, mask=lane_valid)
 
     return kernel
 
 
-def _make_gather_bwd_kernel(*, spatial_shape, global_shape, channel_shape,
-                            cell_size_is_explicit, cell_dtype, block_size: int,
-                            particle_count: int):
+def _make_gather_bwd_kernel(
+    *, spatial_shape, global_shape, channel_shape, cell_size_is_explicit, cell_dtype, block_size: int,
+    particle_count: int
+):
     spatial_shape, _, _, coordinates = _make_cic_coordinate_helper(
-        spatial_shape=spatial_shape,
-        global_shape=global_shape,
-        cell_size_is_explicit=cell_size_is_explicit,
-        cell_dtype=cell_dtype,
-        block_size=block_size,
+        spatial_shape=spatial_shape, global_shape=global_shape, cell_size_is_explicit=cell_size_is_explicit,
+        cell_dtype=cell_dtype, block_size=block_size,
     )
 
-    def kernel(pmid_ref, disp_ref, valid_ref, mesh_ref, val_cot_ref, offset_ref,
-               cell_ref, mesh_cot_in_ref, disp_cot_ref, mesh_cot_ref):
+    def kernel(
+        pmid_ref, disp_ref, valid_ref, mesh_ref, val_cot_ref, offset_ref, cell_ref, mesh_cot_in_ref, disp_cot_ref,
+        mesh_cot_ref
+    ):
         del mesh_cot_in_ref
         block = pl.program_id(0)
         lanes = jnp.arange(block_size, dtype=jnp.int32)
         lane_valid = (block * block_size + lanes) < particle_count
-        particle_valid = lane_valid & pl.load(valid_ref, (lanes,), mask=lane_valid, other=False)
+        particle_valid = lane_valid & pl.load(valid_ref, (lanes, ), mask=lane_valid, other=False)
         indices, fractions, fraction_grads, cell_scale = coordinates(
             pmid_ref, disp_ref, offset_ref, cell_ref, lanes, lane_valid
         )
-        disp_result = [jnp.zeros((block_size,), dtype=jnp.float32) for _ in range(3)]
+        disp_result = [jnp.zeros((block_size, ), dtype=jnp.float32) for _ in range(3)]
         for index, fraction, fraction_grad in zip(indices, fractions, fraction_grads):
             valid = particle_valid & _bounds_mask(index, spatial_shape)
             for channel in np.ndindex(channel_shape) if channel_shape else [()]:
                 mesh_index = index + channel
                 mesh_value = pl.load(mesh_ref, mesh_index, mask=valid, other=0)
-                val_cot = pl.load(
-                    val_cot_ref, (lanes,) + channel, mask=particle_valid, other=0
-                )
+                val_cot = pl.load(val_cot_ref, (lanes, ) + channel, mask=particle_valid, other=0)
                 pl.atomic_add(mesh_cot_ref, mesh_index, val_cot * fraction, mask=valid)
                 for axis in range(3):
-                    disp_result[axis] = disp_result[axis] + (
-                        val_cot * mesh_value * fraction_grad[axis]
-                    )
+                    disp_result[axis] = disp_result[axis] + (val_cot * mesh_value * fraction_grad[axis])
         for axis in range(3):
-            pl.store(
-                disp_cot_ref,
-                (lanes, axis),
-                disp_result[axis] / cell_scale,
-                mask=lane_valid,
-            )
+            pl.store(disp_cot_ref, (lanes, axis), disp_result[axis] / cell_scale, mask=lane_valid, )
 
     return kernel
 
 
-def _make_scatter_bwd_kernel(*, spatial_shape, global_shape, channel_shape,
-                             cell_size_is_explicit, cell_dtype, block_size: int,
-                             particle_count: int, scalar_val: bool):
+def _make_scatter_bwd_kernel(
+    *, spatial_shape, global_shape, channel_shape, cell_size_is_explicit, cell_dtype, block_size: int,
+    particle_count: int, scalar_val: bool
+):
     spatial_shape, _, _, coordinates = _make_cic_coordinate_helper(
-        spatial_shape=spatial_shape,
-        global_shape=global_shape,
-        cell_size_is_explicit=cell_size_is_explicit,
-        cell_dtype=cell_dtype,
-        block_size=block_size,
+        spatial_shape=spatial_shape, global_shape=global_shape, cell_size_is_explicit=cell_size_is_explicit,
+        cell_dtype=cell_dtype, block_size=block_size,
     )
 
-    def kernel(pmid_ref, disp_ref, valid_ref, val_ref, offset_ref, cell_ref,
-               mesh_cot_ref, mesh_cot_in_ref, disp_cot_ref, val_cot_ref):
+    def kernel(
+        pmid_ref, disp_ref, valid_ref, val_ref, offset_ref, cell_ref, mesh_cot_ref, mesh_cot_in_ref, disp_cot_ref,
+        val_cot_ref
+    ):
         del mesh_cot_in_ref
         block = pl.program_id(0)
         lanes = jnp.arange(block_size, dtype=jnp.int32)
         lane_valid = (block * block_size + lanes) < particle_count
-        particle_valid = lane_valid & pl.load(valid_ref, (lanes,), mask=lane_valid, other=False)
+        particle_valid = lane_valid & pl.load(valid_ref, (lanes, ), mask=lane_valid, other=False)
         indices, fractions, fraction_grads, cell_scale = coordinates(
             pmid_ref, disp_ref, offset_ref, cell_ref, lanes, lane_valid
         )
-        disp_result = [jnp.zeros((block_size,), dtype=jnp.float32) for _ in range(3)]
+        disp_result = [jnp.zeros((block_size, ), dtype=jnp.float32) for _ in range(3)]
         channel_indices = list(np.ndindex(channel_shape)) if channel_shape else [()]
-        val_result = (
-            [jnp.zeros((block_size,), dtype=jnp.float32) for _ in channel_indices]
-            if not scalar_val else None
-        )
+        val_result = ([jnp.zeros((block_size, ), dtype=jnp.float32)
+                       for _ in channel_indices] if not scalar_val else None)
         for index, fraction, fraction_grad in zip(indices, fractions, fraction_grads):
             valid = particle_valid & _bounds_mask(index, spatial_shape)
-            channel_sum = jnp.zeros((block_size,), dtype=jnp.float32)
+            channel_sum = jnp.zeros((block_size, ), dtype=jnp.float32)
             for channel_index, channel in enumerate(channel_indices):
                 mesh_value = pl.load(mesh_cot_ref, index + channel, mask=valid, other=0)
                 particle_value = (
-                    pl.load(val_ref, ())
-                    if scalar_val
-                    else pl.load(val_ref, (lanes,) + channel, mask=particle_valid, other=0)
+                    pl.load(val_ref,
+                            ()) if scalar_val else pl.load(val_ref, (lanes, ) + channel, mask=particle_valid, other=0)
                 )
                 weighted = mesh_value * fraction
                 if scalar_val:
@@ -416,23 +367,15 @@ def _make_scatter_bwd_kernel(*, spatial_shape, global_shape, channel_shape,
             for axis in range(3):
                 disp_result[axis] = disp_result[axis] + channel_sum * fraction_grad[axis]
         for axis in range(3):
-            pl.store(
-                disp_cot_ref,
-                (lanes, axis),
-                disp_result[axis] / cell_scale,
-                mask=lane_valid,
-            )
+            pl.store(disp_cot_ref, (lanes, axis), disp_result[axis] / cell_scale, mask=lane_valid, )
         if not scalar_val:
             for channel_index, channel in enumerate(channel_indices):
-                pl.store(val_cot_ref, (lanes,) + channel, val_result[channel_index], mask=lane_valid)
+                pl.store(val_cot_ref, (lanes, ) + channel, val_result[channel_index], mask=lane_valid)
 
     return kernel
 
 
-
-
-def pallas_gather(pmid, disp, mesh, *, offset, particle_cell_size, cell_size=None,
-                  global_shape, valid_mask=None):
+def pallas_gather(pmid, disp, mesh, *, offset, particle_cell_size, cell_size=None, global_shape, valid_mask=None):
     """Gather CIC values with a tiled Pallas kernel."""
 
     _require_pallas(mesh.dtype)
@@ -446,42 +389,24 @@ def pallas_gather(pmid, disp, mesh, *, offset, particle_cell_size, cell_size=Non
     disp = _pad_particles(disp, padded_count)
     valid_mask = _valid_particles(valid_mask, particle_count, padded_count)
     offset = _offset_array(offset, 3, mesh.dtype)
-    cell_arg = (
-        jnp.asarray(0, dtype=mesh.dtype)
-        if cell_size is None else jnp.asarray(cell_size, dtype=mesh.dtype)
-    )
+    cell_arg = (jnp.asarray(0, dtype=mesh.dtype) if cell_size is None else jnp.asarray(cell_size, dtype=mesh.dtype))
     channel_shape = mesh.shape[3:]
     kernel = _make_cic_forward_kernel(
-        spatial_shape=mesh.shape[:3],
-        global_shape=global_shape,
-        channel_shape=channel_shape,
-        cell_size_is_explicit=cell_size is not None,
-        cell_dtype=particle_cell_size,
-        scatter=False,
-        block_size=block_size,
-        particle_count=particle_count,
+        spatial_shape=mesh.shape[:3], global_shape=global_shape, channel_shape=channel_shape,
+        cell_size_is_explicit=cell_size is not None, cell_dtype=particle_cell_size, scatter=False,
+        block_size=block_size, particle_count=particle_count,
     )
-    out_shape = jax.ShapeDtypeStruct((padded_count,) + channel_shape, mesh.dtype)
+    out_shape = jax.ShapeDtypeStruct((padded_count, ) + channel_shape, mesh.dtype)
     call = pl.pallas_call(
-        kernel,
-        out_shape=out_shape,
-        grid=(padded_count // block_size,),
-        in_specs=(
-            _particle_block_spec(block_size, (3,)),
-            _particle_block_spec(block_size, (3,)),
-            _particle_block_spec(block_size, ()),
-            pl.no_block_spec,
-            pl.no_block_spec,
-            pl.no_block_spec,
-        ),
-        out_specs=_particle_block_spec(block_size, channel_shape),
-        name="pmpp_cic_gather_tiled",
+        kernel, out_shape=out_shape, grid=(padded_count // block_size, ), in_specs=(
+            _particle_block_spec(block_size, (3, )), _particle_block_spec(block_size, (3, )),
+            _particle_block_spec(block_size, ()), pl.no_block_spec, pl.no_block_spec, pl.no_block_spec,
+        ), out_specs=_particle_block_spec(block_size, channel_shape), name="pmpp_cic_gather_tiled",
     )
     return call(pmid, disp, valid_mask, offset, cell_arg, mesh)[:particle_count]
 
 
-def pallas_scatter(pmid, disp, val, mesh, *, offset, particle_cell_size, cell_size=None,
-                   global_shape, valid_mask=None):
+def pallas_scatter(pmid, disp, val, mesh, *, offset, particle_cell_size, cell_size=None, global_shape, valid_mask=None):
     """Scatter values into a mesh with a Pallas atomic-add kernel."""
 
     _require_pallas(mesh.dtype)
@@ -498,46 +423,28 @@ def pallas_scatter(pmid, disp, val, mesh, *, offset, particle_cell_size, cell_si
     if val.ndim != 0:
         val = _pad_particles(val, padded_count)
     offset = _offset_array(offset, 3, mesh.dtype)
-    cell_arg = (
-        jnp.asarray(0, dtype=mesh.dtype)
-        if cell_size is None else jnp.asarray(cell_size, dtype=mesh.dtype)
-    )
+    cell_arg = (jnp.asarray(0, dtype=mesh.dtype) if cell_size is None else jnp.asarray(cell_size, dtype=mesh.dtype))
     channel_shape = val.shape[1:] if val.ndim else ()
     kernel = _make_cic_forward_kernel(
-        spatial_shape=mesh.shape[:3],
-        global_shape=global_shape,
-        channel_shape=channel_shape,
-        cell_size_is_explicit=cell_size is not None,
-        cell_dtype=particle_cell_size,
-        scatter=True,
-        block_size=block_size,
+        spatial_shape=mesh.shape[:3], global_shape=global_shape, channel_shape=channel_shape,
+        cell_size_is_explicit=cell_size is not None, cell_dtype=particle_cell_size, scatter=True, block_size=block_size,
         particle_count=particle_count,
     )
     out_shape = jax.ShapeDtypeStruct(mesh.shape, mesh.dtype)
     call = pl.pallas_call(
-        kernel,
-        out_shape=out_shape,
-        grid=(padded_count // block_size,),
-        in_specs=(
-            _particle_block_spec(block_size, (3,)),
-            _particle_block_spec(block_size, (3,)),
-            _particle_block_spec(block_size, ()),
-            pl.no_block_spec if val.ndim == 0 else _particle_block_spec(block_size, val.shape[1:]),
-            pl.no_block_spec,
-            pl.no_block_spec,
-            pl.no_block_spec,
-        ),
-        out_specs=pl.no_block_spec,
-        input_output_aliases={6: 0},
-        name="pmpp_cic_scatter_tiled",
+        kernel, out_shape=out_shape, grid=(padded_count // block_size, ), in_specs=(
+            _particle_block_spec(block_size, (3, )), _particle_block_spec(block_size,
+                                                                          (3, )), _particle_block_spec(block_size, ()),
+            pl.no_block_spec if val.ndim == 0 else _particle_block_spec(block_size, val.shape[1:]), pl.no_block_spec,
+            pl.no_block_spec, pl.no_block_spec,
+        ), out_specs=pl.no_block_spec, input_output_aliases={6: 0}, name="pmpp_cic_scatter_tiled",
     )
     return call(pmid, disp, valid_mask, val, offset, cell_arg, mesh)
 
 
-
-
-def pallas_gather_bwd(pmid, disp, mesh, val_cot, *, offset, particle_cell_size,
-                      cell_size=None, global_shape, valid_mask=None):
+def pallas_gather_bwd(
+    pmid, disp, mesh, val_cot, *, offset, particle_cell_size, cell_size=None, global_shape, valid_mask=None
+):
     """Hand-written CIC gather adjoint: particle gradients plus mesh atomics."""
 
     _require_pallas(mesh.dtype)
@@ -553,49 +460,32 @@ def pallas_gather_bwd(pmid, disp, mesh, val_cot, *, offset, particle_cell_size,
     valid_mask = _valid_particles(valid_mask, particle_count, padded_count)
     val_cot = _pad_particles(val_cot, padded_count)
     offset = _offset_array(offset, 3, mesh.dtype)
-    cell_arg = (
-        jnp.asarray(0, dtype=mesh.dtype)
-        if cell_size is None else jnp.asarray(cell_size, dtype=mesh.dtype)
-    )
+    cell_arg = (jnp.asarray(0, dtype=mesh.dtype) if cell_size is None else jnp.asarray(cell_size, dtype=mesh.dtype))
     channel_shape = mesh.shape[3:]
     kernel = _make_gather_bwd_kernel(
-        spatial_shape=mesh.shape[:3],
-        global_shape=global_shape,
-        channel_shape=channel_shape,
-        cell_size_is_explicit=cell_size is not None,
-        cell_dtype=particle_cell_size,
-        block_size=block_size,
+        spatial_shape=mesh.shape[:3], global_shape=global_shape, channel_shape=channel_shape,
+        cell_size_is_explicit=cell_size is not None, cell_dtype=particle_cell_size, block_size=block_size,
         particle_count=particle_count,
     )
     disp_cot_shape = jax.ShapeDtypeStruct((padded_count, 3), mesh.dtype)
     mesh_cot = jnp.zeros_like(mesh)
     mesh_cot_shape = jax.ShapeDtypeStruct(mesh.shape, mesh.dtype)
     call = pl.pallas_call(
-        kernel,
-        out_shape=(disp_cot_shape, mesh_cot_shape),
-        grid=(padded_count // block_size,),
-        in_specs=(
-            _particle_block_spec(block_size, (3,)),
-            _particle_block_spec(block_size, (3,)),
-            _particle_block_spec(block_size, ()),
-            pl.no_block_spec,
-            _particle_block_spec(block_size, channel_shape),
-            pl.no_block_spec,
-            pl.no_block_spec,
-            pl.no_block_spec,
-        ),
-        out_specs=(_particle_block_spec(block_size, (3,)), pl.no_block_spec),
-        input_output_aliases={7: 1},
+        kernel, out_shape=(disp_cot_shape, mesh_cot_shape), grid=(padded_count // block_size, ), in_specs=(
+            _particle_block_spec(block_size, (3, )), _particle_block_spec(block_size,
+                                                                          (3, )), _particle_block_spec(block_size, ()),
+            pl.no_block_spec, _particle_block_spec(block_size,
+                                                   channel_shape), pl.no_block_spec, pl.no_block_spec, pl.no_block_spec,
+        ), out_specs=(_particle_block_spec(block_size, (3, )), pl.no_block_spec), input_output_aliases={7: 1},
         name="pmpp_cic_gather_bwd_tiled",
     )
-    disp_cot, mesh_cot = call(
-        pmid, disp, valid_mask, mesh, val_cot, offset, cell_arg, mesh_cot
-    )
+    disp_cot, mesh_cot = call(pmid, disp, valid_mask, mesh, val_cot, offset, cell_arg, mesh_cot)
     return disp_cot[:particle_count], mesh_cot
 
 
-def pallas_scatter_bwd(pmid, disp, val, mesh_cot, *, offset, particle_cell_size,
-                       cell_size=None, global_shape, valid_mask=None):
+def pallas_scatter_bwd(
+    pmid, disp, val, mesh_cot, *, offset, particle_cell_size, cell_size=None, global_shape, valid_mask=None
+):
     """Hand-written CIC scatter adjoint: particle/value gradients."""
 
     _require_pallas(mesh_cot.dtype)
@@ -614,47 +504,32 @@ def pallas_scatter_bwd(pmid, disp, val, mesh_cot, *, offset, particle_cell_size,
         val = _pad_particles(val, padded_count)
     offset = _offset_array(offset, 3, mesh_cot.dtype)
     cell_arg = (
-        jnp.asarray(0, dtype=mesh_cot.dtype)
-        if cell_size is None else jnp.asarray(cell_size, dtype=mesh_cot.dtype)
+        jnp.asarray(0, dtype=mesh_cot.dtype) if cell_size is None else jnp.asarray(cell_size, dtype=mesh_cot.dtype)
     )
     channel_shape = val.shape[1:] if not scalar_val else ()
     kernel = _make_scatter_bwd_kernel(
-        spatial_shape=mesh_cot.shape[:3],
-        global_shape=global_shape,
-        channel_shape=channel_shape,
-        cell_size_is_explicit=cell_size is not None,
-        cell_dtype=particle_cell_size,
-        block_size=block_size,
-        particle_count=particle_count,
-        scalar_val=scalar_val,
+        spatial_shape=mesh_cot.shape[:3], global_shape=global_shape, channel_shape=channel_shape,
+        cell_size_is_explicit=cell_size is not None, cell_dtype=particle_cell_size, block_size=block_size,
+        particle_count=particle_count, scalar_val=scalar_val,
     )
     disp_cot_shape = jax.ShapeDtypeStruct((padded_count, 3), mesh_cot.dtype)
     val_cot_shape = (
-        jax.ShapeDtypeStruct((), mesh_cot.dtype)
-        if scalar_val else jax.ShapeDtypeStruct((padded_count,) + channel_shape, mesh_cot.dtype)
+        jax.ShapeDtypeStruct((), mesh_cot.dtype) if scalar_val else jax.ShapeDtypeStruct((padded_count, ) +
+                                                                                         channel_shape, mesh_cot.dtype)
     )
     val_cot = jnp.zeros_like(val) if not scalar_val else jnp.zeros((), dtype=mesh_cot.dtype)
     call = pl.pallas_call(
-        kernel,
-        out_shape=(disp_cot_shape, val_cot_shape),
-        grid=(padded_count // block_size,),
-        in_specs=(
-            _particle_block_spec(block_size, (3,)),
-            _particle_block_spec(block_size, (3,)),
-            _particle_block_spec(block_size, ()),
-            pl.no_block_spec if scalar_val else _particle_block_spec(block_size, channel_shape),
-            pl.no_block_spec,
-            pl.no_block_spec,
-            pl.no_block_spec,
-            pl.no_block_spec,
-        ),
-        out_specs=(_particle_block_spec(block_size, (3,)), pl.no_block_spec if scalar_val else _particle_block_spec(block_size, channel_shape)),
-        input_output_aliases={7: 1},
-        name="pmpp_cic_scatter_bwd_tiled",
+        kernel, out_shape=(disp_cot_shape, val_cot_shape), grid=(padded_count // block_size, ), in_specs=(
+            _particle_block_spec(block_size, (3, )), _particle_block_spec(block_size,
+                                                                          (3, )), _particle_block_spec(block_size, ()),
+            pl.no_block_spec if scalar_val else _particle_block_spec(block_size, channel_shape), pl.no_block_spec,
+            pl.no_block_spec, pl.no_block_spec, pl.no_block_spec,
+        ), out_specs=(
+            _particle_block_spec(block_size, (3, )),
+            pl.no_block_spec if scalar_val else _particle_block_spec(block_size, channel_shape)
+        ), input_output_aliases={7: 1}, name="pmpp_cic_scatter_bwd_tiled",
     )
-    disp_cot, val_cot = call(
-        pmid, disp, valid_mask, val, offset, cell_arg, mesh_cot, val_cot
-    )
+    disp_cot, val_cot = call(pmid, disp, valid_mask, val, offset, cell_arg, mesh_cot, val_cot)
     if scalar_val:
         return disp_cot[:particle_count], val_cot
     return disp_cot[:particle_count], val_cot[:particle_count]

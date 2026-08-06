@@ -26,7 +26,6 @@ try:
 except ImportError:
     pytest = None
 
-
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
 
 
@@ -38,12 +37,7 @@ def _particle_slot_mapping(ptcl_pmwd, conf):
     for i in range(conf.num_devices):
         gpu_id = conf.devices_index[i]
         _, _, pid_vel, _, unused_index, _ = Particles.distribute_ptcl_pos(
-            ptcl_pmwd.pmid,
-            ptcl_pmwd.disp,
-            pid_payload,
-            None,
-            conf,
-            gpu_id,
+            ptcl_pmwd.pmid, ptcl_pmwd.disp, pid_payload, None, conf, gpu_id,
         )
         pid_slots.append(np.asarray(pid_vel[:, 0]))
         unused_slots.append(np.asarray(unused_index))
@@ -79,29 +73,17 @@ def test_gravity_matches_pmwd_for_forward_and_gradients():
         raise SystemExit("gravity gradient test requires at least 1 GPU")
 
     conf = init_conf(
-        num_ptcl=4,
-        mesh_shape=1,
-        box_size=100.0,
-        num_devices=2,
-        max_ptcl_per_slice=1.8,
-        max_share_ptcl=20000,
-        max_share_gather_ptcl=50000,
-        multigpu_mode="particle_halo",
+        num_ptcl=4, mesh_shape=1, box_size=100.0, num_devices=2, max_ptcl_per_slice=1.8, max_share_ptcl=20000,
+        max_share_gather_ptcl=50000, multigpu_mode="particle_halo",
     )
     conf_pmwd = ConfigurationPMWD(
-        ptcl_spacing=conf.ptcl_spacing,
-        ptcl_grid_shape=conf.ptcl_grid_shape,
-        mesh_shape=conf.mesh_shape,
-        a_start=conf.a_start,
-        a_nbody_maxstep=conf.a_nbody_maxstep,
+        ptcl_spacing=conf.ptcl_spacing, ptcl_grid_shape=conf.ptcl_grid_shape, mesh_shape=conf.mesh_shape,
+        a_start=conf.a_start, a_nbody_maxstep=conf.a_nbody_maxstep,
     )
 
     ptcl_pmwd = ParticlesPMWD.gen_grid(conf_pmwd)
     disp = jax.random.uniform(
-        jax.random.PRNGKey(42),
-        shape=ptcl_pmwd.disp.shape,
-        minval=-0.45 * conf.cell_size,
-        maxval=0.45 * conf.cell_size,
+        jax.random.PRNGKey(42), shape=ptcl_pmwd.disp.shape, minval=-0.45 * conf.cell_size, maxval=0.45 * conf.cell_size,
     )
     ptcl_pmwd = ptcl_pmwd.replace(disp=disp.astype(conf.float_dtype))
     ptcl_pmpp = Particles.from_ptcl(ptcl_pmwd, conf)
@@ -135,21 +117,14 @@ def test_gravity_matches_pmwd_for_forward_and_gradients():
     grad_disp_pmpp_fn = jax.jit(jax.grad(disp_loss_pmpp_unique))
     grad_disp_pmwd = np.asarray(jax.device_get(grad_disp_pmwd_fn(ptcl_pmwd.disp)))
     grad_disp_pmpp_slots = np.asarray(jax.device_get(grad_disp_pmpp_fn(ptcl_pmpp.disp)))
-    grad_disp_pmpp = _sum_duplicate_slot_gradients(
-        grad_disp_pmpp_slots,
-        pid_slots,
-        valid_slots,
-        conf.ptcl_num,
-    )
+    grad_disp_pmpp = _sum_duplicate_slot_gradients(grad_disp_pmpp_slots, pid_slots, valid_slots, conf.ptcl_num, )
     assert np.allclose(grad_disp_pmpp, grad_disp_pmwd, atol=1e-6, rtol=1e-6)
 
 
 if pytest is not None:
     test_gravity_matches_pmwd_for_forward_and_gradients = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason="gravity gradient test requires at least 1 GPU",
+        GPU_COUNT < 1, reason="gravity gradient test requires at least 1 GPU",
     )(test_gravity_matches_pmwd_for_forward_and_gradients)
-
 
 if __name__ == "__main__":
     test_gravity_matches_pmwd_for_forward_and_gradients()

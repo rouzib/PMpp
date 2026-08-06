@@ -53,13 +53,16 @@ def white_noise(seed, conf, real=False, unit_abs=False):
 def _safe_sqrt(x):
     return jnp.sqrt(x)
 
+
 def _safe_sqrt_fwd(x):
     y = _safe_sqrt(x)
     return y, y
 
+
 def _safe_sqrt_bwd(y, y_cot):
     x_cot = jnp.where(y != 0, 0.5 / y * y_cot, 0)
-    return (x_cot,)
+    return (x_cot, )
+
 
 _safe_sqrt.defvjp(_safe_sqrt_fwd, _safe_sqrt_bwd)
 

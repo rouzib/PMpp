@@ -24,16 +24,9 @@ except ImportError:
 def _init_conf(num_ptcl, devices):
     box_size = 100.0
     return Configuration(
-        ptcl_spacing=box_size / num_ptcl,
-        ptcl_grid_shape=(num_ptcl,) * 3,
-        mesh_shape=1,
-        compute_mesh=create_compute_mesh(devices),
-        max_ptcl_per_slice=int(num_ptcl**3 / max(1, len(devices)) * 1.6),
-        max_share_ptcl=4000,
-        max_share_gather_ptcl=12000,
-        a_start=1 / 60,
-        a_stop=1 / 30,
-        a_nbody_maxstep=1 / 60,
+        ptcl_spacing=box_size / num_ptcl, ptcl_grid_shape=(num_ptcl, ) * 3, mesh_shape=1,
+        compute_mesh=create_compute_mesh(devices), max_ptcl_per_slice=int(num_ptcl**3 / max(1, len(devices)) * 1.6),
+        max_share_ptcl=4000, max_share_gather_ptcl=12000, a_start=1 / 60, a_stop=1 / 30, a_nbody_maxstep=1 / 60,
     )
 
 
@@ -58,7 +51,7 @@ def _extract_shared_block(fine_modes, coarse_shape, fine_shape):
 
 
 def test_nested_white_noise_matches_shared_low_k_modes():
-    devices = jax.devices()[: min(2, len(jax.devices()))]
+    devices = jax.devices()[:min(2, len(jax.devices()))]
     if not devices:
         if pytest is not None:
             pytest.skip("nested white noise test requires at least one JAX device")

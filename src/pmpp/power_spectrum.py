@@ -13,13 +13,7 @@ from jax.sharding import PartitionSpec as P
 from .scatter import scatter
 from .utils import AXIS_NAME
 
-_MAS_POWER = {
-    None: 0,
-    "NGP": 1,
-    "CIC": 2,
-    "TSC": 3,
-    "PCS": 4,
-}
+_MAS_POWER = {None: 0, "NGP": 1, "CIC": 2, "TSC": 3, "PCS": 4, }
 
 
 def _normalize_mas(mas: str | None) -> str | None:
@@ -64,7 +58,7 @@ def _shell_statistics(shape: tuple[int, int, int], cell_size: float):
     my = np.fft.fftfreq(shape[1]) * shape[1]
     mz = np.fft.rfftfreq(shape[2]) * shape[2]
     mode_x, mode_y, mode_z = np.meshgrid(mx, my, mz, indexing="ij")
-    mode_mag = np.sqrt(mode_x ** 2 + mode_y ** 2 + mode_z ** 2)
+    mode_mag = np.sqrt(mode_x**2 + mode_y**2 + mode_z**2)
     shell = np.floor(mode_mag + 1e-6).astype(np.int32)
 
     multiplicity = np.full(shell.shape, 2, dtype=np.int32)
@@ -74,11 +68,7 @@ def _shell_statistics(shape: tuple[int, int, int], cell_size: float):
 
     num_shells = int(shell.max()) + 1
     nmodes = np.bincount(shell.reshape(-1), weights=multiplicity.reshape(-1), minlength=num_shells).astype(np.int32)
-    k_shell = np.bincount(
-        shell.reshape(-1),
-        weights=(mode_mag * multiplicity).reshape(-1),
-        minlength=num_shells,
-    )
+    k_shell = np.bincount(shell.reshape(-1), weights=(mode_mag * multiplicity).reshape(-1), minlength=num_shells, )
     valid = np.maximum(nmodes, 1)
     k_shell = (k_shell / valid) * k_fundamental
     return k_shell[1:], nmodes[1:]
@@ -88,8 +78,8 @@ def _shell_vectors(conf):
     """Return cached shell-center and mode-count arrays on the active backend."""
     k_shell, nmodes = _shell_statistics(tuple(int(s) for s in conf.mesh_shape), float(conf.cell_size))
     return (
-        lax.stop_gradient(jnp.asarray(k_shell, dtype=conf.float_dtype)),
-        lax.stop_gradient(jnp.asarray(nmodes, dtype=jnp.int32)),
+        lax.stop_gradient(jnp.asarray(k_shell,
+                                      dtype=conf.float_dtype)), lax.stop_gradient(jnp.asarray(nmodes, dtype=jnp.int32)),
     )
 
 
@@ -99,18 +89,8 @@ def _fft_mode_numbers(size: int, *, real_axis: bool, dtype):
     if real_axis:
         return jnp.arange(half + 1, dtype=dtype)
     if size % 2 == 0:
-        return jnp.concatenate(
-            (
-                jnp.arange(0, half, dtype=dtype),
-                jnp.arange(-half, 0, dtype=dtype),
-            )
-        )
-    return jnp.concatenate(
-        (
-            jnp.arange(0, half + 1, dtype=dtype),
-            jnp.arange(-half, 0, dtype=dtype),
-        )
-    )
+        return jnp.concatenate((jnp.arange(0, half, dtype=dtype), jnp.arange(-half, 0, dtype=dtype), ))
+    return jnp.concatenate((jnp.arange(0, half + 1, dtype=dtype), jnp.arange(-half, 0, dtype=dtype), ))
 
 
 def _mode_numbers_transposed(conf):
@@ -134,15 +114,14 @@ def _mas_power_deconvolution(mode_x, mode_y, mode_z, conf, mas_power: int):
     sz = jnp.sinc(mode_z[None, None, :].astype(conf.float_dtype) / conf.mesh_shape[2])
 
     window = sx * sy * sz
-    return window ** (-2 * mas_power)
+    return window**(-2 * mas_power)
 
 
 def _shell_reduce_local(spectral, mode_x, mode_y, mode_z, conf, mas_power: int, num_shells: int):
     """Accumulate spectral power into integer-radius shells on one local shard."""
     mode_sq = (
-        mode_x[:, None, None].astype(jnp.int64) ** 2
-        + mode_y[None, :, None].astype(jnp.int64) ** 2
-        + mode_z[None, None, :].astype(jnp.int64) ** 2
+        mode_x[:, None, None].astype(jnp.int64)**2 + mode_y[None, :, None].astype(jnp.int64)**2 +
+        mode_z[None, None, :].astype(jnp.int64)**2
     )
     mode_mag = jnp.sqrt(mode_sq.astype(conf.float_dtype))
     shell = jnp.floor(jnp.sqrt(mode_sq.astype(jnp.float64)) + 1e-9).astype(jnp.int32)
@@ -153,7 +132,7 @@ def _shell_reduce_local(spectral, mode_x, mode_y, mode_z, conf, mas_power: int, 
     if conf.mesh_shape[-1] % 2 == 0:
         multiplicity = multiplicity.at[..., -1].set(1)
 
-    power = (spectral.real ** 2 + spectral.imag ** 2).astype(conf.float_dtype)
+    power = (spectral.real**2 + spectral.imag**2).astype(conf.float_dtype)
     deconv = _mas_power_deconvolution(mode_x, mode_y, mode_z, conf, mas_power)
     if deconv is not None:
         power = power * deconv.astype(conf.float_dtype)
@@ -167,9 +146,8 @@ def _shell_reduce_local(spectral, mode_x, mode_y, mode_z, conf, mas_power: int, 
 def _shell_reduce_cross_local(spectral_a, spectral_b, mode_x, mode_y, mode_z, conf, mas_power: int, num_shells: int):
     """Accumulate auto and cross power into integer-radius shells on one shard."""
     mode_sq = (
-        mode_x[:, None, None].astype(jnp.int64) ** 2
-        + mode_y[None, :, None].astype(jnp.int64) ** 2
-        + mode_z[None, None, :].astype(jnp.int64) ** 2
+        mode_x[:, None, None].astype(jnp.int64)**2 + mode_y[None, :, None].astype(jnp.int64)**2 +
+        mode_z[None, None, :].astype(jnp.int64)**2
     )
     shell = jnp.floor(jnp.sqrt(mode_sq.astype(jnp.float64)) + 1e-9).astype(jnp.int32)
     shell = jnp.clip(shell, 0, num_shells - 1)
@@ -179,8 +157,8 @@ def _shell_reduce_cross_local(spectral_a, spectral_b, mode_x, mode_y, mode_z, co
     if conf.mesh_shape[-1] % 2 == 0:
         multiplicity = multiplicity.at[..., -1].set(1)
 
-    power_a = (spectral_a.real ** 2 + spectral_a.imag ** 2).astype(conf.float_dtype)
-    power_b = (spectral_b.real ** 2 + spectral_b.imag ** 2).astype(conf.float_dtype)
+    power_a = (spectral_a.real**2 + spectral_a.imag**2).astype(conf.float_dtype)
+    power_b = (spectral_b.real**2 + spectral_b.imag**2).astype(conf.float_dtype)
     power_cross = (spectral_a * jnp.conj(spectral_b)).real.astype(conf.float_dtype)
     deconv = _mas_power_deconvolution(mode_x, mode_y, mode_z, conf, mas_power)
     if deconv is not None:
@@ -205,18 +183,8 @@ def _shell_reduce_transposed(spectral, conf, mas_power: int, num_shells: int):
         return _shell_reduce_local(spectral, mode_x, mode_y, mode_z, conf, mas_power, num_shells)
 
     @partial(
-        shard_map,
-        mesh=conf.compute_mesh,
-        in_specs=(
-            P(None, AXIS_NAME, None),
-            P(None),
-            P(AXIS_NAME),
-            P(None),
-        ),
-        out_specs=(
-            P(None),
-        ),
-        check_rep=False,
+        shard_map, mesh=conf.compute_mesh, in_specs=(P(None, AXIS_NAME, None), P(None), P(AXIS_NAME), P(None),
+                                                     ), out_specs=(P(None), ), check_rep=False,
     )
     def local_reduce(spectral_local, mode_x_rep, mode_y_local, mode_z_rep):
         """Accumulate local spectral shells before cross-device reduction.
@@ -233,17 +201,11 @@ def _shell_reduce_transposed(spectral, conf, mas_power: int, num_shells: int):
             Replicated z-axis shell indices.
         """
         p_sum_local = _shell_reduce_local(
-            spectral_local,
-            mode_x_rep,
-            mode_y_local,
-            mode_z_rep,
-            conf,
-            mas_power,
-            num_shells,
+            spectral_local, mode_x_rep, mode_y_local, mode_z_rep, conf, mas_power, num_shells,
         )
-        return (lax.psum(p_sum_local, AXIS_NAME),)
+        return (lax.psum(p_sum_local, AXIS_NAME), )
 
-    (p_sum,) = local_reduce(spectral, mode_x, mode_y, mode_z)
+    (p_sum, ) = local_reduce(spectral, mode_x, mode_y, mode_z)
     return p_sum
 
 
@@ -254,21 +216,10 @@ def _shell_reduce_cross_transposed(spectral_a, spectral_b, conf, mas_power: int,
         return _shell_reduce_cross_local(spectral_a, spectral_b, mode_x, mode_y, mode_z, conf, mas_power, num_shells)
 
     @partial(
-        shard_map,
-        mesh=conf.compute_mesh,
-        in_specs=(
-            P(None, AXIS_NAME, None),
-            P(None, AXIS_NAME, None),
-            P(None),
-            P(AXIS_NAME),
-            P(None),
-        ),
-        out_specs=(
-            P(None),
-            P(None),
-            P(None),
-        ),
-        check_rep=False,
+        shard_map, mesh=conf.compute_mesh,
+        in_specs=(P(None, AXIS_NAME, None), P(None, AXIS_NAME, None), P(None), P(AXIS_NAME), P(None),
+                  ), out_specs=(P(None), P(None), P(None),
+                                ), check_rep=False,
     )
     def local_reduce(spectral_a_local, spectral_b_local, mode_x_rep, mode_y_local, mode_z_rep):
         """Accumulate local spectral shells before cross-device reduction.
@@ -287,19 +238,11 @@ def _shell_reduce_cross_transposed(spectral_a, spectral_b, conf, mas_power: int,
             Replicated z-axis shell indices.
         """
         p_a_sum_local, p_b_sum_local, p_cross_sum_local = _shell_reduce_cross_local(
-            spectral_a_local,
-            spectral_b_local,
-            mode_x_rep,
-            mode_y_local,
-            mode_z_rep,
-            conf,
-            mas_power,
-            num_shells,
+            spectral_a_local, spectral_b_local, mode_x_rep, mode_y_local, mode_z_rep, conf, mas_power, num_shells,
         )
         return (
-            lax.psum(p_a_sum_local, AXIS_NAME),
-            lax.psum(p_b_sum_local, AXIS_NAME),
-            lax.psum(p_cross_sum_local, AXIS_NAME),
+            lax.psum(p_a_sum_local, AXIS_NAME), lax.psum(p_b_sum_local,
+                                                         AXIS_NAME), lax.psum(p_cross_sum_local, AXIS_NAME),
         )
 
     return local_reduce(spectral_a, spectral_b, mode_x, mode_y, mode_z)
@@ -309,7 +252,7 @@ def _finalize_shell_averages(p_sum, conf):
     """Convert shell power sums into physical ``P(k)`` normalization."""
     k, nmodes = _shell_vectors(conf)
     pk = p_sum[1:] / nmodes.astype(conf.float_dtype)
-    pk = pk * (conf.cell_size ** 3 / conf.mesh_size)
+    pk = pk * (conf.cell_size**3 / conf.mesh_size)
     return k, pk.astype(conf.float_dtype), nmodes
 
 
@@ -397,11 +340,7 @@ def delta_to_cross_correlation(delta_a, delta_b, conf, mas: str | None = "CIC", 
     spectral_b = _spectral_delta(jnp.asarray(delta_b, dtype=conf.float_dtype), conf)
     num_shells = _max_shell_index(conf) + 1
     p_a_sum, p_b_sum, p_cross_sum = _shell_reduce_cross_transposed(
-        spectral_a,
-        spectral_b,
-        conf,
-        _MAS_POWER[mas],
-        num_shells,
+        spectral_a, spectral_b, conf, _MAS_POWER[mas], num_shells,
     )
     return _finalize_cross_shell_averages(p_a_sum, p_b_sum, p_cross_sum, conf, eps)
 

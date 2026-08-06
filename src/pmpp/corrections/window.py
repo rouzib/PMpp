@@ -21,21 +21,10 @@ def _bounded_sigmoid(raw, lo, hi, dtype):
 
 
 @partial(
-    pytree_dataclass,
-    aux_fields=(
-        "assignment_order",
-        "windows",
-        "alpha",
-        "max_gain",
-        "taper_start",
-        "taper_stop",
-        "interlacing",
-        "green_kernel",
-        "gradient_kernel",
-        "dtype",
-    ),
-    frozen=True,
-    eq=False,
+    pytree_dataclass, aux_fields=(
+        "assignment_order", "windows", "alpha", "max_gain", "taper_start", "taper_stop", "interlacing", "green_kernel",
+        "gradient_kernel", "dtype",
+    ), frozen=True, eq=False,
 )
 class PMWindowCompensationCorrection:
     """Analytic Fourier-space compensation for PM assignment smoothing.
@@ -128,23 +117,10 @@ class PMWindowCompensationCorrection:
 
 
 @partial(
-    pytree_dataclass,
-    aux_fields=(
-        "assignment_order",
-        "windows",
-        "alpha_min",
-        "alpha_max",
-        "max_gain_min",
-        "max_gain_max",
-        "taper_start",
-        "taper_stop",
-        "interlacing",
-        "green_kernel",
-        "gradient_kernel",
-        "dtype",
-    ),
-    frozen=True,
-    eq=False,
+    pytree_dataclass, aux_fields=(
+        "assignment_order", "windows", "alpha_min", "alpha_max", "max_gain_min", "max_gain_max", "taper_start",
+        "taper_stop", "interlacing", "green_kernel", "gradient_kernel", "dtype",
+    ), frozen=True, eq=False,
 )
 class TrainablePMWindowCompensationCorrection:
     """Trainable bounded PM assignment-window compensation.
@@ -190,16 +166,14 @@ def init_pm_window_compensation_correction(dtype=jnp.float32, **kwargs):
     kwargs
         Extra keyword options forwarded to the selected correction initializer."""
     return PMWindowCompensationCorrection(
-        assignment_order=kwargs.get("assignment_order", 2),
-        windows=kwargs.get("windows", 2),
-        alpha=kwargs.get("alpha", kwargs.get("window_alpha", 0.48)),
-        max_gain=kwargs.get("max_gain", kwargs.get("window_max_gain", 4.0)),
+        assignment_order=kwargs.get("assignment_order", 2), windows=kwargs.get("windows", 2),
+        alpha=kwargs.get("alpha",
+                         kwargs.get("window_alpha",
+                                    0.48)), max_gain=kwargs.get("max_gain", kwargs.get("window_max_gain", 4.0)),
         taper_start=kwargs.get("taper_start", kwargs.get("window_taper_start", 0.75)),
         taper_stop=kwargs.get("taper_stop", kwargs.get("window_taper_stop", 1.0)),
-        interlacing=kwargs.get("interlacing", False),
-        green_kernel=kwargs.get("green_kernel", "discrete_laplacian"),
-        gradient_kernel=kwargs.get("gradient_kernel", kwargs.get("window_gradient_kernel", "spectral")),
-        dtype=dtype,
+        interlacing=kwargs.get("interlacing", False), green_kernel=kwargs.get("green_kernel", "discrete_laplacian"),
+        gradient_kernel=kwargs.get("gradient_kernel", kwargs.get("window_gradient_kernel", "spectral")), dtype=dtype,
     )
 
 
@@ -222,20 +196,14 @@ def init_trainable_pm_window_compensation_correction(dtype=jnp.float32, **kwargs
     alpha_unit = (float(alpha) - float(alpha_min)) / (float(alpha_max) - float(alpha_min))
     max_gain_unit = (float(max_gain) - float(max_gain_min)) / (float(max_gain_max) - float(max_gain_min))
     return TrainablePMWindowCompensationCorrection(
-        raw_alpha=jnp.asarray(_logit(alpha_unit), dtype=dtype),
-        raw_max_gain=jnp.asarray(_logit(max_gain_unit), dtype=dtype),
-        assignment_order=kwargs.get("assignment_order", 2),
-        windows=kwargs.get("windows", 2),
-        alpha_min=alpha_min,
-        alpha_max=alpha_max,
-        max_gain_min=max_gain_min,
-        max_gain_max=max_gain_max,
+        raw_alpha=jnp.asarray(_logit(alpha_unit),
+                              dtype=dtype), raw_max_gain=jnp.asarray(_logit(max_gain_unit), dtype=dtype),
+        assignment_order=kwargs.get("assignment_order", 2), windows=kwargs.get("windows", 2), alpha_min=alpha_min,
+        alpha_max=alpha_max, max_gain_min=max_gain_min, max_gain_max=max_gain_max,
         taper_start=kwargs.get("taper_start", kwargs.get("window_taper_start", 0.75)),
         taper_stop=kwargs.get("taper_stop", kwargs.get("window_taper_stop", 1.0)),
-        interlacing=kwargs.get("interlacing", False),
-        green_kernel=kwargs.get("green_kernel", "discrete_laplacian"),
-        gradient_kernel=kwargs.get("gradient_kernel", kwargs.get("window_gradient_kernel", "spectral")),
-        dtype=dtype,
+        interlacing=kwargs.get("interlacing", False), green_kernel=kwargs.get("green_kernel", "discrete_laplacian"),
+        gradient_kernel=kwargs.get("gradient_kernel", kwargs.get("window_gradient_kernel", "spectral")), dtype=dtype,
     )
 
 
@@ -249,10 +217,7 @@ def pm_window_parameters(correction):
     if isinstance(correction, TrainablePMWindowCompensationCorrection):
         alpha = _bounded_sigmoid(correction.raw_alpha, correction.alpha_min, correction.alpha_max, correction.dtype)
         max_gain = _bounded_sigmoid(
-            correction.raw_max_gain,
-            correction.max_gain_min,
-            correction.max_gain_max,
-            correction.dtype,
+            correction.raw_max_gain, correction.max_gain_min, correction.max_gain_max, correction.dtype,
         )
         return alpha, max_gain
     return (
@@ -281,7 +246,7 @@ def evaluate_pm_window_compensation(correction, conf):
     base_window = jnp.maximum(jnp.abs(sx * sy * sz), eps)
     alpha, max_gain = pm_window_parameters(correction)
     exponent = correction.assignment_order * correction.windows * alpha
-    gain = base_window ** (-jnp.asarray(exponent, dtype=correction.dtype))
+    gain = base_window**(-jnp.asarray(exponent, dtype=correction.dtype))
     if max_gain is not None:
         gain = jnp.minimum(gain, max_gain)
 

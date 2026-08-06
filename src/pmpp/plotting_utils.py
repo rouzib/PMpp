@@ -159,9 +159,7 @@ def plot_particle_bins_callback(pos, mask, nMesh, title_idx=None):
 
     # Use io_callback with JAX-compatible types only
     io_callback(
-        lambda pos, nMesh, idx, mask: plot_particle_bins(pos, nMesh, idx, mask),
-        (),
-        pos, nMesh, title_idx, mask
+        lambda pos, nMesh, idx, mask: plot_particle_bins(pos, nMesh, idx, mask), (), pos, nMesh, title_idx, mask
     )
 
 

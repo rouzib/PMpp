@@ -102,8 +102,8 @@ def gadget_velocity_to_pmpp(vel, redshift):
 
 def _infer_grid_size(num_particles):
     """Infer the side length of a cubic Lagrangian particle grid."""
-    grid_size = round(num_particles ** (1 / 3))
-    if grid_size ** 3 != num_particles:
+    grid_size = round(num_particles**(1 / 3))
+    if grid_size**3 != num_particles:
         raise ValueError(f"Expected a cubic particle grid, got {num_particles} particles.")
     return grid_size
 
@@ -233,16 +233,11 @@ def load_camels_pair(base_dir):
         omega_b = PLANCK18_OMEGA_B
 
     metadata = CamelsMetadata(
-        box_size=float(snapshot["BoxSize"]),
-        omega_m=float(params.get("Omega", snapshot["Omega_m"])),
-        omega_l=float(params.get("OmegaLambda", snapshot["Omega_l"])),
-        omega_b=omega_b,
-        h=float(params.get("HubbleParam", 0.7)),
-        sigma8=float(params.get("Sigma8", 0.8)),
-        n_s=float(params.get("PrimordialIndex", 0.96)),
-        a_start=1.0 / (1.0 + float(params.get("Redshift", 127.0))),
-        redshift=float(snapshot["redshift"]),
-        grid_size=grid_size,
+        box_size=float(snapshot["BoxSize"]), omega_m=float(params.get("Omega", snapshot["Omega_m"])),
+        omega_l=float(params.get("OmegaLambda", snapshot["Omega_l"])), omega_b=omega_b,
+        h=float(params.get("HubbleParam", 0.7)), sigma8=float(params.get("Sigma8", 0.8)),
+        n_s=float(params.get("PrimordialIndex", 0.96)), a_start=1.0 / (1.0 + float(params.get("Redshift", 127.0))),
+        redshift=float(snapshot["redshift"]), grid_size=grid_size,
     )
 
     return CamelsParticlePair(
@@ -278,10 +273,8 @@ def _reshape_on_lagrangian_grid(pair: CamelsParticlePair):
 
     reshape = (n, n, n, 3)
     return (
-        pair.ic_pos[order].reshape(reshape),
-        pair.ic_vel[order].reshape(reshape),
-        pair.final_pos[order].reshape(reshape),
-        pair.final_vel[order].reshape(reshape),
+        pair.ic_pos[order].reshape(reshape), pair.ic_vel[order].reshape(reshape),
+        pair.final_pos[order].reshape(reshape), pair.final_vel[order].reshape(reshape),
     )
 
 
@@ -337,15 +330,13 @@ def coarsen_camels_pair(pair: CamelsParticlePair, factor: int):
     coarse_final_pos = periodic_wrap(coarse_anchor + coarse_final_disp, pair.metadata.box_size)
     coarse_final_vel = _block_mean(final_vel_grid, factor)
 
-    coarse_ids = np.arange(coarse_n ** 3, dtype=np.int64)
+    coarse_ids = np.arange(coarse_n**3, dtype=np.int64)
     metadata = replace(pair.metadata, grid_size=coarse_n)
     return CamelsParticlePair(
-        ic_pos=coarse_ic_pos.reshape((-1, 3)).astype(np.float32),
-        ic_vel=coarse_ic_vel.reshape((-1, 3)).astype(np.float32),
-        final_pos=coarse_final_pos.reshape((-1, 3)).astype(np.float32),
-        final_vel=coarse_final_vel.reshape((-1, 3)).astype(np.float32),
-        ids=coarse_ids,
-        metadata=metadata,
+        ic_pos=coarse_ic_pos.reshape((-1, 3)).astype(np.float32), ic_vel=coarse_ic_vel.reshape(
+            (-1, 3)
+        ).astype(np.float32), final_pos=coarse_final_pos.reshape((-1, 3)).astype(np.float32),
+        final_vel=coarse_final_vel.reshape((-1, 3)).astype(np.float32), ids=coarse_ids, metadata=metadata,
     )
 
 

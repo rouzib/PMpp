@@ -50,13 +50,11 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
     if aux_fields is None:
         aux_fields = ()
     elif isinstance(aux_fields, str):
-        aux_fields = (aux_fields,)
+        aux_fields = (aux_fields, )
     elif aux_fields is Ellipsis:
         aux_fields = [field.name for field in dataclasses.fields(cls)]
-    aux_data_names = [field.name for field in dataclasses.fields(cls)
-                      if field.name in aux_fields]
-    children_names = [field.name for field in dataclasses.fields(cls)
-                      if field.name not in aux_fields]
+    aux_data_names = [field.name for field in dataclasses.fields(cls) if field.name in aux_fields]
+    children_names = [field.name for field in dataclasses.fields(cls) if field.name not in aux_fields]
 
     if aux_invert:
         aux_data_names, children_names = children_names, aux_data_names
@@ -94,8 +92,7 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
         return tuple(obj.children()), tuple(obj.aux_data())
 
     def tree_unflatten(aux_data, children):
-        return cls(**dict(zip(children_names, children)),
-                   **dict(zip(aux_data_names, aux_data)))
+        return cls(**dict(zip(children_names, children)), **dict(zip(aux_data_names, aux_data)))
 
     register_pytree_node(cls, tree_flatten, tree_unflatten)
 
@@ -109,6 +106,7 @@ def pytree_dataclass(cls, aux_fields=None, aux_invert=False, **kwargs):
             https://github.com/google/jax/issues/10238
 
         """
+
         def leaves_all(is_placeholder, tree):
             # similar to tree_all(tree_map(is_placeholder, tree))
             return all(is_placeholder(x) for x in tree_leaves(tree))

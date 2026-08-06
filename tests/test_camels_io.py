@@ -17,22 +17,10 @@ def test_coarsen_camels_pair_preserves_periodic_shift():
     final_vel = ic_vel + 1.0
 
     pair = CamelsParticlePair(
-        ic_pos=ic_pos,
-        ic_vel=ic_vel,
-        final_pos=final_pos,
-        final_vel=final_vel,
-        ids=np.arange(grid_size ** 3, dtype=np.int64),
-        metadata=CamelsMetadata(
-            box_size=box_size,
-            omega_m=0.3,
-            omega_l=0.7,
-            omega_b=0.0,
-            h=0.67,
-            sigma8=0.8,
-            n_s=1.0,
-            a_start=1 / 128,
-            redshift=0.0,
-            grid_size=grid_size,
+        ic_pos=ic_pos, ic_vel=ic_vel, final_pos=final_pos, final_vel=final_vel,
+        ids=np.arange(grid_size**3, dtype=np.int64), metadata=CamelsMetadata(
+            box_size=box_size, omega_m=0.3, omega_l=0.7, omega_b=0.0, h=0.67, sigma8=0.8, n_s=1.0, a_start=1 / 128,
+            redshift=0.0, grid_size=grid_size,
         ),
     )
 

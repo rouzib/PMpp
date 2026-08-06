@@ -40,6 +40,9 @@ dependencies = [
   "mcfit>=0.0.18",
 ]
 
+[project.scripts]
+pmpp-build-cuda-routing = "pmpp.build_cuda_routing:main"
+
 [project.optional-dependencies]
 docs = [
   "sphinx>=7.4,<9",
@@ -55,8 +58,17 @@ dev = [
   "build",
   "twine",
   "pytest",
-  "Pylians"
+  "Pylians",
+  "yapf==0.43.0",
 ]
+
+[tool.yapf]
+based_on_style = "pep8"
+column_limit = 120
+disable_ending_comma_heuristic = true
+split_before_named_assigns = false
+dedent_closing_brackets = true
+coalesce_brackets = true
 
 [project.urls]
 Homepage = "https://github.com/rouzib/PMpp"
@@ -66,6 +78,11 @@ Issues = "https://github.com/rouzib/PMpp/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pmpp", "benchmarks"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"cuda/CMakeLists.txt" = "pmpp/cuda/CMakeLists.txt"
+"cuda/build_cuda_routing.py" = "pmpp/cuda/build_cuda_routing.py"
+"cuda/route_kernels.cu" = "pmpp/cuda/route_kernels.cu"
 
 [tool.hatch.build.targets.sdist]
 include = [

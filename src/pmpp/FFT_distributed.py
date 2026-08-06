@@ -54,8 +54,9 @@ def split_array_for_gpus(array: np.ndarray, num_gpus: int, axis: int = 1) -> Arr
     return jnp.array(jnp.array_split(array, num_gpus, axis=axis))
 
 
-def distribute_array_on_gpus_old(array: np.ndarray, compute_mesh: Mesh, partition: P,
-                                 axis_name: str = "gpus") -> jnp.ndarray:
+def distribute_array_on_gpus_old(
+    array: np.ndarray, compute_mesh: Mesh, partition: P, axis_name: str = "gpus"
+) -> jnp.ndarray:
     """Distribute an array with the original host-splitting implementation.
 
     Parameters
@@ -87,9 +88,9 @@ def distribute_array_on_gpus_old(array: np.ndarray, compute_mesh: Mesh, partitio
     with compute_mesh:
         # Distribute the array parts across different GPUs
         array_parts_device = [jax.device_put(part, device) for part, device in zip(array_parts, compute_mesh.devices)]
-        array_distributed = jax.make_array_from_single_device_arrays(array.shape,
-                                                                     NamedSharding(compute_mesh, partition),
-                                                                     array_parts_device)
+        array_distributed = jax.make_array_from_single_device_arrays(
+            array.shape, NamedSharding(compute_mesh, partition), array_parts_device
+        )
         return array_distributed
 
 
@@ -111,8 +112,9 @@ def distribute_array_on_gpus(array: np.ndarray, compute_mesh: Mesh, partition: P
         Sharded array placed on ``compute_mesh``.
     """
     sharding = NamedSharding(compute_mesh, partition)
-    array_parts_device = [jax.device_put(array[i], device=d) for d, i in
-                          sharding.addressable_devices_indices_map(array.shape).items()]
+    array_parts_device = [
+        jax.device_put(array[i], device=d) for d, i in sharding.addressable_devices_indices_map(array.shape).items()
+    ]
     array_distributed = jax.make_array_from_single_device_arrays(array.shape, sharding, array_parts_device)
     return array_distributed
 
@@ -171,8 +173,8 @@ def create_sharded_fft(basic_fft: Callable, partition_spec: P, global_mesh: Mesh
         result_shape
             Abstract result shape supplied by JAX custom partitioning."""
         arg_shardings = tree.tree_map(lambda x: x.sharding, arg_shapes)
-        return mesh, basic_fft, supported_sharding(arg_shardings[0], arg_shapes[0]), (
-            supported_sharding(arg_shardings[0], arg_shapes[0]),)
+        return mesh, basic_fft, supported_sharding(arg_shardings[0], arg_shapes[0]
+                                                   ), (supported_sharding(arg_shardings[0], arg_shapes[0]), )
 
     def infer_sharding_from_operands(mesh, arg_shapes, result_shape):
         """Infers the sharding of the output based on the input sharding.
@@ -188,10 +190,7 @@ def create_sharded_fft(basic_fft: Callable, partition_spec: P, global_mesh: Mesh
         arg_shardings = tree.tree_map(lambda x: x.sharding, arg_shapes)
         return supported_sharding(arg_shardings[0], arg_shapes[0])
 
-    sharded_fft.def_partition(
-        infer_sharding_from_operands=infer_sharding_from_operands,
-        partition=partition
-    )
+    sharded_fft.def_partition(infer_sharding_from_operands=infer_sharding_from_operands, partition=partition)
     return sharded_fft
 
 
@@ -303,7 +302,7 @@ def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, C
             n = g.shape[-1]
             is_even = (real_shape[-1] % 2 == 0)
 
-            mask = jnp.ones((n,), dtype=g.real.dtype)
+            mask = jnp.ones((n, ), dtype=g.real.dtype)
             if n > 1:
                 mask = mask.at[1:].set(2.0)
                 if is_even:
@@ -311,33 +310,20 @@ def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, C
 
             scale = jnp.asarray(1 / np.prod(real_shape[1:]), dtype=g.real.dtype)
             out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
-            return (out,)
+            return (out, )
 
-        batched_irfftn_transposed.defvjp(
-            batched_irfftn_transposed_fwd,
-            batched_irfftn_transposed_bwd,
-        )
+        batched_irfftn_transposed.defvjp(batched_irfftn_transposed_fwd, batched_irfftn_transposed_bwd, )
         return _batched_rfftn_transposed_jit, batched_irfftn_transposed
 
-    batched_fftn_first_pass = create_sharded_fft(
-        _batched_fftn_first_pass,
-        P(None, None, "gpus", None),
-        compute_mesh,
-    )
+    batched_fftn_first_pass = create_sharded_fft(_batched_fftn_first_pass, P(None, None, "gpus", None), compute_mesh, )
     batched_rfftn_second_pass = create_sharded_fft(
-        _batched_rfftn_second_pass,
-        P(None, "gpus", None, None),
-        compute_mesh,
+        _batched_rfftn_second_pass, P(None, "gpus", None, None), compute_mesh,
     )
     batched_ifftn_first_pass = create_sharded_fft(
-        _batched_ifftn_first_pass,
-        P(None, None, "gpus", None),
-        compute_mesh,
+        _batched_ifftn_first_pass, P(None, None, "gpus", None), compute_mesh,
     )
     batched_irfftn_second_pass = create_sharded_fft(
-        _batched_irfftn_second_pass,
-        P(None, "gpus", None, None),
-        compute_mesh,
+        _batched_irfftn_second_pass, P(None, "gpus", None, None), compute_mesh,
     )
 
     def _batched_rfftn_transposed(x):
@@ -351,13 +337,11 @@ def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, C
         return x
 
     _batched_rfftn_transposed_jit = jax.jit(
-        _batched_rfftn_transposed,
-        in_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None, None))),
+        _batched_rfftn_transposed, in_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None, None))),
         out_shardings=(NamedSharding(compute_mesh, P(None, None, "gpus", None))),
     )
     _batched_irfftn_transposed_jit = jax.jit(
-        _batched_irfftn_transposed,
-        in_shardings=(NamedSharding(compute_mesh, P(None, None, "gpus", None))),
+        _batched_irfftn_transposed, in_shardings=(NamedSharding(compute_mesh, P(None, None, "gpus", None))),
         out_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None, None))),
     )
 
@@ -397,7 +381,7 @@ def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, C
         n = g.shape[-1]
         is_even = (real_shape[-1] % 2 == 0)
 
-        mask = jnp.ones((n,), dtype=g.real.dtype)
+        mask = jnp.ones((n, ), dtype=g.real.dtype)
         if n > 1:
             mask = mask.at[1:].set(2.0)
             if is_even:
@@ -405,19 +389,14 @@ def create_batched_transposed_real_ffts(compute_mesh: Mesh) -> Tuple[Callable, C
 
         scale = jnp.asarray(1 / np.prod(real_shape[1:]), dtype=g.real.dtype)
         out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
-        return (out,)
+        return (out, )
 
-    batched_irfftn_transposed.defvjp(
-        batched_irfftn_transposed_fwd,
-        batched_irfftn_transposed_bwd,
-    )
+    batched_irfftn_transposed.defvjp(batched_irfftn_transposed_fwd, batched_irfftn_transposed_bwd, )
 
     return _batched_rfftn_transposed_jit, batched_irfftn_transposed
 
 
-def create_ffts(
-    compute_mesh: Mesh,
-) -> Tuple[Callable, Callable, Callable, Callable, Callable, Callable]:
+def create_ffts(compute_mesh: Mesh, ) -> Tuple[Callable, Callable, Callable, Callable, Callable, Callable]:
     """Create the distributed FFT helper family used by PM++.
 
     Parameters
@@ -480,7 +459,7 @@ def create_ffts(
             g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
             g = _ifftn_jit(g.conj()).real
             g *= jnp.prod(jnp.array(x_shape))
-            return (g,)
+            return (g, )
 
         rfftn.defvjp(rfftn_fwd, rfftn_bwd)
 
@@ -519,14 +498,14 @@ def create_ffts(
             g = _rfftn_jit(g).conj()
             n = g.shape[-1]
             is_even = (real_shape[-1] % 2 == 0)
-            mask = jnp.ones((n,), dtype=g.real.dtype)
+            mask = jnp.ones((n, ), dtype=g.real.dtype)
             if n > 1:
                 mask = mask.at[1:].set(2.0)
                 if is_even:
                     mask = mask.at[n - 1].set(1.0)
             scale = jnp.asarray(1 / np.prod(real_shape), dtype=g.real.dtype)
             out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
-            return (out,)
+            return (out, )
 
         irfftn.defvjp(irfftn_fwd, irfftn_bwd)
 
@@ -565,34 +544,38 @@ def create_ffts(
         return x
 
     # Creating jitted versions of FFT and IFFT functions for specific GPU sharding
-    _rfftn_jit = jax.jit(_rfftn, in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
-                         out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))))
-    _irfftn_jit = jax.jit(_irfftn, in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
-                          out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))))
-    _fftn_jit = jax.jit(_fftn, in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
-                        out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))))
-    _ifftn_jit = jax.jit(_ifftn, in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
-                         out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))))
+    _rfftn_jit = jax.jit(
+        _rfftn, in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+        out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None)))
+    )
+    _irfftn_jit = jax.jit(
+        _irfftn, in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+        out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None)))
+    )
+    _fftn_jit = jax.jit(
+        _fftn, in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+        out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None)))
+    )
+    _ifftn_jit = jax.jit(
+        _ifftn, in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+        out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None)))
+    )
     # Natural spectral layout: keep the intermediate transpose produced by the
     # x-axis FFT so downstream spectral operators can avoid bouncing layouts.
     _rfftn_transposed_jit = jax.jit(
-        _rfftn,
-        in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+        _rfftn, in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
         out_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
     )
     _irfftn_transposed_jit = jax.jit(
-        _irfftn,
-        in_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
+        _irfftn, in_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
         out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
     )
     _fftn_transposed_jit = jax.jit(
-        _fftn,
-        in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
+        _fftn, in_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
         out_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
     )
     _ifftn_transposed_jit = jax.jit(
-        _ifftn,
-        in_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
+        _ifftn, in_shardings=(NamedSharding(compute_mesh, P(None, "gpus", None))),
         out_shardings=(NamedSharding(compute_mesh, P("gpus", None, None))),
     )
 
@@ -631,7 +614,7 @@ def create_ffts(
         g = _ifftn_jit(g.conj()).real
         # the previous code is equivalent to jnp.fft.ifftn(g.conj(), s=x_shape).real
         g *= jnp.prod(jnp.array(x_shape))
-        return (g,)
+        return (g, )
 
     rfftn.defvjp(rfftn_fwd, rfftn_bwd)
 
@@ -667,12 +650,10 @@ def create_ffts(
             Cotangent array supplied to a custom VJP backward rule.
         """
         g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
-        g = lax.with_sharding_constraint(
-            g, NamedSharding(compute_mesh, P(None, "gpus", None))
-        )
+        g = lax.with_sharding_constraint(g, NamedSharding(compute_mesh, P(None, "gpus", None)))
         g = _ifftn_transposed_jit(g.conj()).real
         g *= jnp.prod(jnp.array(x_shape))
-        return (g,)
+        return (g, )
 
     rfftn_transposed.defvjp(rfftn_transposed_fwd, rfftn_transposed_bwd)
 
@@ -716,7 +697,7 @@ def create_ffts(
 
         # The FFT shape is static under JIT, so the Hermitian weighting can be built
         # directly without padding to an external max size.
-        mask = jnp.ones((n,), dtype=g.real.dtype)
+        mask = jnp.ones((n, ), dtype=g.real.dtype)
         if n > 1:
             mask = mask.at[1:].set(2.0)
             if is_even:
@@ -724,7 +705,7 @@ def create_ffts(
 
         scale = jnp.asarray(1 / np.prod(real_shape), dtype=g.real.dtype)
         out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
-        return (out,)
+        return (out, )
 
     irfftn.defvjp(irfftn_fwd, irfftn_bwd)
 
@@ -764,7 +745,7 @@ def create_ffts(
         n = g.shape[-1]
         is_even = (real_shape[-1] % 2 == 0)
 
-        mask = jnp.ones((n,), dtype=g.real.dtype)
+        mask = jnp.ones((n, ), dtype=g.real.dtype)
         if n > 1:
             mask = mask.at[1:].set(2.0)
             if is_even:
@@ -772,15 +753,15 @@ def create_ffts(
 
         scale = jnp.asarray(1 / np.prod(real_shape), dtype=g.real.dtype)
         out = scale * g * lax.expand_dims(mask, range(g.ndim - 1))
-        return (out,)
+        return (out, )
 
     irfftn_transposed.defvjp(irfftn_transposed_fwd, irfftn_transposed_bwd)
 
     return rfftn, irfftn, _fftn_jit, _ifftn_jit, rfftn_transposed, irfftn_transposed
 
 
-def test_functions(distributed_func_jit: Callable, reference_func: Callable, array: np.ndarray, mesh: Mesh) -> Tuple[
-    bool, float, float]:
+def test_functions(distributed_func_jit: Callable, reference_func: Callable, array: np.ndarray,
+                   mesh: Mesh) -> Tuple[bool, float, float]:
     """Compare a distributed FFT helper with a reference implementation.
 
     Parameters
@@ -844,8 +825,8 @@ if __name__ == '__main__':
     print("process_index", jax.process_index())
     print("total number of GPUs:", num_gpus)
 
-    devices = mesh_utils.create_device_mesh((num_gpus,), devices=jax.devices()[:num_gpus])
-    mesh = Mesh(devices, axis_names=("gpus",))
+    devices = mesh_utils.create_device_mesh((num_gpus, ), devices=jax.devices()[:num_gpus])
+    mesh = Mesh(devices, axis_names=("gpus", ))
 
     rfftn_jit, irfftn_jit, fftn_jit, ifftn_jit = create_ffts(mesh)
 

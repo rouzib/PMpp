@@ -41,48 +41,29 @@ try:
 except ImportError:
     pytest = None
 
-
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
 
 
 def _init_confs():
     box_size = 100.0
     num_ptcl = 4
-    ptcl_grid_shape = (num_ptcl,) * 3
+    ptcl_grid_shape = (num_ptcl, ) * 3
     ptcl_spacing = box_size / num_ptcl
 
     gpu_devices = [device for device in jax.devices() if device.platform == "gpu"][:2]
     compute_mesh = create_compute_mesh(gpu_devices)
 
     conf_pmpp = Configuration(
-        ptcl_spacing,
-        ptcl_grid_shape,
-        mesh_shape=1,
-        multigpu=MultiGPUConfiguration(
-            compute_mesh=compute_mesh,
-            mode="mesh_halo",
-            cuda_routing=True,
-        ),
-        max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * 2.5),
-        max_share_ptcl=4000,
-        max_halo_share_ptcl=4000,
-        max_share_gather_ptcl=8000,
-        a_start=1 / 60,
-        a_stop=1 / 15,
-        a_nbody_maxstep=1 / 60,
-        pallas_cic=False,
-        cosmo_dtype=jnp.float64,
-        float_dtype=jnp.float64,
+        ptcl_spacing, ptcl_grid_shape, mesh_shape=1,
+        multigpu=MultiGPUConfiguration(compute_mesh=compute_mesh, mode="mesh_halo", cuda_routing=True,
+                                       ), max_ptcl_per_slice=int(num_ptcl**3 / len(gpu_devices) * 2.5),
+        max_share_ptcl=4000, max_halo_share_ptcl=4000, max_share_gather_ptcl=8000, a_start=1 / 60, a_stop=1 / 15,
+        a_nbody_maxstep=1 / 60, pallas_cic=False, cosmo_dtype=jnp.float64, float_dtype=jnp.float64,
     )
     conf_pmwd = ConfigurationPMWD(
-        ptcl_spacing=conf_pmpp.ptcl_spacing,
-        ptcl_grid_shape=conf_pmpp.ptcl_grid_shape,
-        mesh_shape=conf_pmpp.mesh_shape,
-        a_start=conf_pmpp.a_start,
-        a_stop=conf_pmpp.a_stop,
-        a_nbody_maxstep=conf_pmpp.a_nbody_maxstep,
-        cosmo_dtype=jnp.float64,
-        float_dtype=jnp.float64,
+        ptcl_spacing=conf_pmpp.ptcl_spacing, ptcl_grid_shape=conf_pmpp.ptcl_grid_shape, mesh_shape=conf_pmpp.mesh_shape,
+        a_start=conf_pmpp.a_start, a_stop=conf_pmpp.a_stop, a_nbody_maxstep=conf_pmpp.a_nbody_maxstep,
+        cosmo_dtype=jnp.float64, float_dtype=jnp.float64,
     )
     return conf_pmpp, conf_pmwd
 
@@ -150,8 +131,8 @@ def test_mesh_halo_nbody_matches_pmwd_for_forward_and_mode_gradient():
     modes_real_pmwd = white_noise_pmwd(1, conf_pmwd, real=True)
     modes_real_pmpp = white_noise_pmpp(1, conf_pmpp, real=True)
 
-    pmwd_forward = jax.jit(_pmwd_forward, static_argnames=("conf",))
-    pmpp_forward = jax.jit(_pmpp_forward, static_argnames=("conf",))
+    pmwd_forward = jax.jit(_pmwd_forward, static_argnames=("conf", ))
+    pmpp_forward = jax.jit(_pmpp_forward, static_argnames=("conf", ))
 
     ptcl_pmwd, dens_pmwd = pmwd_forward(modes_real_pmwd, base_cosmo_pmwd, conf_pmwd)
     ptcl_pmpp, dens_pmpp = pmpp_forward(modes_real_pmpp, base_cosmo_pmpp, conf_pmpp)
@@ -169,10 +150,7 @@ def test_mesh_halo_nbody_matches_pmwd_for_forward_and_mode_gradient():
     assert np.allclose(vel_pmpp, vel_pmwd, atol=1e-8, rtol=1e-8)
     assert np.allclose(acc_pmpp, acc_pmwd, atol=1e-8, rtol=1e-8)
     assert np.allclose(
-        np.asarray(jax.device_get(dens_pmpp)),
-        np.asarray(jax.device_get(dens_pmwd)),
-        atol=1e-8,
-        rtol=1e-8,
+        np.asarray(jax.device_get(dens_pmpp)), np.asarray(jax.device_get(dens_pmwd)), atol=1e-8, rtol=1e-8,
     )
 
     def loss_pmwd(tgt_dens, modes_real, cosmo, conf):
@@ -183,17 +161,14 @@ def test_mesh_halo_nbody_matches_pmwd_for_forward_and_mode_gradient():
         dens = _pmpp_forward(modes_real, cosmo, conf)[1]
         return (dens - tgt_dens).var()
 
-    grad_pmwd_fn = jax.jit(jax.grad(loss_pmwd, argnums=(1, 2)), static_argnames=("conf",))
-    grad_pmpp_fn = jax.jit(jax.grad(loss_pmpp, argnums=(1, 2)), static_argnames=("conf",))
+    grad_pmwd_fn = jax.jit(jax.grad(loss_pmwd, argnums=(1, 2)), static_argnames=("conf", ))
+    grad_pmpp_fn = jax.jit(jax.grad(loss_pmpp, argnums=(1, 2)), static_argnames=("conf", ))
 
     grad_modes_pmwd, grad_cosmo_pmwd = grad_pmwd_fn(target_dens, modes_real_pmwd, base_cosmo_pmwd, conf_pmwd)
     grad_modes_pmpp, grad_cosmo_pmpp = grad_pmpp_fn(target_dens, modes_real_pmpp, base_cosmo_pmpp, conf_pmpp)
 
     assert np.allclose(
-        np.asarray(jax.device_get(grad_modes_pmpp)),
-        np.asarray(jax.device_get(grad_modes_pmwd)),
-        atol=1e-8,
-        rtol=1e-8,
+        np.asarray(jax.device_get(grad_modes_pmpp)), np.asarray(jax.device_get(grad_modes_pmwd)), atol=1e-8, rtol=1e-8,
     )
 
     for field_name in ("A_s_1e9", "n_s", "Omega_m", "Omega_b", "h"):
@@ -207,10 +182,8 @@ def test_mesh_halo_nbody_matches_pmwd_for_forward_and_mode_gradient():
 
 if pytest is not None:
     test_mesh_halo_nbody_matches_pmwd_for_forward_and_mode_gradient = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason="mesh-halo nbody gradient test requires at least 1 GPU",
+        GPU_COUNT < 1, reason="mesh-halo nbody gradient test requires at least 1 GPU",
     )(test_mesh_halo_nbody_matches_pmwd_for_forward_and_mode_gradient)
-
 
 if __name__ == "__main__":
     test_mesh_halo_nbody_matches_pmwd_for_forward_and_mode_gradient()

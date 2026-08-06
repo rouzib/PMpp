@@ -19,7 +19,6 @@ try:
 except ImportError:
     pytest = None
 
-
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
 
 
@@ -62,14 +61,8 @@ def test_halo_move_vjp_matches_true_vjp():
         raise SystemExit("halo moving gradient test requires at least 1 GPU")
 
     conf = init_conf(
-        num_ptcl=8,
-        mesh_shape=1,
-        box_size=100.0,
-        num_devices=2,
-        max_ptcl_per_slice=2.5,
-        max_share_ptcl=32,
-        max_share_gather_ptcl=128,
-        multigpu_mode="particle_halo",
+        num_ptcl=8, mesh_shape=1, box_size=100.0, num_devices=2, max_ptcl_per_slice=2.5, max_share_ptcl=32,
+        max_share_gather_ptcl=128, multigpu_mode="particle_halo",
     )
     runtime = conf.multigpu
     if runtime is None:
@@ -78,53 +71,34 @@ def test_halo_move_vjp_matches_true_vjp():
 
     def outputs_only(disp_in, vel_in, acc_in):
         _, disp_out, vel_out, acc_out, *_ = runtime.halo_moving(
-            ptcl.pmid,
-            ptcl.disp,
-            disp_in,
-            vel_in,
-            acc_in,
-            runtime.halo_start,
-            runtime.halo_end,
-            ptcl.unused_index,
+            ptcl.pmid, ptcl.disp, disp_in, vel_in, acc_in, runtime.halo_start, runtime.halo_end, ptcl.unused_index,
         )
         return disp_out, vel_out, acc_out
 
     _, vjp_fn = jax.vjp(outputs_only, disp, vel, acc)
     vjp_disp, vjp_vel, vjp_acc = vjp_fn((cot_disp, cot_vel, cot_acc))
 
-    helper_disp, helper_vel, helper_acc = _halo_move_vjp(
-        ptcl,
-        disp,
-        vel,
-        acc,
-        cot_disp,
-        cot_vel,
-        cot_acc,
-        conf,
-    )
+    helper_disp, helper_vel, helper_acc = _halo_move_vjp(ptcl, disp, vel, acc, cot_disp, cot_vel, cot_acc, conf, )
 
     forward = runtime.halo_moving(
-        ptcl.pmid,
-        ptcl.disp,
-        disp,
-        vel,
-        acc,
-        runtime.halo_start,
-        runtime.halo_end,
-        ptcl.unused_index,
+        ptcl.pmid, ptcl.disp, disp, vel, acc, runtime.halo_start, runtime.halo_end, ptcl.unused_index,
     )
 
-    assert np.allclose(np.asarray(jax.device_get(helper_disp)), np.asarray(jax.device_get(vjp_disp)), atol=1e-8, rtol=1e-8)
-    assert np.allclose(np.asarray(jax.device_get(helper_vel)), np.asarray(jax.device_get(vjp_vel)), atol=1e-8, rtol=1e-8)
-    assert np.allclose(np.asarray(jax.device_get(helper_acc)), np.asarray(jax.device_get(vjp_acc)), atol=1e-8, rtol=1e-8)
+    assert np.allclose(
+        np.asarray(jax.device_get(helper_disp)), np.asarray(jax.device_get(vjp_disp)), atol=1e-8, rtol=1e-8
+    )
+    assert np.allclose(
+        np.asarray(jax.device_get(helper_vel)), np.asarray(jax.device_get(vjp_vel)), atol=1e-8, rtol=1e-8
+    )
+    assert np.allclose(
+        np.asarray(jax.device_get(helper_acc)), np.asarray(jax.device_get(vjp_acc)), atol=1e-8, rtol=1e-8
+    )
 
 
 if pytest is not None:
     test_halo_move_vjp_matches_true_vjp = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason="halo moving gradient test requires at least 1 GPU",
+        GPU_COUNT < 1, reason="halo moving gradient test requires at least 1 GPU",
     )(test_halo_move_vjp_matches_true_vjp)
-
 
 if __name__ == "__main__":
     test_halo_move_vjp_matches_true_vjp()

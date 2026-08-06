@@ -23,9 +23,7 @@ def require_haiku(feature_name):
     feature_name
         Name of the optional feature that requires the dependency."""
     if hk is None:
-        raise ImportError(
-            f"haiku is required for {feature_name}. Install dm-haiku to enable this correction."
-        )
+        raise ImportError(f"haiku is required for {feature_name}. Install dm-haiku to enable this correction.")
 
 
 def require_optax(feature_name):
@@ -36,9 +34,7 @@ def require_optax(feature_name):
     feature_name
         Name of the optional feature that requires the dependency."""
     if optax is None:
-        raise ImportError(
-            f"optax is required for {feature_name}. Install optax to enable this optimizer utility."
-        )
+        raise ImportError(f"optax is required for {feature_name}. Install optax to enable this optimizer utility.")
 
 
 HaikuModuleBase = hk.Module if hk is not None else object
@@ -53,11 +49,8 @@ def normalized_k_magnitude_transposed(conf):
         Configuration object that defines mesh sizes, dtypes, units, and multi-GPU runtime helpers."""
     kx, ky, kz = [jnp.squeeze(a).astype(conf.float_dtype) for a in conf.kvec]
     k_nyquist = jnp.asarray(jnp.pi / conf.cell_size, dtype=conf.float_dtype)
-    return jnp.sqrt(
-        (kx[:, None, None] / k_nyquist) ** 2
-        + (ky[None, :, None] / k_nyquist) ** 2
-        + (kz[None, None, :] / k_nyquist) ** 2
-    )
+    return jnp.sqrt((kx[:, None, None] / k_nyquist)**2 + (ky[None, :, None] / k_nyquist)**2 +
+                    (kz[None, None, :] / k_nyquist)**2)
 
 
 def default_cosmo_features(dtype):
@@ -141,10 +134,7 @@ def correction_cosmo_features(correction, cosmo, dtype):
 
 
 def build_correction_optimizer(
-    learning_rate,
-    gradient_clip_norm=100.0,
-    optimizer_name="adamax",
-    apply_if_finite_steps=100,
+    learning_rate, gradient_clip_norm=100.0, optimizer_name="adamax", apply_if_finite_steps=100,
 ):
     """Build the default Optax optimizer chain for correction training.
 

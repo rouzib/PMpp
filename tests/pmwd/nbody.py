@@ -16,10 +16,8 @@ def _G_D(a, cosmo, conf):
 
 def _G_K(a, cosmo, conf):
     """Growth factor of ZA accelerations in [H_0^2]."""
-    return a**3 * E2(a, cosmo) * (
-        growth(a, cosmo, conf, deriv=2)
-        + (2 + H_deriv(a, cosmo)) * growth(a, cosmo, conf, deriv=1)
-    )
+    return a**3 * E2(a, cosmo
+                     ) * (growth(a, cosmo, conf, deriv=2) + (2 + H_deriv(a, cosmo)) * growth(a, cosmo, conf, deriv=1))
 
 
 def drift_factor(a_vel, a_prev, a_next, cosmo, conf):
@@ -148,7 +146,9 @@ def integrate_adj(a_prev, a_next, ptcl, ptcl_cot, obsvbl_cot, cosmo, cosmo_cot, 
         if k != 0:
             K += k
             a_vel_next = a_prev * (1 - K) + a_next * K
-            ptcl, ptcl_cot, cosmo_cot = kick_adj(a_acc, a_vel, a_vel_next, ptcl, ptcl_cot, cosmo, cosmo_cot, cosmo_cot_force, conf)
+            ptcl, ptcl_cot, cosmo_cot = kick_adj(
+                a_acc, a_vel, a_vel_next, ptcl, ptcl_cot, cosmo, cosmo_cot, cosmo_cot_force, conf
+            )
             a_vel = a_vel_next
 
         if d != 0:
@@ -212,7 +212,7 @@ def nbody_step(a_prev, a_next, ptcl, obsvbl, cosmo, conf):
     return ptcl, obsvbl
 
 
-@partial(custom_vjp, nondiff_argnums=(4,))
+@partial(custom_vjp, nondiff_argnums=(4, ))
 def nbody(ptcl, obsvbl, cosmo, conf, reverse=False):
     """N-body time integration."""
     a_nbody = conf.a_nbody[::-1] if reverse else conf.a_nbody
@@ -249,7 +249,8 @@ def nbody_adj_step(a_prev, a_next, ptcl, ptcl_cot, obsvbl_cot, cosmo, cosmo_cot,
     #ptcl, ptcl_cot = coevolve_adj(a_prev, a_next, ptcl, ptcl_cot, cosmo, conf)
 
     ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force = integrate_adj(
-        a_prev, a_next, ptcl, ptcl_cot, obsvbl_cot, cosmo, cosmo_cot, cosmo_cot_force, conf)
+        a_prev, a_next, ptcl, ptcl_cot, obsvbl_cot, cosmo, cosmo_cot, cosmo_cot_force, conf
+    )
 
     return ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force
 
@@ -258,21 +259,16 @@ def nbody_adj(ptcl, ptcl_cot, obsvbl_cot, cosmo, conf, reverse=False):
     """N-body time integration with adjoint equation."""
     a_nbody = conf.a_nbody[::-1] if reverse else conf.a_nbody
 
-    ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force = nbody_adj_init(
-        a_nbody[-1], ptcl, ptcl_cot, obsvbl_cot, cosmo, conf)
+    ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force = nbody_adj_init(a_nbody[-1], ptcl, ptcl_cot, obsvbl_cot, cosmo, conf)
 
     def body(carry, ab):
         ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force = carry
         a_prev, a_next = ab
-        carry = nbody_adj_step(
-            a_prev, a_next, ptcl, ptcl_cot, obsvbl_cot, cosmo, cosmo_cot, cosmo_cot_force, conf
-        )
+        carry = nbody_adj_step(a_prev, a_next, ptcl, ptcl_cot, obsvbl_cot, cosmo, cosmo_cot, cosmo_cot_force, conf)
         return carry, None
 
     (ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force), _ = lax.scan(
-        body,
-        (ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force),
-        (a_nbody[:0:-1], a_nbody[-2::-1]),
+        body, (ptcl, ptcl_cot, cosmo_cot, cosmo_cot_force), (a_nbody[:0:-1], a_nbody[-2::-1]),
     )
     return ptcl, ptcl_cot, cosmo_cot
 
@@ -281,13 +277,14 @@ def nbody_fwd(ptcl, obsvbl, cosmo, conf, reverse):
     ptcl, obsvbl = nbody(ptcl, obsvbl, cosmo, conf, reverse)
     return (ptcl, obsvbl), (ptcl, cosmo, conf)
 
+
 def nbody_bwd(reverse, res, cotangents):
     ptcl, cosmo, conf = res
     ptcl_cot, obsvbl_cot = cotangents
 
-    ptcl, ptcl_cot, cosmo_cot = nbody_adj(ptcl, ptcl_cot, obsvbl_cot, cosmo, conf,
-                                          reverse=reverse)
+    ptcl, ptcl_cot, cosmo_cot = nbody_adj(ptcl, ptcl_cot, obsvbl_cot, cosmo, conf, reverse=reverse)
 
     return ptcl_cot, obsvbl_cot, cosmo_cot, None
+
 
 nbody.defvjp(nbody_fwd, nbody_bwd)

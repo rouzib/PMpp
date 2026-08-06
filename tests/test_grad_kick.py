@@ -33,26 +33,17 @@ try:
 except ImportError:
     pytest = None
 
-
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
 
 
 def _build_state():
     conf = init_conf(
-        num_ptcl=16,
-        mesh_shape=1,
-        box_size=100.0,
-        num_devices=2,
-        max_ptcl_per_slice=1.25,
-        max_share_ptcl=32,
+        num_ptcl=16, mesh_shape=1, box_size=100.0, num_devices=2, max_ptcl_per_slice=1.25, max_share_ptcl=32,
         max_share_gather_ptcl=128,
     )
     conf_pmwd = ConfigurationPMWD(
-        ptcl_spacing=conf.ptcl_spacing,
-        ptcl_grid_shape=conf.ptcl_grid_shape,
-        mesh_shape=conf.mesh_shape,
-        a_start=conf.a_start,
-        a_nbody_maxstep=conf.a_nbody_maxstep,
+        ptcl_spacing=conf.ptcl_spacing, ptcl_grid_shape=conf.ptcl_grid_shape, mesh_shape=conf.mesh_shape,
+        a_start=conf.a_start, a_nbody_maxstep=conf.a_nbody_maxstep,
     )
     cosmo_pmwd = boltzmann_pmwd(SimpleLCDM_PMWD(conf_pmwd), conf_pmwd)
     cosmo_pmpp = boltzmann_pmpp(SimpleLCDM_PMPP(conf), conf)
@@ -62,10 +53,7 @@ def _build_state():
     key_disp, key_vel, key_acc = jax.random.split(key, 3)
     ptcl_pmwd = ptcl_pmwd.replace(
         disp=jax.random.uniform(
-            key_disp,
-            ptcl_pmwd.disp.shape,
-            minval=-0.25 * conf.cell_size,
-            maxval=0.25 * conf.cell_size,
+            key_disp, ptcl_pmwd.disp.shape, minval=-0.25 * conf.cell_size, maxval=0.25 * conf.cell_size,
         ).astype(conf.float_dtype),
         vel=(jax.random.normal(key_vel, ptcl_pmwd.vel.shape) * 0.15).astype(conf.float_dtype),
         acc=(jax.random.normal(key_acc, ptcl_pmwd.acc.shape) * 0.2).astype(conf.float_dtype),
@@ -124,9 +112,18 @@ def test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp():
     out_pmwd = kick_pmwd(a_acc, a_prev, a_next, ptcl_pmwd, cosmo_pmwd, conf_pmwd)
     out_pmpp = kick_pmpp(a_acc, a_prev, a_next, ptcl_pmpp, cosmo_pmpp, conf)
 
-    assert np.allclose(np.asarray(jax.device_get(out_pmpp.disp))[first_slot], np.asarray(jax.device_get(out_pmwd.disp)), atol=1e-8, rtol=1e-8)
-    assert np.allclose(np.asarray(jax.device_get(out_pmpp.vel))[first_slot], np.asarray(jax.device_get(out_pmwd.vel)), atol=1e-8, rtol=1e-8)
-    assert np.allclose(np.asarray(jax.device_get(out_pmpp.acc))[first_slot], np.asarray(jax.device_get(out_pmwd.acc)), atol=1e-8, rtol=1e-8)
+    assert np.allclose(
+        np.asarray(jax.device_get(out_pmpp.disp))[first_slot], np.asarray(jax.device_get(out_pmwd.disp)), atol=1e-8,
+        rtol=1e-8
+    )
+    assert np.allclose(
+        np.asarray(jax.device_get(out_pmpp.vel))[first_slot], np.asarray(jax.device_get(out_pmwd.vel)), atol=1e-8,
+        rtol=1e-8
+    )
+    assert np.allclose(
+        np.asarray(jax.device_get(out_pmpp.acc))[first_slot], np.asarray(jax.device_get(out_pmwd.acc)), atol=1e-8,
+        rtol=1e-8
+    )
 
     key = jax.random.PRNGKey(1)
     key_disp, key_vel, key_acc = jax.random.split(key, 3)
@@ -153,10 +150,8 @@ def test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp():
 
 if pytest is not None:
     test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason="kick gradient test requires at least 1 GPU",
+        GPU_COUNT < 1, reason="kick gradient test requires at least 1 GPU",
     )(test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp)
-
 
 if __name__ == "__main__":
     test_kick_forward_matches_pmwd_and_adjoint_matches_local_vjp()

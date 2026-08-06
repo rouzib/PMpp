@@ -1,9 +1,9 @@
 """Build the optional PM++ CUDA routing FFI shared library.
 
-This script intentionally lives outside the Hatchling wheel build.  A normal
-``pip install pmpp`` remains pure Python/JAX; users who have a compatible CUDA
-toolchain can run this script and point PM++ at the resulting library with
-``PMPP_CUDA_ROUTING_LIBRARY``.
+The script is shipped as source data in the PM++ wheel, but a normal
+``pip install pmpp`` does not execute it or require a CUDA compiler. Users can
+invoke it through ``pmpp-build-cuda-routing`` or run it directly from a source
+checkout.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+from importlib import metadata
 import json
 import os
 from pathlib import Path
@@ -36,8 +37,13 @@ def _write_manifest(build_dir: Path, python: str, architectures: str):
     )
     jax_version = _query([python, "-c", "import jax; print(jax.__version__)"])
     jaxlib_version = _query([python, "-c", "import jaxlib; print(jaxlib.__version__)"])
-    commit = _query(["git", "rev-parse", "HEAD"], cwd=ROOT)
-    dirty = bool(_query(["git", "status", "--porcelain"], cwd=ROOT))
+    source_checkout = (ROOT / ".git").exists()
+    commit = _query(["git", "rev-parse", "HEAD"], cwd=ROOT) if source_checkout else None
+    dirty = bool(_query(["git", "status", "--porcelain"], cwd=ROOT)) if source_checkout else None
+    try:
+        pmpp_version = metadata.version("pmpp")
+    except metadata.PackageNotFoundError:
+        pmpp_version = None
     artifact_hash = None
     if artifact is not None:
         artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
@@ -47,6 +53,7 @@ def _write_manifest(build_dir: Path, python: str, architectures: str):
         "cuda_toolkit": _query(["nvcc", "--version"]),
         "pmpp_commit": commit,
         "pmpp_dirty": dirty,
+        "pmpp_version": pmpp_version,
         "jax_version": jax_version,
         "jaxlib_version": jaxlib_version,
         "embedded_cuda_architectures": [part for part in architectures.split(";") if part],

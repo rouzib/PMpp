@@ -11,7 +11,7 @@ def laplace(kvec, src, cosmo=None):
     """Laplace kernel in Fourier space."""
     k2 = sum(k**2 for k in kvec)
 
-    pot = jnp.where(k2 != 0, - src / k2, 0)
+    pot = jnp.where(k2 != 0, -src / k2, 0)
 
     return pot
 
@@ -19,6 +19,7 @@ def laplace(kvec, src, cosmo=None):
 def laplace_fwd(kvec, src, cosmo):
     pot = laplace(kvec, src, cosmo)
     return pot, (kvec, cosmo)
+
 
 def laplace_bwd(res, pot_cot):
     """Custom vjp to avoid NaN when using where, as well as to save memory.
@@ -30,6 +31,7 @@ def laplace_bwd(res, pot_cot):
     kvec, cosmo = res
     src_cot = laplace(kvec, pot_cot, cosmo)
     return None, src_cot, None
+
 
 laplace.defvjp(laplace_fwd, laplace_bwd)
 

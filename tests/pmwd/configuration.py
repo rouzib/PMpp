@@ -12,9 +12,7 @@ from mcfit import TophatVar
 from .tree_util import pytree_dataclass
 from .pm_util import build_particle_nyquist_filter, fftfreq
 
-
 jax.config.update("jax_enable_x64", True)
-
 
 jnp.set_printoptions(precision=3, edgeitems=2, linewidth=128)
 
@@ -128,19 +126,18 @@ class Configuration:
     transfer_fit_nowiggle: bool = False
     transfer_lgk_min: float = -4
     transfer_lgk_max: float = 3
-    transfer_lgk_maxstep: float = 1/128
+    transfer_lgk_maxstep: float = 1 / 128
 
     growth_rtol: Optional[float] = None
     growth_atol: Optional[float] = None
-    growth_inistep: Union[float, None,
-                          Tuple[Optional[float], Optional[float]]] = (1, None)
+    growth_inistep: Union[float, None, Tuple[Optional[float], Optional[float]]] = (1, None)
 
     lpt_order: int = 2
 
-    a_start: float = 1/64
+    a_start: float = 1 / 64
     a_stop: float = 1
-    a_lpt_maxstep: float = 1/128
-    a_nbody_maxstep: float = 1/64
+    a_lpt_maxstep: float = 1 / 128
+    a_nbody_maxstep: float = 1 / 64
 
     symp_splits: Tuple[Tuple[float, float], ...] = ((0, 0.5), (1, 0.5))
 
@@ -157,8 +154,10 @@ class Configuration:
             raise ValueError('particle and mesh grid dimensions differ')
         if any(sm < sp for sp, sm in zip(self.ptcl_grid_shape, self.mesh_shape)):
             raise ValueError('mesh grid cannot be smaller than particle grid')
-        if any(self.ptcl_grid_shape[0] * sm != self.mesh_shape[0] * sp
-               for sp, sm in zip(self.ptcl_grid_shape[1:], self.mesh_shape[1:])):
+        if any(
+            self.ptcl_grid_shape[0] * sm != self.mesh_shape[0] * sp
+            for sp, sm in zip(self.ptcl_grid_shape[1:], self.mesh_shape[1:])
+        ):
             raise ValueError('particle and mesh grid aspect ratios differ')
 
         object.__setattr__(self, 'cosmo_dtype', jnp.dtype(self.cosmo_dtype))
@@ -176,11 +175,7 @@ class Configuration:
             object.__setattr__(self, "particle_nyquist_masks", build_particle_nyquist_filter(kvec, self))
 
         with jax.ensure_compile_time_eval():
-            object.__setattr__(
-                self,
-                'var_tophat',
-                TophatVar(self.transfer_k[1:], lowring=True, backend='jax'),
-            )
+            object.__setattr__(self, 'var_tophat', TophatVar(self.transfer_k[1:], lowring=True, backend='jax'), )
 
         # ~ 1.5e-8 for float64, 3.5e-4 for float32
         growth_tol = math.sqrt(jnp.finfo(self.cosmo_dtype).eps)
@@ -208,7 +203,7 @@ class Configuration:
     @property
     def ptcl_cell_vol(self):
         """Lagrangian particle grid cell volume in [L^dim]."""
-        return self.ptcl_spacing ** self.dim
+        return self.ptcl_spacing**self.dim
 
     @property
     def ptcl_num(self):
@@ -235,7 +230,7 @@ class Configuration:
     @property
     def cell_vol(self):
         """Mesh cell volume in [L^dim]."""
-        return self.cell_size ** self.dim
+        return self.cell_size**self.dim
 
     @property
     def mesh_size(self):
@@ -271,20 +266,19 @@ class Configuration:
     @property
     def transfer_k_num(self):
         """Number of transfer function wavenumbers, including a leading 0."""
-        return 1 + math.ceil((self.transfer_lgk_max - self.transfer_lgk_min)
-                             / self.transfer_lgk_maxstep) + 1
+        return 1 + math.ceil((self.transfer_lgk_max - self.transfer_lgk_min) / self.transfer_lgk_maxstep) + 1
 
     @property
     def transfer_lgk_step(self):
         """Transfer function wavenumber step size in [1/L] in log10."""
-        return ((self.transfer_lgk_max - self.transfer_lgk_min)
-                / (self.transfer_k_num - 2))
+        return ((self.transfer_lgk_max - self.transfer_lgk_min) / (self.transfer_k_num - 2))
 
     @property
     def transfer_k(self):
         """Transfer function wavenumbers in [1/L], of ``cosmo_dtype``."""
-        k = jnp.logspace(self.transfer_lgk_min, self.transfer_lgk_max,
-                         num=self.transfer_k_num - 1, dtype=self.cosmo_dtype)
+        k = jnp.logspace(
+            self.transfer_lgk_min, self.transfer_lgk_max, num=self.transfer_k_num - 1, dtype=self.cosmo_dtype
+        )
         return jnp.concatenate((jnp.array([0]), k))
 
     @property
@@ -310,14 +304,12 @@ class Configuration:
     @property
     def a_lpt(self):
         """LPT light cone scale factor steps, including ``a_start``, of ``cosmo_dtype``."""
-        return jnp.linspace(0, self.a_start, num=self.a_lpt_num+1,
-                            dtype=self.cosmo_dtype)
+        return jnp.linspace(0, self.a_start, num=self.a_lpt_num + 1, dtype=self.cosmo_dtype)
 
     @property
     def a_nbody(self):
         """N-body time integration scale factor steps, including ``a_start``, of ``cosmo_dtype``."""
-        return jnp.linspace(self.a_start, self.a_stop, num=1+self.a_nbody_num,
-                            dtype=self.cosmo_dtype)
+        return jnp.linspace(self.a_start, self.a_stop, num=1 + self.a_nbody_num, dtype=self.cosmo_dtype)
 
     @property
     def growth_a(self):

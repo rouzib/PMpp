@@ -73,14 +73,12 @@ def transfer_fit(k, cosmo, conf):
     R_d = 31.5 * w_b_safe / T2_cmb_norm**2 * (1e3 / z_d)
     R_eq = 31.5 * w_b_safe / T2_cmb_norm**2 * (1e3 / z_eq)
     s = (
-        2 / (3 * k_eq) * jnp.sqrt(6 / R_eq)
-        * jnp.log((jnp.sqrt(1 + R_d) + jnp.sqrt(R_eq + R_d)) / (1 + jnp.sqrt(R_eq)))
+        2 / (3 * k_eq) * jnp.sqrt(6 / R_eq) * jnp.log((jnp.sqrt(1 + R_d) + jnp.sqrt(R_eq + R_d)) / (1 + jnp.sqrt(R_eq)))
     )
     k_silk = 1.6 * w_b**0.52 * w_m**0.73 * (1 + (10.4 * w_m)**-0.95)
 
     if conf.transfer_fit_nowiggle:
-        alpha_gamma = (1 - 0.328 * jnp.log(431 * w_m) * f_b
-                       + 0.38 * jnp.log(22.3 * w_m) * f_b**2)
+        alpha_gamma = (1 - 0.328 * jnp.log(431 * w_m) * f_b + 0.38 * jnp.log(22.3 * w_m) * f_b**2)
         gamma_eff_ratio = alpha_gamma + (1 - alpha_gamma) / (1 + (0.43 * k * s)**4)
 
         q_eff = k / (13.41 * k_eq * gamma_eff_ratio)
@@ -130,8 +128,8 @@ def transfer_fit(k, cosmo, conf):
     beta_b = 0.5 + f_b + (3 - 2 * f_b) * jnp.sqrt(1 + (17.2 * w_m)**2)
 
     T_b = (
-        T0_tilde(k, 1, 1) / (1 + (k * s / 5.2)**2)
-        + alpha_b * (k * s)**3 / (beta_b**3 + (k * s)**3) * jnp.exp(-(k / k_silk)**1.4)
+        T0_tilde(k, 1, 1) / (1 + (k * s / 5.2)**2) + alpha_b * (k * s)**3 / (beta_b**3 +
+                                                                             (k * s)**3) * jnp.exp(-(k / k_silk)**1.4)
     ) * jnp.sinc((k * s)**2 / (jnp.pi * jnp.cbrt(beta_node**3 + (k * s)**3)))
 
     T = jnp.where(zero_baryon, T_no_baryon, f_c * T_c + f_b * T_b)
@@ -226,20 +224,19 @@ def growth_integ(cosmo, conf):
         a = jnp.exp(lna)
         dlnH_dlna = H_deriv(a, cosmo)
         Omega_fac = 1.5 * Omega_m_a(a, cosmo)
-        G1, G1p, G2, G2p = jnp.split(G, num_order * (num_deriv-1), axis=-1)
+        G1, G1p, G2, G2p = jnp.split(G, num_order * (num_deriv - 1), axis=-1)
         G1pp = -(3 + dlnH_dlna - Omega_fac) * G1 - (4 + dlnH_dlna) * G1p
-        G2pp = Omega_fac * G1**2 - (8 + 2*dlnH_dlna - Omega_fac) * G2 - (6 + dlnH_dlna) * G2p
+        G2pp = Omega_fac * G1**2 - (8 + 2 * dlnH_dlna - Omega_fac) * G2 - (6 + dlnH_dlna) * G2p
         return jnp.concatenate((G1p, G1pp, G2p, G2pp), axis=-1)
 
-    G_ic = jnp.array((1, 0, 3/7, 0), dtype=conf.cosmo_dtype)
+    G_ic = jnp.array((1, 0, 3 / 7, 0), dtype=conf.cosmo_dtype)
 
-    G = odeint(ode, G_ic, lna, cosmo,
-               rtol=conf.growth_rtol, atol=conf.growth_atol, dt0=conf.growth_inistep)
+    G = odeint(ode, G_ic, lna, cosmo, rtol=conf.growth_rtol, atol=conf.growth_atol, dt0=conf.growth_inistep)
 
     G_deriv = ode(G, lna[:, jnp.newaxis], cosmo)
 
-    G = G.reshape(num_a, num_order, num_deriv-1)
-    G_deriv = G_deriv.reshape(num_a, num_order, num_deriv-1)
+    G = G.reshape(num_a, num_order, num_deriv - 1)
+    G_deriv = G_deriv.reshape(num_a, num_order, num_deriv - 1)
     G = jnp.concatenate((G, G_deriv[..., -1:]), axis=2)
     G = jnp.moveaxis(G, 0, 2)
 
@@ -247,11 +244,7 @@ def growth_integ(cosmo, conf):
     # D_m'/a^m = m G + G'
     # D_m"/a^m = m^2 G + 2m G' + G"
     m = jnp.array((1, 2), dtype=conf.cosmo_dtype)[:, jnp.newaxis]
-    growth = jnp.stack((
-        G[:, 0],
-        m * G[:, 0] + G[:, 1],
-        m**2 * G[:, 0] + 2 * m * G[:, 1] + G[:, 2],
-    ), axis=1)
+    growth = jnp.stack((G[:, 0], m * G[:, 0] + G[:, 1], m**2 * G[:, 0] + 2 * m * G[:, 1] + G[:, 2], ), axis=1)
 
     return cosmo.replace(growth=growth)
 
@@ -408,12 +401,14 @@ def boltzmann(cosmo, conf, transfer=True, growth=True, varlin=True):
 @custom_vjp
 def _safe_power(x1, x2):
     """Safe power function for x1==0 and 0<x2<1. x2 must be a scalar."""
-    return x1 ** x2
+    return x1**x2
+
 
 def _safe_power_fwd(x1, x2):
     """Forward rule for ``_safe_power``."""
     y = _safe_power(x1, x2)
     return y, (x1, x2, y)
+
 
 def _safe_power_bwd(res, y_cot):
     """Backward rule that avoids ``log(0)`` and ``x1 ** (x2 - 1)`` at zero."""
@@ -425,6 +420,7 @@ def _safe_power_bwd(res, y_cot):
     x2_cot = (lnx1 * y * y_cot).sum()
 
     return x1_cot, x2_cot
+
 
 _safe_power.defvjp(_safe_power_fwd, _safe_power_bwd)
 
@@ -473,8 +469,8 @@ def linear_power(k, a, cosmo, conf):
     T = transfer(k, cosmo, conf)
 
     Plin = (
-        0.32 * cosmo.A_s * cosmo.k_pivot * _safe_power(k / cosmo.k_pivot, cosmo.n_s)
-        * (jnp.pi * (conf.c / conf.H_0)**2 / cosmo.Omega_m * T)**2
+        0.32 * cosmo.A_s * cosmo.k_pivot * _safe_power(k / cosmo.k_pivot, cosmo.n_s) *
+        (jnp.pi * (conf.c / conf.H_0)**2 / cosmo.Omega_m * T)**2
     )
 
     if a is not None:

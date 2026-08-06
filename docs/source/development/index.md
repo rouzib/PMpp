@@ -4,9 +4,9 @@ This section is for contributors and researchers who need to validate changes
 or understand the project sources.
 
 - [Testing](testing.md): focused scientific, gradient, distributed, and docs
-  checks.
-- [Contributing](contributing.md): scope changes, implementation discipline, and
-  review evidence.
+  checks, including the source-and-test formatting gate.
+- [Contributing](contributing.md): environment setup, YAPF formatting, scope
+  changes, implementation discipline, and review evidence.
 - [Documentation](documentation.md): authoring, notebook, diagram, and build
   policy.
 - [Citation](../citation.md), [references](../references.md), and

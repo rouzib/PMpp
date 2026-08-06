@@ -10,8 +10,10 @@ except NameError:
     pass  # if not plotting in Jupyter
 
 
-def simshow(x, figsize=(6.3, 4.9), dpi=96, cmap='inferno', norm=None, colorbar=True,
-            interpolation='lanczos', interpolation_stage='rgba', **kwargs):
+def simshow(
+    x, figsize=(6.3, 4.9), dpi=96, cmap='inferno', norm=None, colorbar=True, interpolation='lanczos',
+    interpolation_stage='rgba', **kwargs
+):
     """Plot a 2D view of simulation with ``imshow``.
 
     Parameters
@@ -50,12 +52,7 @@ def simshow(x, figsize=(6.3, 4.9), dpi=96, cmap='inferno', norm=None, colorbar=T
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
 
     im = ax.imshow(
-        x,
-        cmap=cmap,
-        norm=norm,
-        interpolation=interpolation,
-        interpolation_stage=interpolation_stage,
-        **kwargs,
+        x, cmap=cmap, norm=norm, interpolation=interpolation, interpolation_stage=interpolation_stage, **kwargs,
     )
     ax.set_axis_off()
 
@@ -66,8 +63,7 @@ def simshow(x, figsize=(6.3, 4.9), dpi=96, cmap='inferno', norm=None, colorbar=T
             cb.set_ticks(ticks, labels=ticklabels)
         except AttributeError:
             pass
-        cb.ax.tick_params(which='both', labelcolor='grey',
-                          bottom=False, top=False, left=False, right=False)
+        cb.ax.tick_params(which='both', labelcolor='grey', bottom=False, top=False, left=False, right=False)
         cb.outline.set_visible(False)
 
     return fig, ax
@@ -109,6 +105,7 @@ class CosmicWebNorm(FuncNorm):
         ``q`` and ``gamma`` in a way that maps density ``b`` to colormap value ``q``.
 
     """
+
     def __init__(self, x, q=0.1, gamma=0.5, fit_min=1e-2, fit_num=64, clip=False):
         if not 0 < q < 1:
             raise ValueError(f'q = {q} not in (0, 1)')
@@ -126,14 +123,13 @@ class CosmicWebNorm(FuncNorm):
 
         self.a, self.b, self.alpha, self.beta = self.fit()
 
-        self.theta = np.log(q) / np.log(1 - self.ccdf(self.b) ** gamma)
+        self.theta = np.log(q) / np.log(1 - self.ccdf(self.b)**gamma)
 
         super().__init__((self.forward_, self.inverse_), clip=clip)
 
     def cumhist(self, x, num):
         """Cumulative histogram of density above the bin edge values."""
-        bins = np.logspace(np.log10(self.fit_min), np.log10(self.max), num=num+1,
-                           endpoint=True)
+        bins = np.logspace(np.log10(self.fit_min), np.log10(self.max), num=num + 1, endpoint=True)
         bins[-1] *= 2  # make sure the maximum is in the last bin
 
         hist, _ = np.histogram(x, bins)
@@ -158,7 +154,7 @@ class CosmicWebNorm(FuncNorm):
         if beta is None:
             beta = self.beta
 
-        return np.exp(- (x / a) ** alpha) / (1 + (x / b) ** beta)
+        return np.exp(-(x / a)**alpha) / (1 + (x / b)**beta)
 
     def corr(self, p, gamma=None, theta=None):
         """Correct/map density CCDF to colormap values in [0, 1].
@@ -174,7 +170,7 @@ class CosmicWebNorm(FuncNorm):
         if theta is None:
             theta = self.theta
 
-        return (1 - p**gamma) ** theta
+        return (1 - p**gamma)**theta
 
     def forward_(self, x):
         """Map densities to colormap values in [0, 1]."""
@@ -185,12 +181,8 @@ class CosmicWebNorm(FuncNorm):
         from scipy.optimize import root_scalar
 
         return np.array([
-            root_scalar(
-                lambda x: self.forward_(x) - v,
-                method='toms748',
-                bracket=[0, 10 * self.max],
-            ).root
-            for v in y.ravel()
+            root_scalar(lambda x: self.forward_(x) - v, method='toms748', bracket=[0, 10 * self.max],
+                        ).root for v in y.ravel()
         ]).reshape(y.shape)  # strangely y is 2D
 
     def fit(self):
@@ -201,10 +193,7 @@ class CosmicWebNorm(FuncNorm):
             return np.log(self.ccdf(x, *p))
 
         popt, pcov = curve_fit(
-            lnccdf,
-            self.bins,
-            np.log(self.hist),
-            p0=[self.max, self.fit_min, 1, 1],
+            lnccdf, self.bins, np.log(self.hist), p0=[self.max, self.fit_min, 1, 1],
             bounds=(2 * [self.fit_min] + 2 * [0], 2 * [self.max] + 2 * [np.inf]),
         )
 
@@ -241,7 +230,7 @@ class CosmicWebNorm(FuncNorm):
         """Get pretty colorbar ticks locations and labels."""
         lg_min = int(np.floor(np.log10(self.fit_min)))
         lg_max = int(np.floor(np.log10(self.max)))
-        x = np.array([s * 10**e for e in range(lg_min, lg_max+1) for s in subs])
+        x = np.array([s * 10**e for e in range(lg_min, lg_max + 1) for s in subs])
         x = x[(x >= self.fit_min) & (x <= self.max)]
 
         # only keep well separated ticks in the candidates

@@ -204,8 +204,7 @@ def _nested_fourier_modes_from_numbers(seed, conf, kx_modes, ky_modes, kz_modes,
 
     gaussian_real, gaussian_imag = _box_muller(
         _hash_mode_u32(seed, hash_x, hash_y, kz, salt=0xA24BAED4),
-        _hash_mode_u32(seed, hash_x, hash_y, kz, salt=0x9FB21C65),
-        float_dtype,
+        _hash_mode_u32(seed, hash_x, hash_y, kz, salt=0x9FB21C65), float_dtype,
     )
 
     sqrt_half = jnp.asarray(0.7071067811865476, dtype=float_dtype)
@@ -284,7 +283,7 @@ def _safe_sqrt_fwd(x):
 def _safe_sqrt_bwd(y, y_cot):
     """Avoid the infinite ``0.5 / sqrt(x)`` cotangent at ``x == 0``."""
     x_cot = jnp.where(y != 0, 0.5 / y * y_cot, 0)
-    return (x_cot,)
+    return (x_cot, )
 
 
 _safe_sqrt.defvjp(_safe_sqrt_fwd, _safe_sqrt_bwd)
@@ -294,10 +293,7 @@ def _to_transposed_spectral_layout(modes, conf):
     """Apply the sharding layout expected by distributed transposed rFFT data."""
     if conf.compute_mesh is None:
         return modes
-    return jax.lax.with_sharding_constraint(
-        modes,
-        NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
-    )
+    return jax.lax.with_sharding_constraint(modes, NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)), )
 
 
 def get_k_magnitude(kvec, conf):
@@ -317,18 +313,15 @@ def get_k_magnitude(kvec, conf):
     """
     kx, ky, kz = [jnp.squeeze(a) for a in kvec]
     if conf.compute_mesh is None:
-        return jnp.sqrt(kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(
-            conf.float_dtype
-        )
+        return jnp.sqrt(kx[:, None, None]**2 + ky[None, :, None]**2 + kz[None, None, :]**2).astype(conf.float_dtype)
 
-    @partial(jax.jit,
-             in_shardings=(
-                     NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
-                     NamedSharding(conf.compute_mesh, P(None)),
-                     NamedSharding(conf.compute_mesh, P(None)),
-             ),
-             out_shardings=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None))
-             )
+    @partial(
+        jax.jit, in_shardings=(
+            NamedSharding(conf.compute_mesh,
+                          P(AXIS_NAME)), NamedSharding(conf.compute_mesh,
+                                                       P(None)), NamedSharding(conf.compute_mesh, P(None)),
+        ), out_shardings=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None))
+    )
     def create_k_magnitude_sharded(kx_sharded, ky_replicated, kz_replicated):
         """Creates the magnitude of the k-vector in a JIT-compatible and
         memory-efficient, sharded manner.
@@ -347,7 +340,7 @@ def get_k_magnitude(kvec, conf):
         ky_b = ky_replicated[None, :, None]
         kz_b = kz_replicated[None, None, :]
 
-        local_shard = jnp.sqrt(kx_b ** 2 + ky_b ** 2 + kz_b ** 2)
+        local_shard = jnp.sqrt(kx_b**2 + ky_b**2 + kz_b**2)
         return local_shard.astype(conf.float_dtype)
 
     return create_k_magnitude_sharded(kx, ky, kz)
@@ -370,18 +363,14 @@ def get_k_magnitude_transposed(kvec, conf):
     """
     kx, ky, kz = [jnp.squeeze(a) for a in kvec]
     if conf.compute_mesh is None:
-        return jnp.sqrt(kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2).astype(
-            conf.float_dtype
-        )
+        return jnp.sqrt(kx[:, None, None]**2 + ky[None, :, None]**2 + kz[None, None, :]**2).astype(conf.float_dtype)
 
     @partial(
-        jax.jit,
-        in_shardings=(
-                NamedSharding(conf.compute_mesh, P(None)),
-                NamedSharding(conf.compute_mesh, P(AXIS_NAME)),
-                NamedSharding(conf.compute_mesh, P(None)),
-        ),
-        out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
+        jax.jit, in_shardings=(
+            NamedSharding(conf.compute_mesh,
+                          P(None)), NamedSharding(conf.compute_mesh,
+                                                  P(AXIS_NAME)), NamedSharding(conf.compute_mesh, P(None)),
+        ), out_shardings=NamedSharding(conf.compute_mesh, P(None, AXIS_NAME, None)),
     )
     def create_k_magnitude_transposed(kx_replicated, ky_sharded, kz_replicated):
         """Build transposed-layout squared wavenumber magnitudes on each shard.
@@ -399,7 +388,7 @@ def get_k_magnitude_transposed(kvec, conf):
         ky_b = ky_sharded[None, :, None]
         kz_b = kz_replicated[None, None, :]
 
-        local_shard = jnp.sqrt(kx_b ** 2 + ky_b ** 2 + kz_b ** 2)
+        local_shard = jnp.sqrt(kx_b**2 + ky_b**2 + kz_b**2)
         return local_shard.astype(conf.float_dtype)
 
     return create_k_magnitude_transposed(kx, ky, kz)

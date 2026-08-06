@@ -52,7 +52,7 @@ def _radial_shell_layout(cutoff_cells: float) -> tuple[np.ndarray, np.ndarray]:
     valid = radius2 <= cutoff * cutoff + 1e-7
     shells = np.unique(radius2[valid])
     shell_index = np.full(radius2.shape, -1, dtype=np.int32)
-    counts = np.empty((shells.size,), dtype=np.float32)
+    counts = np.empty((shells.size, ), dtype=np.float32)
     for shell_id, shell_radius2 in enumerate(shells):
         shell_mask = valid & (radius2 == shell_radius2)
         shell_index[shell_mask] = shell_id
@@ -60,15 +60,7 @@ def _radial_shell_layout(cutoff_cells: float) -> tuple[np.ndarray, np.ndarray]:
     return shell_index, counts
 
 
-def _radial_conv3d(
-    x,
-    output_channels,
-    conf,
-    *,
-    cutoff_cells,
-    name,
-    zero_init=False,
-):
+def _radial_conv3d(x, output_channels, conf, *, cutoff_cells, name, zero_init=False, ):
     """Apply an explicitly periodic convolution with radial shell weights."""
     require_haiku("local pair corrections")
     shell_index_np, counts_np = _radial_shell_layout(float(cutoff_cells))
@@ -82,16 +74,11 @@ def _radial_conv3d(
     else:
         initializer = hk.initializers.VarianceScaling(1.0, "fan_avg", "uniform")
     shell_weights = hk.get_parameter(
-        f"{name}_shell_weights",
-        shape=(shell_count, in_channels, int(output_channels)),
-        dtype=x.dtype,
+        f"{name}_shell_weights", shape=(shell_count, in_channels, int(output_channels)), dtype=x.dtype,
         init=initializer,
     )
     bias = hk.get_parameter(
-        f"{name}_bias",
-        shape=(int(output_channels),),
-        dtype=x.dtype,
-        init=hk.initializers.Constant(0.0),
+        f"{name}_bias", shape=(int(output_channels), ), dtype=x.dtype, init=hk.initializers.Constant(0.0),
     )
 
     shell_index = jnp.asarray(shell_index_np, dtype=jnp.int32)
@@ -102,11 +89,7 @@ def _radial_conv3d(
     kernel = kernel / counts[safe_index][..., None, None]
     kernel = jnp.where(valid[..., None, None], kernel, jnp.zeros_like(kernel))
     y = jax.lax.conv_general_dilated(
-        x[None, ...],
-        kernel,
-        window_strides=(1, 1, 1),
-        padding="VALID",
-        dimension_numbers=("NDHWC", "DHWIO", "NDHWC"),
+        x[None, ...], kernel, window_strides=(1, 1, 1), padding="VALID", dimension_numbers=("NDHWC", "DHWIO", "NDHWC"),
     )[0]
     return y + bias
 
@@ -114,14 +97,7 @@ def _radial_conv3d(
 class RadialLocalPairPotential(HaikuModuleBase):
     """Two-hidden-layer radial network producing a local scalar potential."""
 
-    def __init__(
-        self,
-        channels=32,
-        cutoff_cells=2.5,
-        max_force_fraction=0.25,
-        output_init_scale=0.0,
-        name=None,
-    ):
+    def __init__(self, channels=32, cutoff_cells=2.5, max_force_fraction=0.25, output_init_scale=0.0, name=None, ):
         require_haiku("local pair corrections")
         super().__init__(name=name)
         self.channels = int(channels)
@@ -131,55 +107,25 @@ class RadialLocalPairPotential(HaikuModuleBase):
 
     def __call__(self, source, a, cosmo_features, conf):
         dtype = source.dtype
-        source_scale = jnp.sqrt(
-            _global_mesh_mean(source * source, conf) + jnp.asarray(1e-6, dtype=dtype)
-        )
+        source_scale = jnp.sqrt(_global_mesh_mean(source * source, conf) + jnp.asarray(1e-6, dtype=dtype))
         source_norm = source / source_scale
-        spatial_shape = source.shape + (1,)
-        mesh_ratio = jnp.asarray(
-            conf.mesh_shape[0] / conf.ptcl_grid_shape[0], dtype=dtype
-        )
+        spatial_shape = source.shape + (1, )
+        mesh_ratio = jnp.asarray(conf.mesh_shape[0] / conf.ptcl_grid_shape[0], dtype=dtype)
         scalar_features = [
             jnp.broadcast_to(jnp.asarray(a, dtype=dtype), spatial_shape),
             jnp.broadcast_to(mesh_ratio, spatial_shape),
         ]
         scalar_features.extend(
-            jnp.broadcast_to(jnp.asarray(value, dtype=dtype), spatial_shape)
-            for value in cosmo_features
+            jnp.broadcast_to(jnp.asarray(value, dtype=dtype), spatial_shape) for value in cosmo_features
         )
         x = jnp.concatenate([source_norm[..., None], *scalar_features], axis=-1)
-        x = jax.nn.gelu(
-            _radial_conv3d(
-                x,
-                self.channels,
-                conf,
-                cutoff_cells=self.cutoff_cells,
-                name="radial_0",
-            )
-        )
-        x = jax.nn.gelu(
-            _radial_conv3d(
-                x,
-                self.channels,
-                conf,
-                cutoff_cells=self.cutoff_cells,
-                name="radial_1",
-            )
-        )
-        out = _radial_conv3d(
-            x,
-            1,
-            conf,
-            cutoff_cells=1.0,
-            name="out",
-            zero_init=self.output_init_scale == 0.0,
-        )[..., 0]
+        x = jax.nn.gelu(_radial_conv3d(x, self.channels, conf, cutoff_cells=self.cutoff_cells, name="radial_0", ))
+        x = jax.nn.gelu(_radial_conv3d(x, self.channels, conf, cutoff_cells=self.cutoff_cells, name="radial_1", ))
+        out = _radial_conv3d(x, 1, conf, cutoff_cells=1.0, name="out", zero_init=self.output_init_scale == 0.0,
+                             )[..., 0]
         if self.output_init_scale != 0.0:
             gain = hk.get_parameter(
-                "output_gain",
-                shape=(),
-                dtype=dtype,
-                init=hk.initializers.Constant(self.output_init_scale),
+                "output_gain", shape=(), dtype=dtype, init=hk.initializers.Constant(self.output_init_scale),
             )
             out = out * gain
 
@@ -191,16 +137,9 @@ class RadialLocalPairPotential(HaikuModuleBase):
         # The local model always lives on the particle grid, including when
         # the long-range force mesh is refined by a factor of two.
         potential_scale = (
-            jnp.asarray(1.5, dtype=dtype)
-            * omega_m
-            * source_scale
-            * jnp.asarray(conf.ptcl_spacing**2, dtype=dtype)
+            jnp.asarray(1.5, dtype=dtype) * omega_m * source_scale * jnp.asarray(conf.ptcl_spacing**2, dtype=dtype)
         )
-        return (
-            jnp.asarray(self.max_force_fraction, dtype=dtype)
-            * jnp.tanh(out)
-            * potential_scale
-        )
+        return (jnp.asarray(self.max_force_fraction, dtype=dtype) * jnp.tanh(out) * potential_scale)
 
 
 def local_pair_transform(conf, channels, cutoff_cells, max_force_fraction, output_init_scale):
@@ -209,28 +148,18 @@ def local_pair_transform(conf, channels, cutoff_cells, max_force_fraction, outpu
     return hk.without_apply_rng(
         hk.transform(
             lambda source, a, features: RadialLocalPairPotential(
-                channels=channels,
-                cutoff_cells=cutoff_cells,
-                max_force_fraction=max_force_fraction,
-                output_init_scale=output_init_scale,
+                channels=channels, cutoff_cells=cutoff_cells, max_force_fraction=max_force_fraction, output_init_scale=
+                output_init_scale,
             )(source, a, features, conf)
         )
     )
 
 
 @partial(
-    pytree_dataclass,
-    aux_fields=(
-        "channels",
-        "cutoff_cells",
-        "max_force_fraction",
-        "output_init_scale",
-        "allow_missing_sigma8",
-        "sigma8_value",
+    pytree_dataclass, aux_fields=(
+        "channels", "cutoff_cells", "max_force_fraction", "output_init_scale", "allow_missing_sigma8", "sigma8_value",
         "dtype",
-    ),
-    frozen=True,
-    eq=False,
+    ), frozen=True, eq=False,
 )
 class LocalPairCorrection:
     """Trainable finite-support local-pair surrogate.
@@ -259,14 +188,9 @@ class LocalPairCorrection:
             raise ValueError("max_force_fraction must lie in [0, 1]")
         object.__setattr__(self, "dtype", dtype)
         object.__setattr__(
-            self,
-            "params",
-            tree_map(
-                lambda x: x
-                if x is None or is_float0_array(x)
-                else jnp.asarray(x, dtype=dtype),
-                self.params,
-            ),
+            self, "params",
+            tree_map(lambda x: x if x is None or is_float0_array(x) else jnp.asarray(x, dtype=dtype), self.params,
+                     ),
         )
 
     def acceleration_residual(self, a, ptcl, cosmo, conf):
@@ -282,16 +206,8 @@ class LocalPairPhaseContext(NamedTuple):
 
 
 def init_local_pair_correction(
-    key,
-    *,
-    conf,
-    channels=32,
-    cutoff_cells=2.5,
-    max_force_fraction=0.25,
-    output_init_scale=0.0,
-    allow_missing_sigma8=False,
-    sigma8_value=0.8,
-    dtype=jnp.float32,
+    key, *, conf, channels=32, cutoff_cells=2.5, max_force_fraction=0.25, output_init_scale=0.0,
+    allow_missing_sigma8=False, sigma8_value=0.8, dtype=jnp.float32,
 ):
     """Initialize a local correction with an exactly zero default output."""
     if conf is None:
@@ -301,28 +217,16 @@ def init_local_pair_correction(
     if init_conf.use_mGPU:
         init_conf = init_conf.replace(multigpu=None, compute_mesh=None)
     transform = local_pair_transform(
-        init_conf,
-        int(channels),
-        float(cutoff_cells),
-        float(max_force_fraction),
-        float(output_init_scale),
+        init_conf, int(channels), float(cutoff_cells), float(max_force_fraction), float(output_init_scale),
     )
     init_shape = tuple(min(int(size), 12) for size in init_conf.mesh_shape)
     params = transform.init(
-        key,
-        jnp.zeros(init_shape, dtype=dtype),
-        jnp.asarray(1.0, dtype=dtype),
-        default_cosmo_features(dtype),
+        key, jnp.zeros(init_shape, dtype=dtype), jnp.asarray(1.0, dtype=dtype), default_cosmo_features(dtype),
     )
     return LocalPairCorrection(
-        params=params,
-        channels=int(channels),
-        cutoff_cells=float(cutoff_cells),
-        max_force_fraction=float(max_force_fraction),
-        output_init_scale=float(output_init_scale),
-        allow_missing_sigma8=bool(allow_missing_sigma8),
-        sigma8_value=float(sigma8_value),
-        dtype=dtype,
+        params=params, channels=int(channels), cutoff_cells=float(cutoff_cells),
+        max_force_fraction=float(max_force_fraction), output_init_scale=float(output_init_scale),
+        allow_missing_sigma8=bool(allow_missing_sigma8), sigma8_value=float(sigma8_value), dtype=dtype,
     )
 
 
@@ -333,25 +237,15 @@ def evaluate_local_pair_potential(correction, source, a, cosmo, conf):
     if not isinstance(correction, LocalPairCorrection):
         raise TypeError("local pair potential requires LocalPairCorrection")
     transform = local_pair_transform(
-        conf,
-        correction.channels,
-        correction.cutoff_cells,
-        correction.max_force_fraction,
-        correction.output_init_scale,
+        conf, correction.channels, correction.cutoff_cells, correction.max_force_fraction, correction.output_init_scale,
     )
     apply_fn = partial(transform.apply)
     mesh_spec = owned_mesh_partition_spec(source.ndim)
     apply_fn = maybe_shard_map_mesh_local_op(
-        apply_fn,
-        conf,
-        in_specs=(None, mesh_spec, None, None),
-        out_specs=mesh_spec,
-        check_rep=False,
+        apply_fn, conf, in_specs=(None, mesh_spec, None, None), out_specs=mesh_spec, check_rep=False,
     )
     return apply_fn(
-        correction.params,
-        source.astype(correction.dtype),
-        jnp.asarray(a, dtype=correction.dtype),
+        correction.params, source.astype(correction.dtype), jnp.asarray(a, dtype=correction.dtype),
         correction_cosmo_features(correction, cosmo, correction.dtype),
     ).astype(conf.float_dtype)
 
@@ -387,14 +281,7 @@ def _downsample_force_source_to_particle_grid(source, factors):
         return source
     sx, sy, sz = source.shape
     fx, fy, fz = factors
-    return source.reshape(
-        sx // fx,
-        fx,
-        sy // fy,
-        fy,
-        sz // fz,
-        fz,
-    ).mean(axis=(1, 3, 5))
+    return source.reshape(sx // fx, fx, sy // fy, fy, sz // fz, fz, ).mean(axis=(1, 3, 5))
 
 
 def _upsample_particle_force_to_force_mesh(force_mesh, factors):
@@ -417,10 +304,7 @@ def apply_local_pair_correction(correction, a, ptcl, cosmo, conf):
     mesh_spec = owned_mesh_partition_spec(potential.ndim)
     vector_spec = owned_mesh_partition_spec(potential.ndim + 1)
     gradient_fn = maybe_shard_map_mesh_local_op(
-        partial(_negative_central_gradient, conf=conf),
-        conf,
-        in_specs=(mesh_spec,),
-        out_specs=vector_spec,
+        partial(_negative_central_gradient, conf=conf), conf, in_specs=(mesh_spec, ), out_specs=vector_spec,
         check_rep=False,
     )
     force_mesh = _upsample_particle_force_to_force_mesh(gradient_fn(potential), factors)
@@ -448,10 +332,7 @@ def _normalized_particle_vector(vector, ptcl):
         mask = mask & ~ptcl.halo_mask
     weights = mask.astype(vector.dtype)
     count = jnp.maximum(jnp.sum(weights), jnp.asarray(1.0, dtype=vector.dtype))
-    rms = jnp.sqrt(
-        jnp.sum(jnp.sum(vector * vector, axis=-1) * weights) / count
-        + jnp.asarray(1e-8, dtype=vector.dtype)
-    )
+    rms = jnp.sqrt(jnp.sum(jnp.sum(vector * vector, axis=-1) * weights) / count + jnp.asarray(1e-8, dtype=vector.dtype))
     normalized = vector / rms
     return jnp.where(mask[..., None], normalized, jnp.zeros_like(normalized))
 
@@ -501,39 +382,27 @@ def local_pair_phase_space_head(params, a, ptcl, cosmo, conf, local_pair):
             )
         local_acceleration = evaluator(a, ptcl, cosmo, conf)
         sigma8 = jnp.asarray(getattr(local_pair, "sigma8_value", 0.8), dtype=dtype)
-    mesh_ratio = jnp.asarray(
-        conf.mesh_shape[0] / conf.ptcl_grid_shape[0], dtype=dtype
-    )
+    mesh_ratio = jnp.asarray(conf.mesh_shape[0] / conf.ptcl_grid_shape[0], dtype=dtype)
     scale_factor = jnp.asarray(a, dtype=dtype)
-    features = jnp.asarray(
-        [scale_factor, scale_factor * scale_factor, mesh_ratio, omega_m, sigma8],
-        dtype=dtype,
-    )
+    features = jnp.asarray([scale_factor, scale_factor * scale_factor, mesh_ratio, omega_m, sigma8], dtype=dtype, )
     hidden = jax.nn.gelu(features @ params["input_weight"] + params["input_bias"])
     coefficients = hidden @ params["output_weight"] + params["output_bias"]
 
     velocity = ptcl.vel if ptcl.vel is not None else jnp.zeros_like(ptcl.disp)
     acceleration = ptcl.acc if ptcl.acc is not None else jnp.zeros_like(ptcl.disp)
-    bases = jnp.stack(
-        [
-            _normalized_particle_vector(local_acceleration, ptcl),
-            _normalized_particle_vector(acceleration, ptcl),
-            _normalized_particle_vector(velocity, ptcl),
-        ],
-        axis=0,
-    )
+    bases = jnp.stack([
+        _normalized_particle_vector(local_acceleration, ptcl),
+        _normalized_particle_vector(acceleration, ptcl),
+        _normalized_particle_vector(velocity, ptcl),
+    ], axis=0,
+                      )
     raw_displacement = jnp.sum(coefficients[:3, None, None] * bases, axis=0)
     raw_velocity = jnp.sum(coefficients[3:, None, None] * bases, axis=0)
     return raw_displacement, raw_velocity
 
 
 def init_local_pair_phase_space_correction(
-    key,
-    *,
-    channels=32,
-    max_displacement_cells=0.25,
-    max_velocity_cells=0.25,
-    dtype=jnp.float32,
+    key, *, channels=32, max_displacement_cells=0.25, max_velocity_cells=0.25, dtype=jnp.float32,
 ):
     """Initialize a zero-output two-layer phase head for ``NBodyCorrection``."""
     from .nbody import BoundedPhaseSpaceCorrection
@@ -546,30 +415,19 @@ def init_local_pair_phase_space_correction(
     input_weight = input_weight / jnp.sqrt(jnp.asarray(5.0, dtype=dtype))
     params = {
         "input_weight": input_weight,
-        "input_bias": jnp.zeros((int(channels),), dtype=dtype),
+        "input_bias": jnp.zeros((int(channels), ), dtype=dtype),
         "output_weight": jnp.zeros((int(channels), 6), dtype=dtype),
-        "output_bias": jnp.zeros((6,), dtype=dtype),
+        "output_bias": jnp.zeros((6, ), dtype=dtype),
     }
     return BoundedPhaseSpaceCorrection(
-        params=params,
-        apply_fn=local_pair_phase_space_head,
-        context_fn=prepare_local_pair_phase_context,
-        max_displacement_cells=float(max_displacement_cells),
-        max_velocity_cells=float(max_velocity_cells),
-        mean_free=True,
-        invertible=False,
-        dtype=dtype,
+        params=params, apply_fn=local_pair_phase_space_head, context_fn=prepare_local_pair_phase_context,
+        max_displacement_cells=float(max_displacement_cells), max_velocity_cells=float(max_velocity_cells),
+        mean_free=True, invertible=False, dtype=dtype,
     )
 
 
 __all__ = [
-    "LocalPairCorrection",
-    "LocalPairPhaseContext",
-    "RadialLocalPairPotential",
-    "apply_local_pair_correction",
-    "evaluate_local_pair_potential",
-    "init_local_pair_correction",
-    "init_local_pair_phase_space_correction",
-    "local_pair_phase_space_head",
-    "prepare_local_pair_phase_context",
+    "LocalPairCorrection", "LocalPairPhaseContext", "RadialLocalPairPotential", "apply_local_pair_correction",
+    "evaluate_local_pair_potential", "init_local_pair_correction", "init_local_pair_phase_space_correction",
+    "local_pair_phase_space_head", "prepare_local_pair_phase_context",
 ]

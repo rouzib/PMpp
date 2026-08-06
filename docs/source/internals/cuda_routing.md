@@ -192,21 +192,25 @@ or loads it unconditionally.
 
 ## Build artifact and manifest
 
-The extension is built separately from the pure Python wheel. From a source
-checkout, use the Python interpreter that provides the active JAX installation:
+The wheel ships the CUDA sources but no compiled library. The installed command
+uses the active JAX environment, detects visible GPU architectures, and copies
+only the library and manifest into the package or versioned user cache:
 
 ```bash
-python cuda/build_cuda_routing.py
+pmpp-build-cuda-routing
 ```
 
-The script configures `cuda/CMakeLists.txt`, builds
-`cuda/build/libpmpp_cuda_routing.so`, and writes
-`cuda/build/pmpp_cuda_routing.manifest.json`. The manifest records the ABI
-record version, registered targets, JAX versions, embedded CUDA architectures,
-source revision, and artifact hash.
+The command invokes the packaged `cuda/build_cuda_routing.py` in a temporary
+directory. That script configures `cuda/CMakeLists.txt` and writes
+`libpmpp_cuda_routing.so` plus `pmpp_cuda_routing.manifest.json`. The manifest
+records the ABI record version, registered targets, PM++ and JAX versions,
+embedded CUDA architectures, source revision when available, and artifact
+hash. Developers can still call the lower-level script directly from a source
+checkout.
 
 PM++ searches the source build directory and the package-local `pmpp/_cuda`
-directory. A different artifact can be selected explicitly:
+directory, followed by the versioned user cache. A different artifact can be
+selected explicitly:
 
 ```bash
 export PMPP_CUDA_ROUTING_LIBRARY=/absolute/path/libpmpp_cuda_routing.so
@@ -222,6 +226,9 @@ the optional artifact is absent.
   merges, transpose kernels, and typed FFI bindings
 - `cuda/CMakeLists.txt`: JAX and CUDA headers and shared-library target
 - `cuda/build_cuda_routing.py`: reproducible build and ABI manifest
+- `build_cuda_routing.py`: installed command, architecture detection, and
+  artifact placement
+- `_cuda_paths.py`: shared package-local and user-cache paths
 - `cuda_routing.py`: discovery, qualification, registration, and Python FFI
   wrappers
 - `halo_moving.py`: canonical route, JAX collectives, capacity checks, and

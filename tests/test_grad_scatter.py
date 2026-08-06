@@ -24,7 +24,6 @@ try:
 except ImportError:
     pytest = None
 
-
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
 
 
@@ -36,12 +35,7 @@ def _particle_slot_mapping(ptcl_pmwd, conf):
     for i in range(conf.num_devices):
         gpu_id = conf.devices_index[i]
         _, _, pid_vel, _, unused_index, _ = Particles.distribute_ptcl_pos(
-            ptcl_pmwd.pmid,
-            ptcl_pmwd.disp,
-            pid_payload,
-            None,
-            conf,
-            gpu_id,
+            ptcl_pmwd.pmid, ptcl_pmwd.disp, pid_payload, None, conf, gpu_id,
         )
         pid_slots.append(np.asarray(pid_vel[:, 0]))
         unused_slots.append(np.asarray(unused_index))
@@ -77,30 +71,18 @@ def test_scatter_gradient_matches_pmwd_for_unique_pmid_particles():
         raise SystemExit("scatter gradient test requires at least 1 GPU")
 
     conf = init_conf(
-        num_ptcl=6,
-        mesh_shape=1,
-        box_size=100.0,
-        num_devices=2,
-        max_ptcl_per_slice=1.6,
-        max_share_ptcl=20000,
-        max_share_gather_ptcl=50000,
-        multigpu_mode="particle_halo",
+        num_ptcl=6, mesh_shape=1, box_size=100.0, num_devices=2, max_ptcl_per_slice=1.6, max_share_ptcl=20000,
+        max_share_gather_ptcl=50000, multigpu_mode="particle_halo",
     )
     conf_pmwd = ConfigurationPMWD(
-        ptcl_spacing=conf.ptcl_spacing,
-        ptcl_grid_shape=conf.ptcl_grid_shape,
-        mesh_shape=conf.mesh_shape,
-        a_start=conf.a_start,
-        a_nbody_maxstep=conf.a_nbody_maxstep,
+        ptcl_spacing=conf.ptcl_spacing, ptcl_grid_shape=conf.ptcl_grid_shape, mesh_shape=conf.mesh_shape,
+        a_start=conf.a_start, a_nbody_maxstep=conf.a_nbody_maxstep,
     )
 
     ptcl_pmwd = ParticlesPMWD.gen_grid(conf_pmwd)
     key = jax.random.PRNGKey(42)
     disp = jax.random.uniform(
-        key,
-        shape=ptcl_pmwd.disp.shape,
-        minval=-0.45 * conf.cell_size,
-        maxval=0.45 * conf.cell_size,
+        key, shape=ptcl_pmwd.disp.shape, minval=-0.45 * conf.cell_size, maxval=0.45 * conf.cell_size,
     )
     ptcl_pmwd = ptcl_pmwd.replace(disp=disp.astype(conf.float_dtype))
     ptcl_pmpp = Particles.from_ptcl(ptcl_pmwd, conf)
@@ -132,22 +114,15 @@ def test_scatter_gradient_matches_pmwd_for_unique_pmid_particles():
     grad_pmpp_explicit_slots = np.asarray(jax.device_get(jax.grad(loss_pmpp_explicit)(ptcl_pmpp.disp)))
     assert np.allclose(grad_pmpp_slots, grad_pmpp_explicit_slots, atol=1e-6, rtol=1e-6)
 
-    grad_pmpp = _sum_duplicate_slot_gradients(
-        grad_pmpp_slots,
-        pid_slots,
-        valid_slots,
-        conf.ptcl_num,
-    )
+    grad_pmpp = _sum_duplicate_slot_gradients(grad_pmpp_slots, pid_slots, valid_slots, conf.ptcl_num, )
 
     assert np.allclose(grad_pmpp, grad_pmwd, atol=1e-6, rtol=1e-6)
 
 
 if pytest is not None:
     test_scatter_gradient_matches_pmwd_for_unique_pmid_particles = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason="scatter gradient test requires at least 1 GPU",
+        GPU_COUNT < 1, reason="scatter gradient test requires at least 1 GPU",
     )(test_scatter_gradient_matches_pmwd_for_unique_pmid_particles)
-
 
 if __name__ == "__main__":
     test_scatter_gradient_matches_pmwd_for_unique_pmid_particles()

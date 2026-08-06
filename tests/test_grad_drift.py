@@ -32,27 +32,17 @@ try:
 except ImportError:
     pytest = None
 
-
 GPU_COUNT = len([device for device in jax.devices() if device.platform == "gpu"])
 
 
 def _build_crossing_state():
     conf = init_conf(
-        num_ptcl=16,
-        mesh_shape=1,
-        box_size=100.0,
-        num_devices=2,
-        max_ptcl_per_slice=1.25,
-        max_share_ptcl=1024,
-        max_share_gather_ptcl=2048,
-        multigpu_mode="particle_halo",
+        num_ptcl=16, mesh_shape=1, box_size=100.0, num_devices=2, max_ptcl_per_slice=1.25, max_share_ptcl=1024,
+        max_share_gather_ptcl=2048, multigpu_mode="particle_halo",
     )
     conf_pmwd = ConfigurationPMWD(
-        ptcl_spacing=conf.ptcl_spacing,
-        ptcl_grid_shape=conf.ptcl_grid_shape,
-        mesh_shape=conf.mesh_shape,
-        a_start=conf.a_start,
-        a_nbody_maxstep=conf.a_nbody_maxstep,
+        ptcl_spacing=conf.ptcl_spacing, ptcl_grid_shape=conf.ptcl_grid_shape, mesh_shape=conf.mesh_shape,
+        a_start=conf.a_start, a_nbody_maxstep=conf.a_nbody_maxstep,
     )
     cosmo_pmwd = boltzmann_pmwd(SimpleLCDM_PMWD(conf_pmwd), conf_pmwd)
     cosmo_pmpp = boltzmann_pmpp(SimpleLCDM_PMPP(conf), conf)
@@ -61,10 +51,7 @@ def _build_crossing_state():
     key = jax.random.PRNGKey(0)
     key_disp, key_vel = jax.random.split(key)
     disp = jax.random.uniform(
-        key_disp,
-        ptcl_pmwd.disp.shape,
-        minval=-0.25 * conf.cell_size,
-        maxval=0.25 * conf.cell_size,
+        key_disp, ptcl_pmwd.disp.shape, minval=-0.25 * conf.cell_size, maxval=0.25 * conf.cell_size,
     )
 
     a_vel = conf.a_start
@@ -84,9 +71,7 @@ def _build_crossing_state():
 
     pid_payload = jnp.repeat(jnp.arange(conf.ptcl_num, dtype=conf.float_dtype)[:, None], 3, axis=1)
     ptcl_pmwd = ptcl_pmwd.replace(
-        disp=disp.astype(conf.float_dtype),
-        vel=vel.astype(conf.float_dtype),
-        acc=pid_payload,
+        disp=disp.astype(conf.float_dtype), vel=vel.astype(conf.float_dtype), acc=pid_payload,
     )
     ptcl_pmpp = Particles.from_ptcl(ptcl_pmwd, conf)
 
@@ -196,10 +181,8 @@ def test_drift_matches_pmwd_for_forward_and_adjoint():
 
 if pytest is not None:
     test_drift_matches_pmwd_for_forward_and_adjoint = pytest.mark.skipif(
-        GPU_COUNT < 1,
-        reason="drift gradient test requires at least 1 GPU",
+        GPU_COUNT < 1, reason="drift gradient test requires at least 1 GPU",
     )(test_drift_matches_pmwd_for_forward_and_adjoint)
-
 
 if __name__ == "__main__":
     test_drift_matches_pmwd_for_forward_and_adjoint()
