@@ -296,10 +296,3 @@ General utilities
 .. autofunction:: pmpp.analysis.plotting.plot_particle_bins_callback
 
 .. autofunction:: pmpp.analysis.plotting.resolve_title
-
-Package API machinery
----------------------
-
-.. autoclass:: pmpp._api._LazyAPIModule
-
-.. autofunction:: pmpp._api.install_lazy_api

@@ -1,13 +1,7 @@
 """Cloud-in-cell scatter and gather operators."""
 
-from .._api import install_lazy_api
+from .pallas import pallas_cic_supported
+from .gather import _gather, gather
+from .scatter import _scatter, scatter
 
-_EXPORTS = {
-    "_gather": (".gather", "_gather"),
-    "_scatter": (".scatter", "_scatter"),
-    "gather": (".gather", "gather"),
-    "pallas_cic_supported": (".pallas", "pallas_cic_supported"),
-    "scatter": (".scatter", "scatter"),
-}
-
-install_lazy_api(__name__, _EXPORTS)
+__all__ = ["_gather", "_scatter", "gather", "pallas_cic_supported", "scatter"]

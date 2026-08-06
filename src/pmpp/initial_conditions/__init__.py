@@ -1,12 +1,6 @@
 """Random modes and Lagrangian initial-condition construction."""
 
-from .._api import install_lazy_api
+from .modes import linear_modes, white_noise, white_noise_nested
+from .lpt import lpt
 
-_EXPORTS = {
-    "linear_modes": (".modes", "linear_modes"),
-    "lpt": (".lpt", "lpt"),
-    "white_noise": (".modes", "white_noise"),
-    "white_noise_nested": (".modes", "white_noise_nested"),
-}
-
-install_lazy_api(__name__, _EXPORTS)
+__all__ = ["linear_modes", "lpt", "white_noise", "white_noise_nested"]

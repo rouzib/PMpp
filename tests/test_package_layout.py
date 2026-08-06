@@ -1,11 +1,16 @@
 """Import-contract tests for the feature-oriented PM++ package layout."""
 
 import importlib.util
+import inspect
 from pathlib import Path
 import subprocess
 import sys
 
 import pmpp
+import pmpp.cic as cic_package
+import pmpp.core as core_package
+import pmpp.cosmology as cosmology_package
+import pmpp.nbody as nbody_package
 from pmpp.analysis import density_to_pk
 from pmpp.cic import gather, scatter
 from pmpp.core import Configuration, pmid_to_idx
@@ -19,10 +24,11 @@ from pmpp.nbody import Particles, nbody
 from pmpp.numerics import fftfwd, odeint
 
 LEGACY_FLAT_IMPORTS = {
-    "FFT_distributed", "_compat", "_cuda_paths", "boltzmann", "build_cuda_routing", "camels_io", "configuration",
-    "cosmo", "cuda_routing", "enmesh", "fft", "gather", "gravity", "growth", "halo_moving", "lpt", "mesh_halo", "modes",
-    "multigpu_configuration", "nbody_observers", "ode_util", "pallas_cic", "particles", "plotting_utils",
-    "potential_correction", "power_spectrum", "quijote_io", "quijote_metrics", "scatter", "steps", "utils",
+    "FFT_distributed", "_api", "_compat", "_cuda_paths", "boltzmann", "build_cuda_routing", "camels_io",
+    "configuration", "cosmo", "cuda_routing", "enmesh", "fft", "gather", "gravity", "growth", "halo_moving", "lpt",
+    "mesh_halo", "modes", "multigpu_configuration", "nbody_observers", "ode_util", "pallas_cic", "particles",
+    "plotting_utils", "potential_correction", "power_spectrum", "quijote_io", "quijote_metrics", "scatter", "steps",
+    "utils",
 }
 LEGACY_FLAT_FILES = {f"{name}.py" for name in LEGACY_FLAT_IMPORTS} | {"nbody.py"}
 
@@ -31,6 +37,10 @@ def test_feature_package_initializers_expose_supported_apis():
     """Feature packages expose the supported task-level interfaces."""
     assert pmpp.Configuration is Configuration
     assert pmpp.MultiGPUConfiguration is MultiGPUConfiguration
+    assert inspect.getattr_static(core_package, "Configuration") is Configuration
+    assert inspect.getattr_static(cic_package, "scatter") is scatter
+    assert inspect.getattr_static(cosmology_package, "boltzmann") is boltzmann
+    assert inspect.getattr_static(nbody_package, "nbody") is nbody
     for api in (
         CamelsMetadata, Cosmology, Particles, QuijoteCanonicalization, apply_potential_correction, boltzmann,
         build_cuda_main, create_compute_mesh, density_to_pk, fftfwd, gather, linear_modes, lpt, nbody, odeint,

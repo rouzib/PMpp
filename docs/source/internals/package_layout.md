@@ -6,7 +6,6 @@ implementation has one canonical module path.
 
 ```text
 src/pmpp/
-|-- _api.py                  # Lazy feature-package export helper
 |-- core/                    # Configuration and shared JAX utilities
 |-- cosmology/               # Cosmology models, transfer, and growth
 |-- initial_conditions/      # White noise, linear modes, and LPT
@@ -81,7 +80,7 @@ or `pmpp.analysis`.
 
 Implementation files such as `pmpp.nbody.integrator` and
 `pmpp.distributed.routing` are internal organization details. Package
-initializers for the solver features use the shared lazy export map in
-`pmpp._api`. This avoids broad import cycles and lets implementation files move
-without changing callers. The former flat module paths are intentionally
-absent.
+initializers use ordinary explicit imports as their public interface. This lets
+Python IDEs and static-analysis tools resolve every exported name, while
+implementation files can still move without changing callers. The former flat
+module paths are intentionally absent.

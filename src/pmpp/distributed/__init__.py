@@ -1,22 +1,15 @@
 """Multi-device topology, FFTs, halo exchange, and particle routing."""
 
-from .._api import install_lazy_api
+from ..core.utils import AXIS_NAME, create_compute_mesh
+from . import build_cuda, cuda, routing
+from .build_cuda import main as build_cuda_main
+from .configuration import MultiGPUConfiguration, build_multigpu_configuration, initialize_multigpu_runtime
+from .cuda import extension_status, supported_configuration
+from .fft import create_batched_transposed_real_ffts, create_ffts
+from .routing import _exchange_compacted_particles_packed
 
-_EXPORTS = {
-    "AXIS_NAME": ("..core", "AXIS_NAME"),
-    "MultiGPUConfiguration": (".configuration", "MultiGPUConfiguration"),
-    "_exchange_compacted_particles_packed": (".routing", "_exchange_compacted_particles_packed"),
-    "build_cuda": (".build_cuda", None),
-    "build_cuda_main": (".build_cuda", "main"),
-    "build_multigpu_configuration": (".configuration", "build_multigpu_configuration"),
-    "create_batched_transposed_real_ffts": (".fft", "create_batched_transposed_real_ffts"),
-    "create_compute_mesh": ("..core", "create_compute_mesh"),
-    "create_ffts": (".fft", "create_ffts"),
-    "cuda": (".cuda", None),
-    "extension_status": (".cuda", "extension_status"),
-    "initialize_multigpu_runtime": (".configuration", "initialize_multigpu_runtime"),
-    "routing": (".routing", None),
-    "supported_configuration": (".cuda", "supported_configuration"),
-}
-
-install_lazy_api(__name__, _EXPORTS)
+__all__ = [
+    "AXIS_NAME", "MultiGPUConfiguration", "_exchange_compacted_particles_packed", "build_cuda", "build_cuda_main",
+    "build_multigpu_configuration", "create_batched_transposed_real_ffts", "create_compute_mesh", "create_ffts", "cuda",
+    "extension_status", "initialize_multigpu_runtime", "routing", "supported_configuration",
+]
