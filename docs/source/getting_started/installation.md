@@ -29,7 +29,8 @@ The standard package uses the portable JAX router. For the optional compiled
 extension, install a CUDA development toolkit and run
 `pmpp-build-cuda-routing` once in the PM++ environment. See the
 [CUDA routing guide](../user_guide/cuda_routing.md) for requirements,
-architecture detection, and verification.
+architecture detection, and verification. The toolkit's `nvcc` must be a
+version supported by the CUDA build of JAX installed in that environment.
 ```
 
 ## Verify the backend

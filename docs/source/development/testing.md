@@ -30,6 +30,21 @@ Set `XLA_PYTHON_CLIENT_PREALLOCATE=false` when that is part of the tested
 environment, and set `PYTHONPATH` to include the repository/test helpers when
 running directly from a checkout.
 
+## Full maintained suite
+
+From the repository root, run the complete maintained test suite with:
+
+```bash
+PYTHONPATH="$PWD:$PWD/tests" \
+XLA_PYTHON_CLIENT_PREALLOCATE=false \
+python -m pytest -c pyproject.toml -q -rs tests
+```
+
+The `tests/` argument intentionally limits collection to the maintained suite.
+The `-rs` option reports why any hardware- or data-dependent tests were
+skipped. Run the suite with all intended GPUs visible and allow enough time for
+JAX compilation and the multi-GPU scientific tests.
+
 ## Test layers
 
 1. **Shape and dtype:** global/logical shapes, sharding, masks, and dtypes.

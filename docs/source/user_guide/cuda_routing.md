@@ -27,7 +27,8 @@ shared library. Compiling the extension requires:
 
 - Python 3.10 or newer
 - JAX and `jaxlib` 0.6.0 or newer with CUDA support
-- the CUDA toolkit with `nvcc`, CUDA runtime headers, and CUB
+- a CUDA toolkit supported by the active JAX CUDA build, with the matching
+  `nvcc`, CUDA runtime headers, and CUB
 - CMake 3.24 or newer
 - `nvidia-smi` for automatic architecture detection, or an explicit
   `--cuda-architectures` list
@@ -37,6 +38,12 @@ runtime libraries installed with JAX. The build command reports a clear error
 if `cmake`, `nvcc`, JAX, or `jaxlib` is missing. At least two GPUs are required
 to use and validate multi-GPU routing, although compilation itself does not
 depend on the number of GPUs.
+
+Do not select `nvcc` independently of JAX. For example, a CUDA 12 JAX build
+needs a compatible CUDA 12 toolkit, while a CUDA 13 JAX build needs a
+compatible CUDA 13 toolkit. See
+[CUDA routing build uses an incompatible `nvcc`](troubleshooting.md#cuda-routing-build-uses-an-incompatible-nvcc)
+for checks and cluster-module guidance.
 
 CUDA routing supports float32 and float64 simulation fields, `int16` or
 `int32` particle mesh indices (`pmid`), and `mesh_halo` mode. The indices are

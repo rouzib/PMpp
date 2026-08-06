@@ -45,4 +45,5 @@ multigpu
 optimizations
 pallas_cic
 cuda_routing
+troubleshooting
 ```

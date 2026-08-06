@@ -34,6 +34,41 @@ job start. A login-node device check does not describe the compute node. On
 managed clusters, keep site-specific module, account, and path commands out of
 portable PM++ examples.
 
+## CUDA routing build uses an incompatible `nvcc`
+
+**Symptom:** `pmpp-build-cuda-routing` fails while compiling or linking, or a
+previously built routing library stops loading after JAX is upgraded.
+
+**Meaning:** the optional PM++ CUDA extension is compiled with the `nvcc`
+selected by `PATH`, but it uses the active environment's JAX and `jaxlib`
+headers and runs beside that JAX CUDA installation. The compiler toolkit must
+therefore be supported by the installed JAX CUDA build. PM++ does not define a
+separate CUDA compiler compatibility matrix.
+
+**Action:** inspect both installations before building:
+
+```bash
+python -m pip list | grep -E '^(jax|jaxlib|jax-cuda)'
+nvcc --version
+```
+
+Use a compatible toolkit from the same CUDA major family as the JAX build. A
+CUDA 12 JAX build requires a supported CUDA 12 `nvcc`; a CUDA 13 JAX build
+requires a supported CUDA 13 `nvcc`. Consult the
+[JAX installation matrix](https://docs.jax.dev/en/latest/installation.html#pip-installation-nvidia-gpu-cuda-installed-locally-harder)
+for the exact toolkit constraints of the installed JAX line. On a cluster,
+load or select the matching CUDA module before activating the environment, and
+confirm that `PATH` and `LD_LIBRARY_PATH` do not select a different toolkit.
+After changing JAX or CUDA, rebuild the extension with:
+
+```bash
+pmpp-build-cuda-routing --force
+```
+
+Ordinary PM++ execution with the portable JAX router does not require `nvcc`;
+this requirement applies only when compiling the optional CUDA routing
+extension.
+
 ## Unexpected recompilation
 
 **Symptom:** repeated calls compile again.
