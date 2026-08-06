@@ -65,22 +65,22 @@ def pallas_available() -> bool:
     )
 
 
-def _tested_pallas_jax() -> bool:
-    """Return whether this JAX minor line is qualified for these kernels."""
+def _supported_pallas_jax_version() -> bool:
+    """Return whether JAX meets the minimum version for these kernels."""
 
     try:
         major, minor, *_ = (int(part) for part in jax.__version__.split("+")[0].split("."))
     except ValueError:  # pragma: no cover - defensive for nonstandard builds.
         return False
-    return (major, minor) in {(0, 6), (0, 10)}
+    return (major, minor) >= (0, 6)
 
 
 def pallas_cic_supported(dtype) -> bool:
     """Return whether optimized CIC forward and backward paths are usable here."""
 
     return (
-        pallas_available() and _tested_pallas_jax() and any(device.platform == "gpu" for device in jax.devices())
-        and jnp.dtype(dtype) == jnp.dtype(jnp.float32)
+        pallas_available() and _supported_pallas_jax_version()
+        and any(device.platform == "gpu" for device in jax.devices()) and jnp.dtype(dtype) == jnp.dtype(jnp.float32)
     )
 
 
