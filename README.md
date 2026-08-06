@@ -20,6 +20,10 @@ distributed ownership, mesh-halo, and FFT paths.
 
 ## Installation
 
+PM++ declares only a loose JAX version requirement. Install the JAX build for
+your accelerator and driver first by following the official
+[JAX installation guide](https://docs.jax.dev/en/latest/installation.html).
+
 On a computer with two visible GPUs:
 
 ```bash
@@ -36,9 +40,6 @@ git clone https://github.com/rouzib/PMpp.git ~/PMpp
 cd ~/PMpp
 jupyter lab docs/source/notebooks
 ```
-
-PM++ requests a CUDA 12-capable JAX build without pinning a specific JAX
-release on this target. 
 
 ## Current Scope
 
