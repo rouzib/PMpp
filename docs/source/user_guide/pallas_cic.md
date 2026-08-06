@@ -27,9 +27,8 @@ conf = Configuration(
 PM++ uses Pallas for both scatter and gather only when all of the following are
 true:
 
-- A JAX minor line qualified for these kernels is installed, currently 0.6 or
-  0.10, and `jax.experimental.pallas` is available. Other supported JAX minor
-  lines use reference CIC until they are qualified independently.
+- JAX 0.6 or newer is installed and exposes the required
+  `jax.experimental.pallas` APIs.
 - At least one JAX GPU device is visible.
 - `float_dtype` is `jax.numpy.float32`.
 
