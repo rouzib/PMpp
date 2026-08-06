@@ -56,9 +56,12 @@ def _atomic_add(ref, index, value, *, mask=None):
 def pallas_available() -> bool:
     """Return whether the installed JAX exposes the required Triton Pallas API."""
 
+    memory_ops_available = (pl is not None and all(
+        hasattr(pl, name) for name in ("load", "store", "atomic_add")
+    )) or (pl_triton is not None and all(hasattr(pl_triton, name) for name in ("load", "store", "atomic_add")))
     return (
         pl is not None and hasattr(pl, "pallas_call") and pl_triton is not None
-        and hasattr(pl_triton, "CompilerParams") and hasattr(pl_triton, "load") and hasattr(pl_triton, "atomic_add")
+        and hasattr(pl_triton, "CompilerParams") and memory_ops_available
     )
 
 
