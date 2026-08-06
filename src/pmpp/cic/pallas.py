@@ -23,21 +23,53 @@ try:  # Keep importing PM++ possible with older JAX installations.
 except Exception:  # pragma: no cover - exercised only by old JAX versions.
     pl = None
 
+try:  # JAX 0.10 moved GPU memory operations to the Triton submodule.
+    from jax.experimental.pallas import triton as pl_triton
+except Exception:  # pragma: no cover - exercised only by old JAX versions.
+    pl_triton = None
+
+
+def _load(ref, index, *, mask=None, other=None):
+    """Load through the Pallas memory API exposed by this JAX version."""
+
+    if hasattr(pl, "load"):
+        return pl.load(ref, index, mask=mask, other=other)
+    return pl_triton.load(ref.at[index], mask=mask, other=other)
+
+
+def _store(ref, index, value, *, mask=None):
+    """Store through the Pallas memory API exposed by this JAX version."""
+
+    if hasattr(pl, "store"):
+        return pl.store(ref, index, value, mask=mask)
+    return pl_triton.store(ref.at[index], value, mask=mask)
+
+
+def _atomic_add(ref, index, value, *, mask=None):
+    """Atomic add through the Pallas memory API exposed by this JAX version."""
+
+    if hasattr(pl, "atomic_add"):
+        return pl.atomic_add(ref, index, value, mask=mask)
+    return pl_triton.atomic_add(ref, index, value, mask=mask)
+
 
 def pallas_available() -> bool:
-    """Return whether the installed JAX exposes Pallas."""
+    """Return whether the installed JAX exposes the required Triton Pallas API."""
 
-    return pl is not None and hasattr(pl, "pallas_call")
+    return (
+        pl is not None and hasattr(pl, "pallas_call") and pl_triton is not None
+        and hasattr(pl_triton, "CompilerParams") and hasattr(pl_triton, "load") and hasattr(pl_triton, "atomic_add")
+    )
 
 
 def _tested_pallas_jax() -> bool:
-    """Return whether this is the JAX minor line qualified for these kernels."""
+    """Return whether this JAX minor line is qualified for these kernels."""
 
     try:
         major, minor, *_ = (int(part) for part in jax.__version__.split("+")[0].split("."))
     except ValueError:  # pragma: no cover - defensive for nonstandard builds.
         return False
-    return (major, minor) == (0, 6)
+    return (major, minor) in {(0, 6), (0, 10)}
 
 
 def pallas_cic_supported(dtype) -> bool:
@@ -143,19 +175,19 @@ def _make_cic_coordinate_helper(*, spatial_shape, global_shape, cell_size_is_exp
     def _particle_coordinates(pmid_ref, disp_ref, offset_ref, cell_ref, particle, lane_valid):
         work_dtype = jnp.float32
         pmid = tuple(
-            pl.load(pmid_ref, (particle, axis), mask=lane_valid, other=0).astype(jnp.int32) for axis in range(dim)
+            _load(pmid_ref, (particle, axis), mask=lane_valid, other=0).astype(jnp.int32) for axis in range(dim)
         )
         disp = tuple(
-            pl.load(disp_ref, (particle, axis), mask=lane_valid, other=0).astype(work_dtype) for axis in range(dim)
+            _load(disp_ref, (particle, axis), mask=lane_valid, other=0).astype(work_dtype) for axis in range(dim)
         )
-        offset = tuple(pl.load(offset_ref, (axis, )).astype(work_dtype) for axis in range(dim))
+        offset = tuple(_load(offset_ref, (axis, )).astype(work_dtype) for axis in range(dim))
 
         indices = []
         fractions = []
         fraction_grads = []
 
         if cell_size_is_explicit:
-            a2 = pl.load(cell_ref, ()).astype(work_dtype)
+            a2 = _load(cell_ref, ()).astype(work_dtype)
             for bits in neighbour_bits:
                 idx_axes = []
                 axis_weights = []
@@ -246,7 +278,7 @@ def _make_cic_forward_kernel(
             block = pl.program_id(0)
             lanes = jnp.arange(block_size, dtype=jnp.int32)
             lane_valid = (block * block_size + lanes) < particle_count
-            particle_valid = lane_valid & pl.load(valid_ref, (lanes, ), mask=lane_valid, other=False)
+            particle_valid = lane_valid & _load(valid_ref, (lanes, ), mask=lane_valid, other=False)
             indices, fractions, _, _ = coordinates(pmid_ref, disp_ref, offset_ref, cell_ref, lanes, lane_valid)
             scalar_val = val_ref.shape == ()
             for index, fraction in zip(indices, fractions):
@@ -254,17 +286,16 @@ def _make_cic_forward_kernel(
                 if channel_shape:
                     for channel in np.ndindex(channel_shape):
                         value = (
-                            pl.load(val_ref, channel) if scalar_val else pl.load(
+                            _load(val_ref, channel) if scalar_val else _load(
                                 val_ref, (lanes, ) + channel, mask=particle_valid, other=0,
                             )
                         )
-                        pl.atomic_add(mesh_ref, index + channel, value * fraction, mask=valid)
+                        _atomic_add(mesh_ref, index + channel, value * fraction, mask=valid)
                 else:
                     value = (
-                        pl.load(val_ref,
-                                ()) if scalar_val else pl.load(val_ref, (lanes, ), mask=particle_valid, other=0)
+                        _load(val_ref, ()) if scalar_val else _load(val_ref, (lanes, ), mask=particle_valid, other=0)
                     )
-                    pl.atomic_add(mesh_ref, index, value * fraction, mask=valid)
+                    _atomic_add(mesh_ref, index, value * fraction, mask=valid)
 
         return kernel
 
@@ -272,14 +303,14 @@ def _make_cic_forward_kernel(
         block = pl.program_id(0)
         lanes = jnp.arange(block_size, dtype=jnp.int32)
         lane_valid = (block * block_size + lanes) < particle_count
-        particle_valid = lane_valid & pl.load(valid_ref, (lanes, ), mask=lane_valid, other=False)
+        particle_valid = lane_valid & _load(valid_ref, (lanes, ), mask=lane_valid, other=False)
         indices, fractions, _, _ = coordinates(pmid_ref, disp_ref, offset_ref, cell_ref, lanes, lane_valid)
         for channel in np.ndindex(channel_shape) if channel_shape else [()]:
             result = jnp.zeros((block_size, ), dtype=jnp.float32)
             for index, fraction in zip(indices, fractions):
                 valid = _bounds_mask(index, spatial_shape)
-                result = result + pl.load(mesh_ref, index + channel, mask=valid & particle_valid, other=0) * fraction
-            pl.store(out_ref, (lanes, ) + channel, result, mask=lane_valid)
+                result = result + _load(mesh_ref, index + channel, mask=valid & particle_valid, other=0) * fraction
+            _store(out_ref, (lanes, ) + channel, result, mask=lane_valid)
 
     return kernel
 
@@ -301,7 +332,7 @@ def _make_gather_bwd_kernel(
         block = pl.program_id(0)
         lanes = jnp.arange(block_size, dtype=jnp.int32)
         lane_valid = (block * block_size + lanes) < particle_count
-        particle_valid = lane_valid & pl.load(valid_ref, (lanes, ), mask=lane_valid, other=False)
+        particle_valid = lane_valid & _load(valid_ref, (lanes, ), mask=lane_valid, other=False)
         indices, fractions, fraction_grads, cell_scale = coordinates(
             pmid_ref, disp_ref, offset_ref, cell_ref, lanes, lane_valid
         )
@@ -310,13 +341,13 @@ def _make_gather_bwd_kernel(
             valid = particle_valid & _bounds_mask(index, spatial_shape)
             for channel in np.ndindex(channel_shape) if channel_shape else [()]:
                 mesh_index = index + channel
-                mesh_value = pl.load(mesh_ref, mesh_index, mask=valid, other=0)
-                val_cot = pl.load(val_cot_ref, (lanes, ) + channel, mask=particle_valid, other=0)
-                pl.atomic_add(mesh_cot_ref, mesh_index, val_cot * fraction, mask=valid)
+                mesh_value = _load(mesh_ref, mesh_index, mask=valid, other=0)
+                val_cot = _load(val_cot_ref, (lanes, ) + channel, mask=particle_valid, other=0)
+                _atomic_add(mesh_cot_ref, mesh_index, val_cot * fraction, mask=valid)
                 for axis in range(3):
                     disp_result[axis] = disp_result[axis] + (val_cot * mesh_value * fraction_grad[axis])
         for axis in range(3):
-            pl.store(disp_cot_ref, (lanes, axis), disp_result[axis] / cell_scale, mask=lane_valid, )
+            _store(disp_cot_ref, (lanes, axis), disp_result[axis] / cell_scale, mask=lane_valid)
 
     return kernel
 
@@ -338,7 +369,7 @@ def _make_scatter_bwd_kernel(
         block = pl.program_id(0)
         lanes = jnp.arange(block_size, dtype=jnp.int32)
         lane_valid = (block * block_size + lanes) < particle_count
-        particle_valid = lane_valid & pl.load(valid_ref, (lanes, ), mask=lane_valid, other=False)
+        particle_valid = lane_valid & _load(valid_ref, (lanes, ), mask=lane_valid, other=False)
         indices, fractions, fraction_grads, cell_scale = coordinates(
             pmid_ref, disp_ref, offset_ref, cell_ref, lanes, lane_valid
         )
@@ -350,27 +381,27 @@ def _make_scatter_bwd_kernel(
             valid = particle_valid & _bounds_mask(index, spatial_shape)
             channel_sum = jnp.zeros((block_size, ), dtype=jnp.float32)
             for channel_index, channel in enumerate(channel_indices):
-                mesh_value = pl.load(mesh_cot_ref, index + channel, mask=valid, other=0)
+                mesh_value = _load(mesh_cot_ref, index + channel, mask=valid, other=0)
                 particle_value = (
-                    pl.load(val_ref,
-                            ()) if scalar_val else pl.load(val_ref, (lanes, ) + channel, mask=particle_valid, other=0)
+                    _load(val_ref,
+                          ()) if scalar_val else _load(val_ref, (lanes, ) + channel, mask=particle_valid, other=0)
                 )
                 weighted = mesh_value * fraction
                 if scalar_val:
                     # ``weighted`` is already zero for invalid/padded lanes;
                     # reducing the tile gives one scalar atomic update, which
                     # is the cotangent of a scalar particle value.
-                    pl.atomic_add(val_cot_ref, (), jnp.sum(weighted))
+                    _atomic_add(val_cot_ref, (), jnp.sum(weighted))
                 else:
                     val_result[channel_index] = val_result[channel_index] + weighted
                 channel_sum = channel_sum + mesh_value * particle_value
             for axis in range(3):
                 disp_result[axis] = disp_result[axis] + channel_sum * fraction_grad[axis]
         for axis in range(3):
-            pl.store(disp_cot_ref, (lanes, axis), disp_result[axis] / cell_scale, mask=lane_valid, )
+            _store(disp_cot_ref, (lanes, axis), disp_result[axis] / cell_scale, mask=lane_valid)
         if not scalar_val:
             for channel_index, channel in enumerate(channel_indices):
-                pl.store(val_cot_ref, (lanes, ) + channel, val_result[channel_index], mask=lane_valid)
+                _store(val_cot_ref, (lanes, ) + channel, val_result[channel_index], mask=lane_valid)
 
     return kernel
 
@@ -401,7 +432,8 @@ def pallas_gather(pmid, disp, mesh, *, offset, particle_cell_size, cell_size=Non
         kernel, out_shape=out_shape, grid=(padded_count // block_size, ), in_specs=(
             _particle_block_spec(block_size, (3, )), _particle_block_spec(block_size, (3, )),
             _particle_block_spec(block_size, ()), pl.no_block_spec, pl.no_block_spec, pl.no_block_spec,
-        ), out_specs=_particle_block_spec(block_size, channel_shape), name="pmpp_cic_gather_tiled",
+        ), out_specs=_particle_block_spec(block_size, channel_shape), compiler_params=pl_triton.CompilerParams(),
+        name="pmpp_cic_gather_tiled",
     )
     return call(pmid, disp, valid_mask, offset, cell_arg, mesh)[:particle_count]
 
@@ -437,7 +469,8 @@ def pallas_scatter(pmid, disp, val, mesh, *, offset, particle_cell_size, cell_si
                                                                           (3, )), _particle_block_spec(block_size, ()),
             pl.no_block_spec if val.ndim == 0 else _particle_block_spec(block_size, val.shape[1:]), pl.no_block_spec,
             pl.no_block_spec, pl.no_block_spec,
-        ), out_specs=pl.no_block_spec, input_output_aliases={6: 0}, name="pmpp_cic_scatter_tiled",
+        ), out_specs=pl.no_block_spec, input_output_aliases={6: 0}, compiler_params=pl_triton.CompilerParams(),
+        name="pmpp_cic_scatter_tiled",
     )
     return call(pmid, disp, valid_mask, val, offset, cell_arg, mesh)
 
@@ -477,7 +510,7 @@ def pallas_gather_bwd(
             pl.no_block_spec, _particle_block_spec(block_size,
                                                    channel_shape), pl.no_block_spec, pl.no_block_spec, pl.no_block_spec,
         ), out_specs=(_particle_block_spec(block_size, (3, )), pl.no_block_spec), input_output_aliases={7: 1},
-        name="pmpp_cic_gather_bwd_tiled",
+        compiler_params=pl_triton.CompilerParams(), name="pmpp_cic_gather_bwd_tiled",
     )
     disp_cot, mesh_cot = call(pmid, disp, valid_mask, mesh, val_cot, offset, cell_arg, mesh_cot)
     return disp_cot[:particle_count], mesh_cot
@@ -527,7 +560,7 @@ def pallas_scatter_bwd(
         ), out_specs=(
             _particle_block_spec(block_size, (3, )),
             pl.no_block_spec if scalar_val else _particle_block_spec(block_size, channel_shape)
-        ), input_output_aliases={7: 1}, name="pmpp_cic_scatter_bwd_tiled",
+        ), input_output_aliases={7: 1}, compiler_params=pl_triton.CompilerParams(), name="pmpp_cic_scatter_bwd_tiled",
     )
     disp_cot, val_cot = call(pmid, disp, valid_mask, val, offset, cell_arg, mesh_cot, val_cot)
     if scalar_val:
