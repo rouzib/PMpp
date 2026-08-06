@@ -9,6 +9,8 @@ import jax.numpy as jnp
 from jax.sharding import Mesh
 
 from .fft import create_batched_transposed_real_ffts, create_ffts
+from .cuda import requested_backend as requested_cuda_routing_backend
+from .cuda import supported_bidir_configuration as cuda_bidir_routing_supported
 from .cuda import supported_configuration as cuda_routing_supported
 from ..cic.gather import initialize_mGPU_gather
 from .routing import (
@@ -40,8 +42,10 @@ class MultiGPUConfiguration:
     In normal user code this object is usually only a seed carrying
     ``compute_mesh``, an optional ``mode``, and optional CUDA routing.
     ``cuda_routing`` requests the optional typed CUDA FFI route-pack/merge
-    implementation.  It is resolved to ``False`` automatically unless the
-    qualified GPU/JAX/library combination is present.
+    implementation. ``cuda_routing_backend`` selects the native implementation
+    and defaults to the bidirectional merge-path route. CUDA routing is resolved
+    to ``False`` automatically unless the selected backend and qualified
+    GPU/JAX/library combination are present.
     """
 
     compute_mesh: Mesh = None
@@ -54,6 +58,7 @@ class MultiGPUConfiguration:
 
     mode: str | None = "mesh_halo"
     cuda_routing: bool | None = None
+    cuda_routing_backend: str = "bidir_mergepath"
     store_particle_halos: bool = False
     ptcl_halo_width: int = 0
     mesh_halo_width: int = 0
@@ -141,10 +146,14 @@ def build_multigpu_configuration(
     requested_cuda_routing = (
         runtime_seed.cuda_routing if runtime_seed is not None and runtime_seed.cuda_routing is not None else False
     )
+    cuda_routing_backend = requested_cuda_routing_backend(runtime_seed)
     # Qualification is evaluated once while the static configuration is being
     # built. A missing/incompatible optional library simply resolves to False;
     # the portable JAX routing path remains the automatic fallback.
-    cuda_routing = bool(requested_cuda_routing and cuda_routing_supported(conf, num_devices=num_devices, mode=mode))
+    routing_supported = (
+        cuda_bidir_routing_supported if cuda_routing_backend == "bidir_mergepath" else cuda_routing_supported
+    )
+    cuda_routing = bool(requested_cuda_routing and routing_supported(conf, num_devices=num_devices, mode=mode))
 
     local_mesh_shape = (conf.mesh_shape[0] // num_devices, conf.mesh_shape[1], conf.mesh_shape[2])
     global_nMesh = conf.mesh_shape[0]
@@ -199,9 +208,10 @@ def build_multigpu_configuration(
     return base_runtime.replace(
         compute_mesh=compute_mesh, num_devices=num_devices, devices=devices, devices_index=devices_index,
         local_mesh_shape=local_mesh_shape, local_mesh_with_halo_shape=local_mesh_with_halo_shape, mode=mode,
-        cuda_routing=cuda_routing, store_particle_halos=store_particle_halos, ptcl_halo_width=ptcl_halo_width,
-        mesh_halo_width=mesh_halo_width, owned_slice_start=jnp.array(owned_slice_start),
-        owned_slice_end=jnp.array(owned_slice_end), slice_start=jnp.array(halo_start)[:, 0],
+        cuda_routing=cuda_routing, cuda_routing_backend=cuda_routing_backend, store_particle_halos=store_particle_halos,
+        ptcl_halo_width=ptcl_halo_width, mesh_halo_width=mesh_halo_width,
+        owned_slice_start=jnp.array(owned_slice_start), owned_slice_end=jnp.array(owned_slice_end),
+        slice_start=jnp.array(halo_start)[:, 0],
         slice_end=jnp.array(halo_end)[:, 1] if num_devices > 1 else jnp.array([global_nMesh]),
         halo_start=jnp.array(halo_start), halo_end=jnp.array(halo_end), offsets=offsets,
         scatter_offsets=scatter_offsets, mesh_halo_offsets=mesh_halo_offsets, max_ptcl_per_slice=max_ptcl_per_slice,

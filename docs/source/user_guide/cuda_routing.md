@@ -58,8 +58,10 @@ using PM++ for the first time:
 ```bash
 python -m pip install pmpp
 pmpp-build-cuda-routing
-export PMPP_CUDA_ROUTING_BACKEND=bidir_mergepath
 ```
+
+`bidir_mergepath` is the default CUDA routing backend, so no environment
+variable is needed for the recommended path.
 
 `python -m pmpp.distributed.build_cuda` is equivalent to
 `pmpp-build-cuda-routing` and can be used when the console-script directory is
@@ -122,6 +124,18 @@ multigpu = MultiGPUConfiguration(
 )
 ```
 
+The `cuda_routing_backend` flag defaults to `"bidir_mergepath"`. Select the
+older native implementation only for comparison or targeted validation:
+
+```python
+legacy_multigpu = multigpu.replace(cuda_routing_backend="cuda_merge")
+```
+
+`PMPP_CUDA_ROUTING_BACKEND` remains available as a process-wide override. It
+accepts `bidir_mergepath` or `cuda_merge`; the historical value `current` is an
+alias for `cuda_merge`. The environment variable takes precedence over the
+configuration flag.
+
 The following reproducible check reports the installed artifact and runtime
 status without printing the full build manifest:
 
@@ -150,7 +164,8 @@ print(json.dumps(summary, indent=2))
 `qualified_jax` should be `true`, `backend` should be `gpu`, `library` should
 contain the installed shared-library path, and `bidir_targets` should list both
 bidirectional handlers. After a compatible `Configuration` is constructed,
-`conf.multigpu.cuda_routing` reports whether PM++ selected the extension.
+`conf.multigpu.cuda_routing` reports whether PM++ selected the extension, and
+`conf.multigpu.cuda_routing_backend` reports the resolved native backend.
 
 For an intentional portable comparison, leave `cuda_routing` unset, use
 `cuda_routing=False` in `MultiGPUConfiguration`, or set `PMPP_CUDA_ROUTING=0`

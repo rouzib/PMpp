@@ -186,6 +186,12 @@ implementation checks:
 - a mesh raveled-key space that fits in `uint32`
 - a loadable library with a compatible record-format manifest.
 
+`MultiGPUConfiguration.cuda_routing_backend` selects between
+`"bidir_mergepath"` and `"cuda_merge"`. The bidirectional route is the default;
+qualification checks include its additional pack and merge targets. The
+`PMPP_CUDA_ROUTING_BACKEND` environment variable can override the flag for
+process-wide testing, with historical `current` treated as `cuda_merge`.
+
 If any condition fails, configuration resolves `cuda_routing` to false and the
 canonical JAX route remains active. Importing PM++ never requires the extension
 or loads it unconditionally.

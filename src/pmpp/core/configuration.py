@@ -386,6 +386,7 @@ class Configuration:
         "devices_index": "devices_index",
         "mesh_halo_width": "mesh_halo_width",
         "cuda_routing": "cuda_routing",
+        "cuda_routing_backend": "cuda_routing_backend",
         "mesh_halo_offsets": "mesh_halo_offsets",
         "local_mesh_shape": "local_mesh_shape",
         "local_mesh_with_halo_shape": "local_mesh_with_halo_shape",

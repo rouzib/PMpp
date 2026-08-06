@@ -200,8 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         print(f"CUDA routing installed in {target_dir}")
         print("Select it with cuda_routing=True in MultiGPUConfiguration.")
-        print("For the fastest qualified backend, set:")
-        print("  export PMPP_CUDA_ROUTING_BACKEND=bidir_mergepath")
+        print("The bidir_mergepath backend is selected by default.")
     return 0
 
 

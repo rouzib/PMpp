@@ -257,16 +257,29 @@ def supported_bidir_configuration(conf: Any, *, num_devices: int | None = None, 
     return bool(_BIDIR_REGISTERED)
 
 
-def requested_backend() -> str:
-    """Return the explicitly selected CUDA route implementation."""
-    return os.environ.get("PMPP_CUDA_ROUTING_BACKEND", "current").strip().lower()
+def requested_backend(conf: Any | None = None) -> str:
+    """Return the selected CUDA route implementation.
+
+    The per-configuration flag defaults to the bidirectional merge-path route.
+    ``PMPP_CUDA_ROUTING_BACKEND`` remains a process-wide override, and its
+    historical ``current`` value is retained as an alias for ``cuda_merge``.
+    """
+    backend = os.environ.get("PMPP_CUDA_ROUTING_BACKEND")
+    if backend is None:
+        backend = getattr(conf, "cuda_routing_backend", "bidir_mergepath")
+    backend = str(backend).strip().lower()
+    if backend == "current":
+        backend = "cuda_merge"
+    if backend not in {"bidir_mergepath", "cuda_merge"}:
+        raise ValueError(f"Unsupported cuda_routing_backend={backend!r}. Expected 'bidir_mergepath' or 'cuda_merge'.")
+    return backend
 
 
 def enabled_for_configuration(conf: Any) -> bool:
     """Return whether CUDA routing should be selected for a configuration."""
     if getattr(conf, "cuda_routing", False) is not True:
         return False
-    if requested_backend() == "bidir_mergepath":
+    if requested_backend(conf) == "bidir_mergepath":
         return supported_bidir_configuration(conf)
     return supported_configuration(conf)
 

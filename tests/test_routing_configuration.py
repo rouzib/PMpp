@@ -4,8 +4,15 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+import pmpp.distributed.configuration as distributed_configuration
 from pmpp.core import Configuration
 from pmpp.distributed import MultiGPUConfiguration, build_multigpu_configuration, create_compute_mesh
+from pmpp.distributed.cuda import requested_backend
+
+
+@pytest.fixture(autouse=True)
+def _clear_cuda_routing_backend_override(monkeypatch):
+    monkeypatch.delenv("PMPP_CUDA_ROUTING_BACKEND", raising=False)
 
 
 def _base_configuration():
@@ -33,6 +40,43 @@ def test_pallas_cic_is_enabled_by_default():
 def test_cuda_routing_none_resolves_to_automatic_selection():
     resolved = _resolve(MultiGPUConfiguration(cuda_routing=None))
     assert isinstance(resolved.cuda_routing, bool)
+    assert resolved.cuda_routing_backend == "bidir_mergepath"
+
+
+def test_cuda_routing_backend_defaults_to_bidir_mergepath():
+    seed = MultiGPUConfiguration()
+    assert seed.cuda_routing_backend == "bidir_mergepath"
+    assert requested_backend() == "bidir_mergepath"
+    assert requested_backend(seed) == "bidir_mergepath"
+
+
+def test_cuda_routing_backend_can_select_cuda_merge():
+    resolved = _resolve(MultiGPUConfiguration(cuda_routing_backend="cuda_merge"))
+    assert resolved.cuda_routing_backend == "cuda_merge"
+    assert requested_backend(resolved) == "cuda_merge"
+
+
+def test_cuda_routing_backend_uses_backend_specific_qualification(monkeypatch):
+    monkeypatch.setattr(distributed_configuration, "cuda_bidir_routing_supported", lambda *args, **kwargs: True)
+    monkeypatch.setattr(distributed_configuration, "cuda_routing_supported", lambda *args, **kwargs: False)
+    bidir = _resolve(MultiGPUConfiguration(cuda_routing=True))
+    assert bidir.cuda_routing is True
+
+    monkeypatch.setattr(distributed_configuration, "cuda_bidir_routing_supported", lambda *args, **kwargs: False)
+    monkeypatch.setattr(distributed_configuration, "cuda_routing_supported", lambda *args, **kwargs: True)
+    cuda_merge = _resolve(MultiGPUConfiguration(cuda_routing=True, cuda_routing_backend="cuda_merge"))
+    assert cuda_merge.cuda_routing is True
+
+
+def test_cuda_routing_backend_environment_override_is_preserved(monkeypatch):
+    monkeypatch.setenv("PMPP_CUDA_ROUTING_BACKEND", "current")
+    resolved = _resolve(MultiGPUConfiguration())
+    assert resolved.cuda_routing_backend == "cuda_merge"
+
+
+def test_cuda_routing_backend_rejects_unknown_values():
+    with pytest.raises(ValueError, match="Unsupported cuda_routing_backend"):
+        _resolve(MultiGPUConfiguration(cuda_routing_backend="unknown"))
 
 
 def test_configuration_static_pytree_preserves_initialized_instance():

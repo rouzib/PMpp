@@ -40,9 +40,10 @@ displacement-only objective.
 
 ```{note}
 CUDA routing is much faster and should be used whenever the compiled extension
-is available. Set `cuda_routing=True`. PM++ uses the portable JAX router if the
-extension or runtime is unavailable. See [CUDA routing](cuda_routing.md) for
-installation and status checks.
+is available. Set `cuda_routing=True`; the optimized `bidir_mergepath` backend
+is now selected by default. PM++ uses the portable JAX router if the selected
+backend, extension, or runtime is unavailable. See
+[CUDA routing](cuda_routing.md) for installation and status checks.
 ```
 
 ## Optimization flags
@@ -51,6 +52,7 @@ installation and status checks.
 | --- | --- | --- |
 | `MultiGPUConfiguration.mode` | `"mesh_halo"`, `"particle_halo"`, or `None` | Use `"mesh_halo"`. `"particle_halo"` enables the compatibility path. `None` uses the legacy `Configuration.multigpu_mode` value. |
 | `MultiGPUConfiguration.cuda_routing` | `True`, `False`, or `None` | Use `True` when the compiled extension is available. `False` or `None` uses the portable JAX router. An unavailable requested extension also falls back to JAX. |
+| `MultiGPUConfiguration.cuda_routing_backend` | `"bidir_mergepath"` or `"cuda_merge"` | Defaults to `"bidir_mergepath"`, the recommended and faster native route. Use `"cuda_merge"` only for legacy comparison or backend-specific validation. The flag matters only when `cuda_routing=True`. |
 | `Configuration.pallas_cic` | `True` or `False` | `True` selects Pallas CIC and is the default. Unsupported configurations fall back to reference JAX CIC. `False` selects the reference implementation explicitly. |
 | `Configuration.lpt_cache_strains` | `True` or `False` | `True` caches LPT strain arrays and is the default. `False` recomputes them to reduce retained memory. |
 | `Configuration.nbody_cosmo_grad` | `True` or `False` | `True` includes cosmology cotangents and is the default. `False` omits them for objectives that need only particle or mode gradients. |

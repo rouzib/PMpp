@@ -33,6 +33,7 @@ def test_explicit_cuda_request_still_resolves_to_portable_fallback_without_quali
     )
     assert conf.cuda_routing is False
     assert conf.multigpu.cuda_routing is False
+    assert conf.cuda_routing_backend == "bidir_mergepath"
 
 
 def test_cuda_record_and_build_contract_is_maintained():

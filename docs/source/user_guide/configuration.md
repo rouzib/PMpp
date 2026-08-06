@@ -183,8 +183,11 @@ canonical packed/fused implementations unconditionally. See
 ### CUDA routing flag
 
 `MultiGPUConfiguration(cuda_routing=True)` requests the optional CUDA FFI
-route-pack and route-merge implementation. CUDA routing remains opt-in. If the
-extension or runtime is not qualified, PM++ keeps the portable JAX router.
+route-pack and route-merge implementation. CUDA routing remains opt-in, while
+`cuda_routing_backend` defaults to the recommended `"bidir_mergepath"` native
+implementation. Set it to `"cuda_merge"` only for legacy comparison. If the
+selected backend, extension, or runtime is not qualified, PM++ keeps the
+portable JAX router.
 
 ```python
 cuda_conf = conf.replace(
@@ -196,6 +199,7 @@ cuda_conf = conf.replace(
 )
 
 print("CUDA routing enabled:", cuda_conf.multigpu.cuda_routing)
+print("CUDA routing backend:", cuda_conf.multigpu.cuda_routing_backend)
 ```
 
 See [CUDA routing](cuda_routing.md) for compiler requirements, installation,

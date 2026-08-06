@@ -40,7 +40,7 @@ _DEBUG_BIDIR_ROUTE = os.environ.get("PMPP_BIDIR_DEBUG_ROUTE", "").strip().lower(
 
 
 def _use_bidir_cuda_routing(conf):
-    return cuda_routing_enabled(conf) and cuda_routing_backend() == "bidir_mergepath"
+    return cuda_routing_enabled(conf) and cuda_routing_backend(conf) == "bidir_mergepath"
 
 
 @jax.jit
