@@ -234,7 +234,7 @@ def _mean_free_bounded_vectors(raw, ptcl, bound, mean_free):
     # inactive bound branch should mathematically contribute no gradient.
     norm_sq = jnp.sum(jnp.square(jnp.where(active[..., None], vectors, 0)), axis=-1)
     peak_sq = jnp.max(norm_sq, initial=jnp.asarray(0, dtype=norm_sq.dtype))
-    scale = jax.lax.rsqrt(jnp.maximum(peak_sq, jnp.asarray(1, dtype=peak_sq.dtype)))
+    scale = jnp.reciprocal(jnp.sqrt(jnp.maximum(peak_sq, jnp.asarray(1, dtype=peak_sq.dtype))))
     vectors = vectors * scale * jnp.asarray(bound, dtype=vectors.dtype)
     return jnp.where(active[..., None], vectors, 0)
 
@@ -306,7 +306,7 @@ def evaluate_phase_space_residual_fused(correction, a, ptcl, cosmo, conf, drift_
         correction.max_velocity_cells * conf.ptcl_spacing / jnp.maximum(jnp.abs(drift_scale), tiny),
     ], dtype=vectors.dtype,
                          )
-    scale = jax.lax.rsqrt(jnp.maximum(peak_sq, jnp.asarray(1, dtype=peak_sq.dtype)))
+    scale = jnp.reciprocal(jnp.sqrt(jnp.maximum(peak_sq, jnp.asarray(1, dtype=peak_sq.dtype))))
     output = vectors * scale.reshape((2, ) + (1, ) * (vectors.ndim - 2) +
                                      (1, )) * bounds.reshape((2, ) + (1, ) * (vectors.ndim - 2) + (1, ))
     output = jnp.where(active[None, ..., None], output, 0)

@@ -2,6 +2,7 @@
 
 import importlib.util
 import inspect
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -31,6 +32,13 @@ LEGACY_FLAT_IMPORTS = {
     "utils",
 }
 LEGACY_FLAT_FILES = {f"{name}.py" for name in LEGACY_FLAT_IMPORTS} | {"nbody.py"}
+
+
+def _import_subprocess_environment():
+    """Keep pure package-import probes independent of the parent's GPU client."""
+    environment = os.environ.copy()
+    environment.update({"CUDA_VISIBLE_DEVICES": "", "JAX_PLATFORMS": "cpu", "PMPP_CUDA_ROUTING": "0"})
+    return environment
 
 
 def test_feature_package_initializers_expose_supported_apis():
@@ -65,7 +73,7 @@ def test_feature_api_is_independent_of_implementation_import_order():
             "assert all(map(callable, (gather, scatter, growth, gravity)))"
         ),
     ]
-    subprocess.run(command, check=True, cwd=Path(__file__).resolve().parents[1])
+    subprocess.run(command, check=True, cwd=Path(__file__).resolve().parents[1], env=_import_subprocess_environment(), )
 
 
 def test_nbody_is_a_package_with_the_solver_surface():
@@ -97,11 +105,12 @@ def test_package_root_does_not_eagerly_import_dataset_extras():
             "for name in sys.modules)"
         ),
     ]
-    subprocess.run(command, check=True, cwd=Path(__file__).resolve().parents[1])
+    subprocess.run(command, check=True, cwd=Path(__file__).resolve().parents[1], env=_import_subprocess_environment(), )
 
 
 def test_canonical_cuda_builder_module_is_runnable():
     """The canonical distributed CUDA-builder module supports ``python -m``."""
     subprocess.run([sys.executable, "-m", "pmpp.distributed.build_cuda", "--help"], check=True,
                    cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True,
+                   env=_import_subprocess_environment(),
                    )

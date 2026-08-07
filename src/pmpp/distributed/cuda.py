@@ -94,11 +94,18 @@ def _candidate_library_paths() -> tuple[Path, ...]:
 
 def _load_build_manifest() -> dict[str, Any] | None:
     explicit = os.environ.get("PMPP_CUDA_ROUTING_MANIFEST")
-    candidates = [Path(explicit)] if explicit else []
-    for library in _candidate_library_paths():
-        candidates.extend([
-            library.with_suffix(library.suffix + ".manifest.json"), library.parent / "pmpp_cuda_routing.manifest.json",
-        ])
+    if explicit:
+        # An explicit override is authoritative. If it is missing or invalid,
+        # fail closed instead of pairing the selected library with an unrelated
+        # package or cache manifest.
+        candidates = [Path(explicit)]
+    else:
+        candidates = []
+        for library in _candidate_library_paths():
+            candidates.extend([
+                library.with_suffix(library.suffix + ".manifest.json"),
+                library.parent / "pmpp_cuda_routing.manifest.json",
+            ])
     for candidate in dict.fromkeys(candidates):
         try:
             if candidate.is_file():

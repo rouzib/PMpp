@@ -172,7 +172,7 @@ def test_phase_correction_runs_once_after_last_raw_drift_before_force(monkeypatc
     assert not np.array_equal(phase_inputs[0], force_inputs[-1])
 
 
-def test_phase_enabled_nbody_gradients_use_exact_rematerialized_path(monkeypatch):
+def test_phase_enabled_nbody_gradients_use_exact_rematerialized_path(monkeypatch, request):
     conf = _configuration()
     ptcl = _particles(conf)
     cosmo = SimpleLCDM(conf)
@@ -193,6 +193,13 @@ def test_phase_enabled_nbody_gradients_use_exact_rematerialized_path(monkeypatch
         raise AssertionError("phase-space gradients must not use nbody_adj")
 
     monkeypatch.setattr(nbody_module, "nbody_adj", forbidden_reversible_adjoint)
+
+    # Compile the transformed solver from the controls installed above. JAX
+    # 0.9.1 can otherwise retain an earlier solver trace while coverage keeps
+    # the associated Python frame alive. Clear again after the test so the
+    # monkeypatched trace cannot affect later scientific regressions.
+    jax.clear_caches()
+    request.addfinalizer(jax.clear_caches)
 
     def loss(gain, disp, omega_m):
         phase = BoundedPhaseSpaceCorrection(
