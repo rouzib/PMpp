@@ -273,7 +273,7 @@ class Configuration:
             warnings.warn(
                 "Pallas CIC was requested but is unavailable for this configuration; "
                 "using the reference JAX CIC implementation. Pallas requires a "
-                "float32 GPU backend, JAX >= 0.6, and the required Pallas APIs.", RuntimeWarning, stacklevel=2,
+                "float32 GPU backend, JAX >= 0.9.1, and the required Pallas APIs.", RuntimeWarning, stacklevel=2,
             )
 
         if self.a_custom is not None and not isinstance(self.a_custom, tuple):

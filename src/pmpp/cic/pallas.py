@@ -69,10 +69,10 @@ def _supported_pallas_jax_version() -> bool:
     """Return whether JAX meets the minimum version for these kernels."""
 
     try:
-        major, minor, *_ = (int(part) for part in jax.__version__.split("+")[0].split("."))
+        major, minor, patch = (int(part) for part in jax.__version__.split("+")[0].split(".")[:3])
     except ValueError:  # pragma: no cover - defensive for nonstandard builds.
         return False
-    return (major, minor) >= (0, 6)
+    return (major, minor, patch) >= (0, 9, 1)
 
 
 def pallas_cic_supported(dtype) -> bool:

@@ -5,16 +5,16 @@ from pathlib import Path
 from pmpp.distributed import build_cuda as build_cuda_routing, cuda as cuda_routing
 
 
-def test_cuda_routing_accepts_jax_0_6_or_newer(monkeypatch):
-    assert build_cuda_routing._supported_jax_version("0.6.0")
+def test_cuda_routing_accepts_jax_0_9_1_or_newer(monkeypatch):
+    assert build_cuda_routing._supported_jax_version("0.9.1")
     assert build_cuda_routing._supported_jax_version("0.10.2+computecanada")
     assert build_cuda_routing._supported_jax_version("1.0.0")
-    assert not build_cuda_routing._supported_jax_version("0.5.3")
+    assert not build_cuda_routing._supported_jax_version("0.9.0")
     assert not build_cuda_routing._supported_jax_version("unknown")
 
     monkeypatch.setattr(cuda_routing.jax, "__version__", "0.10.2+computecanada")
     assert cuda_routing._qualified_jax()
-    monkeypatch.setattr(cuda_routing.jax, "__version__", "0.5.3")
+    monkeypatch.setattr(cuda_routing.jax, "__version__", "0.9.0")
     assert not cuda_routing._qualified_jax()
 
 

@@ -5,7 +5,7 @@ import pytest
 from pmpp.cic import pallas as pallas_module
 
 
-@pytest.mark.parametrize(("version", "expected"), [("0.5.3", False), ("0.6.0", True), ("0.9.1", True),
+@pytest.mark.parametrize(("version", "expected"), [("0.6.0", False), ("0.9.0", False), ("0.9.1", True),
                                                    ("0.10.2+computecanada", True), ("1.0.0", True),
                                                    ("development", False), ],
                          )

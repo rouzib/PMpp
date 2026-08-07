@@ -369,8 +369,8 @@ def test_cuda_build_helpers_parse_detect_and_preflight_strictly(tmp_path, monkey
     )
     with pytest.raises(RuntimeError, match="must be installed"):
         build_cuda._preflight()
-    monkeypatch.setattr(build_cuda.metadata, "version", lambda name: "0.5.3")
-    with pytest.raises(RuntimeError, match="0.6.0 or newer"):
+    monkeypatch.setattr(build_cuda.metadata, "version", lambda name: "0.9.0")
+    with pytest.raises(RuntimeError, match="0.9.1 or newer"):
         build_cuda._preflight()
     monkeypatch.setattr(build_cuda.metadata, "version", lambda name: "0.9.1")
     build_cuda._preflight()

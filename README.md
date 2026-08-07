@@ -20,8 +20,8 @@ distributed ownership, mesh-halo, and FFT paths.
 
 ## Installation
 
-PM++ supports JAX 0.6 through 0.10 (declared as `jax>=0.6,<0.11`). Install the
-JAX build for your accelerator and driver first by following the official
+PM++ supports JAX 0.9.1 through 0.10 (declared as `jax>=0.9.1,<0.11`). Install
+the JAX build for your accelerator and driver first by following the official
 [JAX installation guide](https://docs.jax.dev/en/latest/installation.html).
 
 On a computer with two visible GPUs:

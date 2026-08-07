@@ -26,7 +26,7 @@ def _supported_jax_version(version: str) -> bool:
     if match is None:
         return False
     major, minor, patch = (int(part or 0) for part in match.groups())
-    return (major, minor, patch) >= (0, 6, 0)
+    return (major, minor, patch) >= (0, 9, 1)
 
 
 def _query(command: list[str]) -> str | None:
@@ -109,7 +109,7 @@ def _preflight() -> None:
         raise RuntimeError("JAX and jaxlib must be installed before building") from error
     if not _supported_jax_version(jax_version) or not _supported_jax_version(jaxlib_version):
         raise RuntimeError(
-            "CUDA routing requires JAX and jaxlib 0.6.0 or newer, but this "
+            "CUDA routing requires JAX and jaxlib 0.9.1 or newer, but this "
             f"environment has JAX {jax_version} and jaxlib {jaxlib_version}."
         )
 

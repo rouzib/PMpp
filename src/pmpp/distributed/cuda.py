@@ -73,7 +73,7 @@ def _qualified_jax() -> bool:
     if match is None:
         return False
     major, minor, patch = (int(part or 0) for part in match.groups())
-    return (major, minor, patch) >= (0, 6, 0)
+    return (major, minor, patch) >= (0, 9, 1)
 
 
 def _candidate_library_paths() -> tuple[Path, ...]:

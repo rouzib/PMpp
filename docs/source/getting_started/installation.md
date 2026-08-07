@@ -1,8 +1,8 @@
 # Installation
 
 PM++ requires Python 3.10 or newer. The project name is **PM++**. Both the
-distribution and import name are `pmpp`. PM++ supports JAX 0.6 through 0.10
-(`jax>=0.6,<0.11`); Python 3.10 resolves to the newest compatible JAX release.
+distribution and import name are `pmpp`. PM++ supports JAX 0.9.1 through 0.10
+(`jax>=0.9.1,<0.11`); Python 3.10 resolves to the newest compatible JAX release.
 
 ## Install the user environment
 
