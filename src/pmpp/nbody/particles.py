@@ -639,7 +639,7 @@ class Particles:
             sp = conf.ptcl_grid_shape[0]
             runtime = conf.multigpu
             store_particle_halos = runtime is not None and runtime.store_particle_halos
-            n_devices = conf.num_devices
+            n_devices = conf.num_devices or 1
             if store_particle_halos:
                 sm = conf.local_mesh_shape[0] + conf.ptcl_halo_width
                 n_ptcl = sp // n_devices + (1 if n_devices > 1 else 0)
@@ -649,7 +649,7 @@ class Particles:
                 n_ptcl = sp // n_devices
                 pmid_shift = 0
             pmid_x = jnp.linspace(0, sm, num=n_ptcl, endpoint=False)
-            offset = conf.offsets[gpu_id]
+            offset = 0 if conf.offsets is None else conf.offsets[gpu_id]
             pmid_x = jnp.rint(pmid_x)
             pmid_x = pmid_x.astype(conf.pmid_dtype)
 
@@ -677,16 +677,21 @@ class Particles:
 
             pmid = jnp.meshgrid(*pmid, indexing='ij')
             pmid = jnp.stack(pmid, axis=-1).reshape(-1, conf.dim)
-            pmid = jnp.pad(pmid, ((0, conf.max_ptcl_per_slice - pmid.shape[0]), (0, 0)), mode='constant')
+            capacity = conf.ptcl_num if conf.max_ptcl_per_slice is None else conf.max_ptcl_per_slice
+            pmid = jnp.pad(pmid, ((0, capacity - pmid.shape[0]), (0, 0)), mode='constant')
             disp = jnp.meshgrid(*disp, indexing='ij')
             disp = jnp.stack(disp, axis=-1).reshape(-1, conf.dim)
-            disp = jnp.pad(disp, ((0, conf.max_ptcl_per_slice - disp.shape[0]), (0, 0)), mode='constant')
+            disp = jnp.pad(disp, ((0, capacity - disp.shape[0]), (0, 0)), mode='constant')
 
-            unused_index = jnp.zeros_like(
-                disp[:, 0], dtype=jnp.bool, device=NamedSharding(conf.compute_mesh, P(AXIS_NAME))
-            ).at[n_ptcl * sp * sp:].set(True)
+            if conf.compute_mesh is None:
+                unused_index = jnp.zeros_like(disp[:, 0], dtype=jnp.bool_)
+            else:
+                unused_index = jnp.zeros_like(
+                    disp[:, 0], dtype=jnp.bool_, device=NamedSharding(conf.compute_mesh, P(AXIS_NAME))
+                )
+            unused_index = unused_index.at[n_ptcl * sp * sp:].set(True)
 
-            if runtime is not None and not store_particle_halos:
+            if runtime is None or not store_particle_halos:
                 halo_mask = jnp.zeros_like(unused_index)
             else:
                 x_mod = (pmid[:, 0] + disp[:, 0] * conf.disp_size) % conf.nMesh
@@ -711,7 +716,10 @@ class Particles:
             axis = jax.lax.axis_index(AXIS_NAME)
             return build_local(axis)
 
-        pmid, disp, unused_index, halo_mask = build_all()
+        if conf.compute_mesh is None:
+            pmid, disp, unused_index, halo_mask = build_local(0)
+        else:
+            pmid, disp, unused_index, halo_mask = build_all()
 
         vel = jnp.zeros_like(disp) if vel else None
         acc = jnp.zeros_like(disp) if acc else None

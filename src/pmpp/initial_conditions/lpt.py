@@ -247,6 +247,9 @@ def lpt(modes, cosmo, conf):
 
     disp_before_halo = disp
     vel_before_halo = vel
+    if conf.mGPU_halo_moving is None:
+        return ptcl.replace(disp=disp, vel=vel, acc=None)
+
     scratch_acc = disp[:, :0]
     pmid, disp, vel, acc, halo_mask, unused_indexes, has_failed, max_ptcl_moved = conf.mGPU_halo_moving(
         ptcl.pmid, ptcl.disp, disp, vel, scratch_acc, conf.halo_start, conf.halo_end, ptcl.unused_index,

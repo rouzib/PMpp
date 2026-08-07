@@ -375,7 +375,7 @@ def add_potential_correction_cotangents(lhs, rhs):
             return x
         return x + y
 
-    return tree_map(add_leaf, lhs, rhs)
+    return tree_map(add_leaf, lhs, rhs, is_leaf=lambda value: value is None)
 
 
 def force_uses_interlacing(correction):

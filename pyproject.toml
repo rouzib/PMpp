@@ -57,6 +57,7 @@ dev = [
   "dm-haiku>=0.0.17",
   "twine",
   "pytest",
+  "pytest-cov>=6,<8",
   "hdf5plugin",
   "optax",
   "Pylians",
@@ -79,6 +80,14 @@ markers = [
   "gpu4: requires four H100 GPUs",
   "slow: production-scale scientific test",
 ]
+
+[tool.coverage.run]
+branch = true
+source = ["pmpp"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
 
 [tool.yapf]
 based_on_style = "pep8"

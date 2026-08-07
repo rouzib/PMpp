@@ -391,69 +391,29 @@ def get_a_schedule(target_z, conf):
         interpolated intermediate steps needed to respect
         ``conf.a_nbody_maxstep``.
     """
-    spacing_threshold = conf.a_nbody_maxstep  # in scale_factor
+    spacing_threshold = float(conf.a_nbody_maxstep)
+    if spacing_threshold <= 0:
+        raise ValueError("conf.a_nbody_maxstep must be positive")
 
-    def get_intermediary_z(target_z):
-        """
-        Generate a schedule of intermediary redshift (z) values based on the provided target redshift
-        and configuration. This function ensures the schedule is appropriately spaced to meet a
-        spacing threshold.
+    target_z = jnp.unique(jnp.asarray(target_z))
+    if target_z.size == 0:
+        raise ValueError("target_z must contain at least one redshift")
 
-        :param target_z: A sequence of target redshift values to include in the schedule.
-            Must be unique and sorted in ascending order.
-        :type target_z: jnp.ndarray
-        :param conf: Configuration dictionary or object providing settings for generating
-            the schedule, including parameters such as spacing threshold.
-        :type conf: dict
-        :return: Array of intermediary redshift (z) values not originally in the input
-            `target_z`. The function respects spacing constraints and ensures unique
-            redshift entries.
-        :rtype: jnp.ndarray
-        """
-        # Ensure unique, sorted redshifts (lowest z last, so a ascending)
-        target_z = jnp.unique(target_z)
-        target_a = 1 / (1 + target_z)
-        target_a = jnp.sort(target_a)
+    target_a = 1 / (1 + target_z)
+    usual_a = jnp.asarray(conf.a_nbody)
+    usual_z = 1 / usual_a - 1
+    usual_a = usual_a[usual_z > jnp.max(target_z)]
+    required_a = jnp.sort(jnp.unique(jnp.concatenate((target_a, usual_a))))
 
-        diffs = jnp.diff(target_a)
-        n_steps = jnp.ceil(diffs / spacing_threshold).astype(int)
+    all_a = [required_a[0]]
+    for start, stop in zip(required_a[:-1], required_a[1:]):
+        steps = max(1, int(jnp.ceil((stop - start) / spacing_threshold)))
+        if steps == 1:
+            all_a.append(stop)
+        else:
+            all_a.extend(jnp.linspace(start, stop, steps + 1)[1:])
 
-        all_a = [target_a[0]]
-
-        for i, steps in enumerate(n_steps):
-            steps = int(steps)
-            if steps < 1:
-                steps = 1  # In case of floating fp error or very small interval
-
-            if steps == 1:
-                # No interpolation needed, just add next point
-                all_a.append(target_a[i + 1])
-            else:
-                # Create intermediate values, excluding the first since it's already in all_a
-                sub_a = jnp.linspace(target_a[i], target_a[i + 1], steps + 1)[1:]
-                all_a.extend(sub_a)
-
-        all_a = jnp.array(all_a)
-        all_z = 1 / all_a - 1
-
-        # Only return those not in the original target_z (to match previous expectations)
-        mask = ~jnp.isin(jnp.round(all_z, 8), jnp.round(target_z, 8))
-        intermediary_z = all_z[mask]
-
-        return intermediary_z
-
-    # Find any necessary intermediary redshifts
-    intermediary_z = get_intermediary_z(target_z)
-
-    # Prepare the usual_pm_z array, filtered as before
-    usual_pm_z = (1 / conf.a_nbody - 1)
-    usual_pm_z = jnp.array([usual_pm_z[i] for i in range(len(usual_pm_z)) if jnp.max(target_z) < usual_pm_z[i]])
-
-    # Concatenate all sources, sort in descending order (high z to low z)
-    new_pm_z = jnp.concatenate((target_z, usual_pm_z, intermediary_z))
-    new_pm_z = jnp.sort(new_pm_z)[::-1]  # descending order
-
-    return 1 / (1 + new_pm_z)
+    return jnp.asarray(all_a)
 
 
 @partial(jax.jit, static_argnames=['max_slice_len', 'axis'])

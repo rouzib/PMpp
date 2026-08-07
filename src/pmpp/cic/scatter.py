@@ -414,6 +414,12 @@ def _scatter_bwd(res, mesh_cot):
         disp_cot = _chunk_cat(disp_cot_0, disp_cot)
         val_cot = _chunk_cat(val_cot_0, val_cot)
 
+    if valid_mask is not None and val.ndim != 0:
+        valid_shape = valid_mask.shape + (1, ) * (val_cot.ndim - 1)
+        val_cot = jnp.where(valid_mask.reshape(valid_shape), val_cot, 0)
+    if val.ndim == 0:
+        val_cot = jnp.sum(val_cot)
+
     # The standalone scatter primitive is defined on the duplicated slot state.
     # Keep the backward local to each slot and let higher-level callers decide
     # when duplicate halo-slot cotangents should be aggregated back to unique

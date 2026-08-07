@@ -350,4 +350,4 @@ def add_nbody_correction_cotangents(lhs, rhs):
             return x
         return x + y
 
-    return jax.tree_util.tree_map(add_leaf, lhs, rhs)
+    return jax.tree_util.tree_map(add_leaf, lhs, rhs, is_leaf=lambda value: value is None)
