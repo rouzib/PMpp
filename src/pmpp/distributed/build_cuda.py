@@ -17,7 +17,18 @@ import tempfile
 from ._cuda_paths import package_cuda_directory, user_cache_cuda_directory
 
 _FALLBACK_ARCHITECTURES = "80;86;90;90-virtual"
-_RECORD_FORMAT_VERSION = 2
+_RECORD_FORMAT_VERSION = 3
+_ROUTING_KEY_FORMAT = "uint64_le_limbs"
+_FUSED_PRIMAL_FEATURE = "fused_drift_primal_i16_f32"
+_REQUIRED_ROUTING_TARGETS = frozenset({
+    "pmpp_route_offset_probe", "pmpp_route_pack", "pmpp_route_merge", "pmpp_route_merge_aux",
+    "pmpp_route_transpose_split", "pmpp_route_transpose_scatter", "pmpp_route_bidir_pack", "pmpp_route_merge_bidir",
+    "pmpp_route_bidir_pack_i16", "pmpp_route_merge_bidir_i16", "pmpp_route_merge_bidir_primal_i16",
+    "pmpp_route_bidir_drift_pack_primal_i16", "pmpp_route_bidir_drift_merge_primal_i16", "pmpp_route_pack_f64",
+    "pmpp_route_merge_f64", "pmpp_route_merge_aux_f64", "pmpp_route_transpose_split_f64",
+    "pmpp_route_transpose_scatter_f64", "pmpp_route_bidir_pack_f64", "pmpp_route_merge_bidir_f64",
+    "pmpp_route_bidir_pack_f64_i16", "pmpp_route_merge_bidir_f64_i16",
+})
 
 
 def _supported_jax_version(version: str) -> bool:
@@ -127,6 +138,9 @@ def _existing_artifact_matches(target: Path, architectures: str) -> bool:
         return False
     return (
         int(manifest.get("record_format_version", -1)) == _RECORD_FORMAT_VERSION
+        and manifest.get("routing_key_format") == _ROUTING_KEY_FORMAT
+        and _FUSED_PRIMAL_FEATURE in (manifest.get("features") or ())
+        and _REQUIRED_ROUTING_TARGETS.issubset(manifest.get("routing_targets") or ())
         and manifest.get("pmpp_version") == pmpp_version and manifest.get("jaxlib_version") == jaxlib_version
         and tuple(manifest.get("embedded_cuda_architectures",
                                ())) == tuple(part for part in architectures.split(";") if part)

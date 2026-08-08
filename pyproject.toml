@@ -41,6 +41,7 @@ dependencies = [
 
 [project.scripts]
 pmpp-build-cuda-routing = "pmpp.distributed:build_cuda_main"
+pmpp-run-h200-forward = "pmpp.forward_cli:main"
 
 [project.optional-dependencies]
 docs = [

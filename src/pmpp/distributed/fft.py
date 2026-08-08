@@ -19,6 +19,8 @@ Note: The script expects a computing environment with multiple GPUs available.
 
 """
 
+import math
+
 import numpy as np
 import inspect
 import string
@@ -33,6 +35,11 @@ from jax.experimental.custom_partitioning import custom_partitioning
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 import jax.tree_util as tree
 import jax.numpy as jnp
+
+
+def _host_shape_product(shape):
+    """Return a shape product without narrowing through a JAX integer array."""
+    return math.prod(int(size) for size in shape)
 
 
 def split_array_for_gpus(array: np.ndarray, num_gpus: int, axis: int = 1) -> Array:
@@ -491,7 +498,7 @@ def create_ffts(compute_mesh: Mesh, ) -> Tuple[Callable, Callable, Callable, Cal
             """
             g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
             g = _ifftn_jit(g.conj()).real
-            g *= jnp.prod(jnp.array(x_shape))
+            g *= jnp.asarray(_host_shape_product(x_shape), dtype=g.real.dtype)
             return (g, )
 
         rfftn.defvjp(rfftn_fwd, rfftn_bwd)
@@ -646,7 +653,7 @@ def create_ffts(compute_mesh: Mesh, ) -> Tuple[Callable, Callable, Callable, Cal
         g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
         g = _ifftn_jit(g.conj()).real
         # the previous code is equivalent to jnp.fft.ifftn(g.conj(), s=x_shape).real
-        g *= jnp.prod(jnp.array(x_shape))
+        g *= jnp.asarray(_host_shape_product(x_shape), dtype=g.real.dtype)
         return (g, )
 
     rfftn.defvjp(rfftn_fwd, rfftn_bwd)
@@ -685,7 +692,7 @@ def create_ffts(compute_mesh: Mesh, ) -> Tuple[Callable, Callable, Callable, Cal
         g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
         g = lax.with_sharding_constraint(g, NamedSharding(compute_mesh, P(None, "gpus", None)))
         g = _ifftn_transposed_jit(g.conj()).real
-        g *= jnp.prod(jnp.array(x_shape))
+        g *= jnp.asarray(_host_shape_product(x_shape), dtype=g.real.dtype)
         return (g, )
 
     rfftn_transposed.defvjp(rfftn_transposed_fwd, rfftn_transposed_bwd)

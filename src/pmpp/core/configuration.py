@@ -403,6 +403,7 @@ class Configuration:
         "right_perm": "right_perm",
         "mGPU_halo_moving": "halo_moving",
         "mGPU_halo_moving_no_acc": "halo_moving_no_acc",
+        "mGPU_halo_moving_low_memory": "halo_moving_low_memory",
         "mGPU_reconstruct_pre_drift": "reconstruct_pre_drift",
         "mGPU_reconstruct_pre_drift_pullback": "reconstruct_pre_drift_pullback",
         "mGPU_halo_move_pullback": "halo_move_pullback",
@@ -446,8 +447,7 @@ class Configuration:
     @property
     def ptcl_num(self):
         """Number of particles."""
-        with jax.ensure_compile_time_eval():
-            return jnp.array(self.ptcl_grid_shape).prod().item()
+        return math.prod(self.ptcl_grid_shape)
 
     @property
     def box_size(self):

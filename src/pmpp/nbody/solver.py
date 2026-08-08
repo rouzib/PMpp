@@ -4,16 +4,18 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-from jax import custom_vjp, lax
+from jax import custom_vjp, lax, shard_map
+from jax.sharding import PartitionSpec as P
 from jax.tree_util import tree_map
 
+from ..core.utils import AXIS_NAME
 from ..cosmology.models import Cosmology, add_cosmology_cotangents, zero_cosmology_param_cotangent
 from .particles import Particles
 from ..corrections import (
     add_nbody_correction_cotangents, has_phase_space_correction, phase_space_is_invertible,
     zero_nbody_correction_cotangent,
 )
-from .integrator import (force, force_adj, integrate, integrate_adj, )
+from .integrator import (force, force_adj, integrate, integrate_adj, integrate_low_memory, )
 
 
 def nbody_init(a, ptcl, cosmo, conf, correction=None):
@@ -72,6 +74,42 @@ def _validate_reverse_correction(reverse, correction):
     """Reject reverse integration for a non-invertible direct phase map."""
     if reverse and has_phase_space_correction(correction) and not phase_space_is_invertible(correction):
         raise ValueError("reverse=True is not supported for a non-invertible phase-space correction.")
+
+
+def _validate_low_memory_nbody(conf, reverse, correction):
+    """Validate the deliberately narrow streamed-gravity solver contract."""
+    if reverse:
+        raise ValueError("low-memory N-body is forward-only; reverse must be False.")
+    if correction is not None:
+        raise ValueError("low-memory N-body currently requires correction=None.")
+    if conf.dim != 3:
+        raise ValueError(f"low-memory N-body requires three dimensions, got dim={conf.dim}.")
+    if conf.compute_mesh is not None:
+        if conf.multigpu_mode != "mesh_halo":
+            raise ValueError("distributed low-memory N-body requires multigpu mode='mesh_halo'.")
+        if conf.mGPU_irfftn_transposed is None:
+            raise ValueError("distributed low-memory N-body requires the scalar distributed inverse FFT.")
+
+
+def _max_authoritative_occupancy(ptcl, conf):
+    """Return the largest authoritative particle count on any device."""
+    if ptcl.unused_index is None and ptcl.halo_mask is None:
+        return jnp.asarray(ptcl.disp.shape[0] // int(conf.num_devices or 1), dtype=jnp.int32)
+
+    if ptcl.unused_index is None:
+        unused_index = jnp.zeros_like(ptcl.halo_mask)
+    else:
+        unused_index = ptcl.unused_index
+    halo_mask = jnp.zeros_like(unused_index) if ptcl.halo_mask is None else ptcl.halo_mask
+    if conf.compute_mesh is None:
+        return jnp.sum((~unused_index) & (~halo_mask), dtype=jnp.int32)
+
+    @partial(shard_map, mesh=conf.compute_mesh, in_specs=(P(AXIS_NAME), P(AXIS_NAME)), out_specs=P(), check_vma=False, )
+    def distributed_max(local_unused, local_halo):
+        local_count = jnp.sum((~local_unused) & (~local_halo), dtype=jnp.int32)
+        return lax.pmax(local_count, AXIS_NAME)
+
+    return distributed_max(unused_index, halo_mask)
 
 
 @partial(jax.jit, static_argnums=(3, 5, 6))
@@ -235,6 +273,29 @@ def _nbody_impl(ptcl, cosmo, conf, reverse=False, correction=None):
     return ptcl
 
 
+def _nbody_low_memory_impl(ptcl, cosmo, conf, reverse=False, correction=None):
+    """Run the primal N-body scan with sequential force-component FFTs."""
+    a = _nbody_scale_factors(conf, reverse)
+    max_occupancy = _max_authoritative_occupancy(ptcl, conf)
+    max_migration = jnp.int32(0)
+    max_invalid_count = jnp.int32(0)
+    ptcl = force(a[0], ptcl, cosmo, conf, correction=correction, streamed_gravity=True)
+
+    def body(carry, ab):
+        ptcl_state, high_water, migration_high_water, invalid_high_water = carry
+        a_prev, a_next = ab
+        ptcl_state, moved, invalid = integrate_low_memory(a_prev, a_next, ptcl_state, cosmo, conf)
+        high_water = jnp.maximum(high_water, _max_authoritative_occupancy(ptcl_state, conf))
+        migration_high_water = jnp.maximum(migration_high_water, moved)
+        invalid_high_water = jnp.maximum(invalid_high_water, invalid)
+        return (ptcl_state, high_water, migration_high_water, invalid_high_water), None
+
+    (ptcl, max_occupancy, max_migration,
+     max_invalid_count), _ = lax.scan(body, (ptcl, max_occupancy, max_migration, max_invalid_count), (a[:-1], a[1:]),
+                                      )
+    return ptcl, max_occupancy, max_migration, max_invalid_count
+
+
 def _nbody_remat_impl(ptcl, cosmo, conf, reverse=False, correction=None):
     """Run an exact autodiff path, rematerializing every macro-step.
 
@@ -306,6 +367,19 @@ def _nbody_flat_impl(conf, reverse, pmid, unused_index, halo_mask, attr, disp, v
     return _nbody_state_impl(
         conf, reverse, pmid, disp, vel, acc, unused_index, halo_mask, attr, cosmo, correction=correction,
     )
+
+
+@partial(jax.jit, static_argnums=(0, 1), donate_argnums=(6, 7, 8))
+def _nbody_low_memory_flat_impl(
+    conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state, correction=None,
+):
+    """Jitted flat bridge for the forward-only low-memory solver."""
+    cosmo = _state_to_cosmo(conf, cosmo_state)
+    ptcl_in = _state_to_ptcl(conf, (pmid, disp, vel, acc, unused_index, halo_mask, attr))
+    ptcl_out, max_occupancy, max_migration, max_invalid_count = _nbody_low_memory_impl(
+        ptcl_in, cosmo, conf, reverse=reverse, correction=correction,
+    )
+    return _ptcl_state(ptcl_out), max_occupancy, max_migration, max_invalid_count
 
 
 def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False, correction=None):
@@ -451,6 +525,81 @@ def nbody_adjoint_bwd(conf, reverse, res, cotangents):
 
 
 _nbody_state.defvjp(nbody_adjoint_fwd, nbody_adjoint_bwd)
+
+
+@partial(custom_vjp, nondiff_argnums=(0, 1))
+def _nbody_low_memory_state(
+    conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state, correction=None,
+):
+    """Flat forward-only primitive for the streamed-gravity solver."""
+    return _nbody_low_memory_flat_impl(
+        conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state, correction=correction,
+    )
+
+
+def _nbody_low_memory_state_fwd(
+    conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state, correction=None,
+):
+    """Forward rule that deliberately saves no reverse-mode residuals."""
+    state_out = _nbody_low_memory_flat_impl(
+        conf, reverse, pmid, unused_index, halo_mask, attr, disp, vel, acc, cosmo_state, correction=correction,
+    )
+    return state_out, ()
+
+
+def _nbody_low_memory_state_bwd(conf, reverse, _res, _cotangents):
+    """Reject differentiation instead of silently building a large tape."""
+    del conf, reverse
+    raise NotImplementedError("nbody_low_memory is forward-only. Use nbody for differentiated simulations.")
+
+
+_nbody_low_memory_state.defvjp(_nbody_low_memory_state_fwd, _nbody_low_memory_state_bwd)
+
+
+def nbody_low_memory(ptcl, cosmo, conf, reverse=False, correction=None):
+    """Advance particles with sequential component FFTs and no AD contract.
+
+    The standard :func:`nbody` entrypoint remains the differentiable default.
+    This opt-in path is intended for memory-constrained forward simulations and
+    rejects reverse integration, force corrections, and distributed modes
+    other than ``mesh_halo``. Its particle-state buffers are donated to the
+    result and must not be reused after the call starts.
+    """
+    ptcl, _ = nbody_low_memory_with_occupancy(ptcl, cosmo, conf, reverse=reverse, correction=correction)
+    return ptcl
+
+
+def nbody_low_memory_with_occupancy(ptcl, cosmo, conf, reverse=False, correction=None):
+    """Run low-memory N-body and return its authoritative-occupancy high-water."""
+    ptcl, max_occupancy, _, _ = nbody_low_memory_with_telemetry(
+        ptcl, cosmo, conf, reverse=reverse, correction=correction,
+    )
+    return ptcl, max_occupancy
+
+
+def nbody_low_memory_with_telemetry(ptcl, cosmo, conf, reverse=False, correction=None):
+    """Run low-memory N-body and return occupancy and routing high-waters."""
+    _validate_low_memory_nbody(conf, reverse, correction)
+    cosmo_state = _cosmo_state(cosmo)
+    state_out, max_occupancy, max_migration, max_invalid_count = _nbody_low_memory_state(
+        conf, reverse, ptcl.pmid, ptcl.unused_index, ptcl.halo_mask, ptcl.attr, ptcl.disp, ptcl.vel, ptcl.acc,
+        cosmo_state, correction,
+    )
+    return _state_to_ptcl(conf, state_out), max_occupancy, max_migration, max_invalid_count
+
+
+def lower_nbody_low_memory(ptcl, cosmo, conf):
+    """Lower the forward-only solver for HLO and compiled-memory inspection.
+
+    This helper performs no execution or compilation. Callers may invoke
+    ``.compile()`` on the returned JAX ``Lowered`` object when they explicitly
+    want executable or memory-analysis artifacts.
+    """
+    _validate_low_memory_nbody(conf, reverse=False, correction=None)
+    return _nbody_low_memory_flat_impl.lower(
+        conf, False, ptcl.pmid, ptcl.unused_index, ptcl.halo_mask, ptcl.attr, ptcl.disp, ptcl.vel, ptcl.acc,
+        _cosmo_state(cosmo), None,
+    )
 
 
 def nbody(ptcl, cosmo, conf, reverse=False, correction=None):

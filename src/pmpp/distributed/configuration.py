@@ -15,8 +15,8 @@ from .cuda import supported_configuration as cuda_routing_supported
 from ..cic.gather import initialize_mGPU_gather
 from .routing import (
     initialize_mGPU_compute_halo_mask, initialize_mGPU_halo_move_pullback, initialize_mGPU_halo_movement_canonical,
-    initialize_mGPU_halo_movement_no_acc, initialize_mGPU_reconstruct_pre_drift,
-    initialize_mGPU_reconstruct_pre_drift_pullback,
+    initialize_mGPU_halo_movement_low_memory, initialize_mGPU_halo_movement_no_acc,
+    initialize_mGPU_reconstruct_pre_drift, initialize_mGPU_reconstruct_pre_drift_pullback,
 )
 from ..cic.scatter import initialize_mGPU_scatter
 from ..core.utils import build_ring_permutations, pytree_dataclass
@@ -82,6 +82,7 @@ class MultiGPUConfiguration:
 
     halo_moving: Callable = _uninitialized_runtime_callable
     halo_moving_no_acc: Callable | None = None
+    halo_moving_low_memory: Callable | None = None
     reconstruct_pre_drift: Callable = _uninitialized_runtime_callable
     reconstruct_pre_drift_pullback: Callable | None = None
     halo_move_pullback: Callable = _uninitialized_runtime_callable
@@ -242,6 +243,7 @@ def initialize_multigpu_runtime(conf: "Configuration", runtime: MultiGPUConfigur
         irfftn_transposed=irfftn_transposed_jit, irfftn_transposed_batched=irfftn_transposed_batched_jit,
         halo_moving=initialize_mGPU_halo_movement_canonical(conf),
         halo_moving_no_acc=initialize_mGPU_halo_movement_no_acc(conf),
+        halo_moving_low_memory=initialize_mGPU_halo_movement_low_memory(conf),
         reconstruct_pre_drift=initialize_mGPU_reconstruct_pre_drift(conf),
         reconstruct_pre_drift_pullback=initialize_mGPU_reconstruct_pre_drift_pullback(conf),
         halo_move_pullback=initialize_mGPU_halo_move_pullback(conf),

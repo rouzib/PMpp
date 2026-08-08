@@ -44,9 +44,10 @@ def _encode_records(pmid, disp, vel, mask, capacity, mesh_shape):
     count = jnp.sum(mask, dtype=jnp.int32)
     indices = jnp.nonzero(mask, size=capacity, fill_value=0)[0]
     packed_valid = jnp.arange(capacity, dtype=jnp.int32) < count
+    key = _raveled_key(pmid[indices], mesh_shape)
     records = jnp.concatenate((
-        _raveled_key(pmid[indices], mesh_shape)[:, None], packed_valid.astype(jnp.uint32)[:, None],
-        jax.lax.bitcast_convert_type(disp[indices], jnp.uint32), jax.lax.bitcast_convert_type(vel[indices], jnp.uint32),
+        key[:, None], jnp.zeros_like(key)[:, None], jax.lax.bitcast_convert_type(disp[indices], jnp.uint32),
+        jax.lax.bitcast_convert_type(vel[indices], jnp.uint32),
     ), axis=1)
     return jnp.where(packed_valid[:, None], records, jnp.zeros_like(records)), count
 
@@ -101,9 +102,8 @@ def _fake_route_pack_bidir(
     stay_count = jnp.sum(stay_mask, dtype=jnp.int32)
     stay_indices = jnp.nonzero(stay_mask, size=stay_capacity, fill_value=0)[0]
     stay_valid = jnp.arange(stay_capacity, dtype=jnp.int32) < stay_count
-    stay_keys = jnp.where(stay_valid, _raveled_key(pmid[stay_indices], mesh_shape), jnp.iinfo(jnp.uint32).max)
     stay_indices = jnp.where(stay_valid, stay_indices, jnp.int32(-1))
-    return left, right, left_count, right_count, classes, stay_keys, stay_indices, stay_count
+    return left, right, left_count, right_count, classes, stay_indices, stay_count
 
 
 def _fake_route_merge(
@@ -126,12 +126,12 @@ def _fake_route_merge(
 
 
 def _fake_route_merge_bidir(
-    pmid, disp, vel, stay_keys, stay_indices, stay_count, left_records, left_count, right_records, right_count, *,
-    mesh_shape, capacity
+    pmid, disp, vel, stay_indices, stay_count, left_records, left_count, right_records, right_count, *, mesh_shape,
+    capacity
 ):
     stay_valid = jnp.arange(stay_indices.shape[0], dtype=jnp.int32) < stay_count
     safe_stay = jnp.clip(stay_indices, 0, pmid.shape[0] - 1)
-    local = (stay_keys, pmid[safe_stay], disp[safe_stay], vel[safe_stay], stay_valid)
+    local = (_raveled_key(pmid[safe_stay], mesh_shape), pmid[safe_stay], disp[safe_stay], vel[safe_stay], stay_valid)
     left_key, left_pmid, left_disp, left_vel = _decode_records(left_records, mesh_shape)
     right_key, right_pmid, right_disp, right_vel = _decode_records(right_records, mesh_shape)
     left = (left_key, left_pmid, left_disp, left_vel, jnp.arange(left_records.shape[0], dtype=jnp.int32) < left_count)
@@ -139,8 +139,15 @@ def _fake_route_merge_bidir(
         right_key, right_pmid, right_disp, right_vel, jnp.arange(right_records.shape[0], dtype=jnp.int32) < right_count
     )
     merged = _stable_merge_streams((local, left, right), capacity)
-    merged_key = jnp.where(merged[3] != 0, _raveled_key(merged[0], mesh_shape), jnp.iinfo(jnp.uint32).max)
+    merged_key_lo = jnp.where(merged[3] != 0, _raveled_key(merged[0], mesh_shape), jnp.iinfo(jnp.uint32).max)
+    merged_key_hi = jnp.where(merged[3] != 0, jnp.uint32(0), jnp.iinfo(jnp.uint32).max)
+    merged_key = jnp.stack((merged_key_lo, merged_key_hi), axis=-1)
     return (*merged, merged_key, jnp.sum(merged[3] != 0, dtype=jnp.int32))
+
+
+def _fake_route_merge_bidir_primal(*args, **kwargs):
+    merged = _fake_route_merge_bidir(*args, **kwargs)
+    return (*merged[:4], merged[-1])
 
 
 def _fake_route_transpose_split(merged_cot, source_tag, source_idx, *, auth_size, share_capacity):
@@ -173,8 +180,134 @@ def _install_fake_cuda_routing(monkeypatch, *, bidirectional):
     monkeypatch.setattr(routing, "route_pack_bidir_cuda", _fake_route_pack_bidir)
     monkeypatch.setattr(routing, "cuda_route_merge", _fake_route_merge)
     monkeypatch.setattr(routing, "route_merge_bidir_cuda", _fake_route_merge_bidir)
+    monkeypatch.setattr(routing, "route_merge_bidir_primal_i16", _fake_route_merge_bidir_primal)
     monkeypatch.setattr(routing, "cuda_route_transpose_split", _fake_route_transpose_split)
     monkeypatch.setattr(routing, "cuda_route_transpose_scatter", _fake_route_transpose_scatter)
+
+
+def test_wide_routing_keys_cross_u32_boundaries_without_x64():
+    conf = types.SimpleNamespace(mesh_shape=(2048, 2048, 2048), mesh_size=2048**3)
+    pmid = jnp.asarray([[1023, 2047, 2047], [1024, 0, 0], [2047, 2047, 2047]], dtype=jnp.int16)
+
+    keys = routing._routing_keys_from_pmid(pmid, conf)
+
+    assert keys.dtype == jnp.uint32
+    np.testing.assert_array_equal(
+        np.asarray(keys), np.asarray([[0xffffffff, 0], [0, 1], [0xffffffff, 1]], dtype=np.uint32),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(routing._key_fill_value(conf)), np.asarray([0xffffffff, 0xffffffff], dtype=np.uint32)
+    )
+
+
+def test_routing_scalar_count_arithmetic_saturates_without_large_allocations():
+    limit = np.iinfo(np.int32).max
+    assert int(routing._saturating_add_nonnegative_int32(jnp.int32(limit - 2), jnp.int32(10))) == limit
+    assert int(
+        routing._saturating_add_nonnegative_int32(jnp.int32(limit // 2), jnp.int32(limit // 2), jnp.int32(100),
+                                                  )
+    ) == limit
+    gathered = jnp.asarray([limit - 4, 2, 8, 0, 0, 0, 0, 0], dtype=jnp.int32)
+    assert int(routing._saturating_sum_nonnegative_int32(gathered)) == limit
+    assert routing._saturating_add_nonnegative_int32(jnp.int32(7), jnp.int32(11)).shape == ()
+
+
+def test_wide_routing_key_search_is_lexicographic_high_then_low():
+    sorted_keys = jnp.asarray([[0xffffffff, 0], [0, 1], [0xffffffff, 1], [0xffffffff, 0xffffffff]], dtype=jnp.uint32)
+    values = sorted_keys[:3]
+
+    np.testing.assert_array_equal(
+        np.asarray(routing._key_searchsorted(sorted_keys, values, side="left")), np.asarray([0, 1, 2])
+    )
+    np.testing.assert_array_equal(
+        np.asarray(routing._key_searchsorted(sorted_keys, values, side="right")), np.asarray([1, 2, 3])
+    )
+
+
+def test_portable_wide_key_merge_preserves_global_order():
+    sentinel = jnp.asarray([0xffffffff, 0xffffffff], dtype=jnp.uint32)
+    keys_a = jnp.asarray([[0xffffffff, 0], [0xffffffff, 1], sentinel], dtype=jnp.uint32)
+    valid_a = jnp.asarray([True, True, False])
+    keys_b = jnp.asarray([[0, 1], sentinel], dtype=jnp.uint32)
+    valid_b = jnp.asarray([True, False])
+
+    source, a_idx, b_idx, valid, _ = routing._linear_merge_plan_two(keys_a, valid_a, keys_b, valid_b, 3, sentinel)
+    merged = routing._linear_take_two(keys_a, keys_b, source, a_idx, b_idx)
+    merged = routing._fill_invalid_keys(merged, valid, sentinel)
+
+    np.testing.assert_array_equal(
+        np.asarray(merged), np.asarray([[0xffffffff, 0], [0, 1], [0xffffffff, 1]], dtype=np.uint32)
+    )
+
+
+def test_native_no_acc_route_returns_zero_padded_merge_without_repacking(monkeypatch):
+    conf = types.SimpleNamespace(mesh_shape=(4, 1, 1), mesh_size=4)
+    pmid = jnp.asarray([[0, 0, 0], [1, 0, 0], [0, 0, 0]], dtype=jnp.int16)
+    disp = jnp.asarray([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [0.0, 0.0, 0.0]], dtype=jnp.float32)
+    vel = disp + jnp.asarray([[10.0, 10.0, 10.0], [10.0, 10.0, 10.0], [0.0, 0.0, 0.0]])
+    unused = jnp.asarray([False, False, True])
+
+    monkeypatch.setattr(routing, "cuda_routing_enabled", lambda _: True)
+
+    def fake_route(keys, route_pmid, route_disp, route_vel, valid, *args):
+        del args
+        assert keys is None
+        return (keys, route_pmid, route_disp, route_vel, valid), jnp.int32(0)
+
+    monkeypatch.setattr(routing, "_canonical_route_authoritative_no_acc", fake_route)
+    monkeypatch.setattr(
+        routing, "_pack_authoritative_only_no_acc", lambda *args:
+        (_ for _ in ()).throw(AssertionError("native output must not be repacked")),
+    )
+
+    result = routing.move_particles_mesh_halo_no_acc_shard_map(
+        pmid, disp, disp, vel, None, None, unused, 4, 2, 0, 3, (), (), 2, 1.0, (), conf,
+    )
+
+    np.testing.assert_array_equal(np.asarray(result[0]), np.asarray(pmid))
+    np.testing.assert_array_equal(np.asarray(result[1]), np.asarray(disp))
+    np.testing.assert_array_equal(np.asarray(result[2]), np.asarray(vel))
+    np.testing.assert_array_equal(np.asarray(result[4]), np.asarray(unused))
+
+
+def test_fused_low_memory_route_fails_closed_on_uncapped_counts(monkeypatch):
+    conf = types.SimpleNamespace(mesh_shape=(8, 1, 1))
+    pmid = jnp.zeros((4, 3), dtype=jnp.int16)
+    disp = jnp.zeros((4, 3), dtype=jnp.float32)
+    vel = jnp.zeros_like(disp)
+    unused = jnp.zeros((4, ), dtype=jnp.bool_)
+    records = jnp.zeros((4, 8), dtype=jnp.uint32)
+    monkeypatch.setattr(
+        routing, "_routing_keys_from_pmid", lambda *args, **kwargs:
+        (_ for _ in ()).throw(AssertionError("fused route must not allocate keys")),
+    )
+    monkeypatch.setattr(
+        routing, "_x_mod_from_disp", lambda *args, **kwargs:
+        (_ for _ in ()).throw(AssertionError("fused route must not allocate x_mod")),
+    )
+    monkeypatch.setattr(routing.jax.lax, "axis_index", lambda _: jnp.int32(0))
+    monkeypatch.setattr(routing.jax.lax, "ppermute", lambda value, **kwargs: value)
+    monkeypatch.setattr(routing.jax.lax, "pmax", lambda value, *args, **kwargs: value)
+    monkeypatch.setattr(
+        routing.jax.lax, "all_gather",
+        lambda value, *args, **kwargs: jnp.asarray([np.iinfo(np.int32).max - 1, 10], dtype=jnp.int32),
+    )
+    monkeypatch.setattr(
+        routing, "route_pack_bidir_drift_primal_i16", lambda *args, **kwargs:
+        (records, records, jnp.int32(5), jnp.int32(0), jnp.asarray([2], jnp.uint32), jnp.int32(2), jnp.int32(1)),
+    )
+    monkeypatch.setattr(
+        routing, "route_merge_bidir_drift_primal_i16", lambda *args, **kwargs:
+        (pmid, disp, vel, jnp.ones((4, ), jnp.bool_), jnp.int32(7)),
+    )
+
+    result = routing.move_particles_mesh_halo_fused_drift_low_memory_shard_map(
+        pmid, disp, vel, jnp.float32(1), unused, 8, 4, ((0, 1), (1, 0)), ((0, 1), (1, 0)), 2, 1.0,
+        jnp.asarray([0, 4], dtype=jnp.int32), conf,
+    )
+    assert bool(result[5])
+    assert int(result[6]) == 5
+    assert int(result[7]) == np.iinfo(np.int32).max
 
 
 def _conf(mode, devices=2):

@@ -741,8 +741,24 @@ class Particles:
         raveled_id : jax.Array
             Particle raveled IDs.
 
+        Raises
+        ------
+        OverflowError
+            If JAX canonicalizes ``dtype`` to an integer type that cannot
+            represent every global mesh index.  Distributed routing uses its
+            own two-limb key representation and does not call this helper.
+
         """
         conf = self.conf
+
+        canonical_dtype = jax.dtypes.canonicalize_dtype(dtype)
+        if not jnp.issubdtype(canonical_dtype, jnp.integer):
+            raise TypeError("raveled particle IDs require an integer dtype")
+        if conf.mesh_size - 1 > jnp.iinfo(canonical_dtype).max:
+            raise OverflowError(
+                f"mesh size {conf.mesh_size} does not fit canonical JAX dtype {canonical_dtype}; "
+                "enable x64 or use the distributed two-limb routing-key helpers"
+            )
 
         pmid = self.pmid
         if wrap:
@@ -750,7 +766,7 @@ class Particles:
 
         strides = tuple(accumulate((1, ) + conf.mesh_shape[:0:-1], mul))[::-1]
 
-        raveled_id = sum(i.astype(dtype) * s for i, s in zip(pmid.T, strides))
+        raveled_id = sum(i.astype(canonical_dtype) * s for i, s in zip(pmid.T, strides))
 
         return raveled_id
 

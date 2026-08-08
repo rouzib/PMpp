@@ -8,7 +8,7 @@ from ..cosmology.models import (
     project_cosmology_param_cotangent, scale_cosmology_cotangent, sub_cosmology_cotangents, replace_cosmology_params,
     zero_cosmology_param_cotangent,
 )
-from .gravity import gravity, duplicate_slot_counts
+from .gravity import gravity, gravity_streamed, duplicate_slot_counts
 from ..cosmology.growth import growth
 from .particles import Particles
 from ..corrections import (
@@ -333,6 +333,38 @@ def drift_for_force(
     return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, halo_mask=halo_mask, unused_index=unused_indexes)
 
 
+def drift_for_force_low_memory(a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configuration):
+    """Apply one production fused drift-route and return scalar diagnostics.
+
+    The distributed path accepts the pre-drift displacement, velocity, and a
+    scalar drift factor.  CUDA therefore computes both ownership and the
+    transported displacement without a full ``disp_after`` or ``x_mod``
+    allocation.  Single-device execution remains available as a correctness
+    reference for the focused low-memory tests.
+    """
+    factor = drift_factor(a_vel, a_prev, a_next, cosmo, conf).astype(conf.float_dtype)
+    mover = getattr(conf, "mGPU_halo_moving_low_memory", None)
+    if not conf.use_mGPU:
+        return ptcl.replace(disp=ptcl.disp + ptcl.vel * factor), jnp.int32(0), jnp.int32(0)
+    if mover is None:
+        raise RuntimeError(
+            "distributed low-memory N-body requires the fused native drift-route target; fallback is disabled"
+        )
+
+    pmid, disp, vel, halo_mask, unused_indexes, has_failed, max_ptcl_moved, invalid_count = mover(
+        ptcl.pmid, ptcl.disp, ptcl.vel, factor, ptcl.unused_index,
+    )
+    _assert_halo_move_succeeded(has_failed, max_ptcl_moved)
+    # Acceleration is dead at this point and every component is overwritten by
+    # the immediately following streamed force.  Carrying the old allocation
+    # lets the force loop reuse it without routing or zero-filling 3*capacity
+    # floating-point values.
+    return (
+        ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=ptcl.acc, halo_mask=halo_mask, unused_index=unused_indexes,
+                     ), max_ptcl_moved, invalid_count,
+    )
+
+
 def drift_adj(a_vel, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
     """Reverse a drift stage when the pre-drift state is available.
 
@@ -550,16 +582,17 @@ def kick_adj(a_acc, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
     return ptcl, ptcl_cot, cosmo_cot
 
 
-def force_acceleration(a, ptcl, cosmo, conf, correction=None):
+def force_acceleration(a, ptcl, cosmo, conf, correction=None, *, streamed_gravity=False):
     """Evaluate long- and short-range acceleration branches."""
-    acc = gravity(a, ptcl, cosmo, conf, correction=long_range_correction(correction), )
+    gravity_fn = gravity_streamed if streamed_gravity else gravity
+    acc = gravity_fn(a, ptcl, cosmo, conf, correction=long_range_correction(correction), )
     local = local_pair_correction(correction)
     if local is not None:
         acc = acc + apply_local_pair_correction(local, a, ptcl, cosmo, conf)
     return acc
 
 
-def force(a, ptcl, cosmo, conf, correction=None):
+def force(a, ptcl, cosmo, conf, correction=None, *, streamed_gravity=False):
     """Overwrite ``ptcl.acc`` with gravitational acceleration at scale factor ``a``.
 
     Parameters
@@ -580,7 +613,7 @@ def force(a, ptcl, cosmo, conf, correction=None):
     Particles
         Particle state with refreshed acceleration.
     """
-    acc = force_acceleration(a, ptcl, cosmo, conf, correction=correction)
+    acc = force_acceleration(a, ptcl, cosmo, conf, correction=correction, streamed_gravity=streamed_gravity)
     return ptcl.replace(acc=acc)
 
 
@@ -653,7 +686,7 @@ def force_adj(a, ptcl, ptcl_cot, cosmo, conf, correction=None):
     return ptcl, ptcl_cot, cosmo_cot_force, correction_cot_force
 
 
-def integrate(a_prev, a_next, ptcl, cosmo, conf, correction=None):
+def integrate(a_prev, a_next, ptcl, cosmo, conf, correction=None, *, streamed_gravity=False):
     """Advance one macro-step with the configured symplectic splitting.
 
     Parameters
@@ -686,7 +719,7 @@ def integrate(a_prev, a_next, ptcl, cosmo, conf, correction=None):
                 apply_phase=split_index == last_drift_index,
             )
             a_disp = a_disp_next
-            ptcl = force(a_disp, ptcl, cosmo, conf, correction=correction)
+            ptcl = force(a_disp, ptcl, cosmo, conf, correction=correction, streamed_gravity=streamed_gravity)
             a_acc = a_disp
 
         if k != 0:
@@ -696,6 +729,32 @@ def integrate(a_prev, a_next, ptcl, cosmo, conf, correction=None):
             a_vel = a_vel_next
 
     return ptcl
+
+
+def integrate_low_memory(a_prev, a_next, ptcl, cosmo, conf):
+    """Advance one uncorrected macro-step through the fused forward path."""
+    D = K = 0
+    a_disp = a_vel = a_acc = a_prev
+    max_particles_moved = jnp.int32(0)
+    max_invalid_count = jnp.int32(0)
+    for d, k in conf.symp_splits:
+        if d != 0:
+            D += d
+            a_disp_next = a_prev * (1 - D) + a_next * D
+            ptcl, moved, invalid = drift_for_force_low_memory(a_vel, a_disp, a_disp_next, ptcl, cosmo, conf, )
+            max_particles_moved = jnp.maximum(max_particles_moved, moved)
+            max_invalid_count = jnp.maximum(max_invalid_count, invalid)
+            a_disp = a_disp_next
+            ptcl = force(a_disp, ptcl, cosmo, conf, streamed_gravity=True)
+            a_acc = a_disp
+
+        if k != 0:
+            K += k
+            a_vel_next = a_prev * (1 - K) + a_next * K
+            ptcl = kick(a_acc, a_vel, a_vel_next, ptcl, cosmo, conf)
+            a_vel = a_vel_next
+
+    return ptcl, max_particles_moved, max_invalid_count
 
 
 def _integrate_stage_schedule(a_prev, a_next, conf):

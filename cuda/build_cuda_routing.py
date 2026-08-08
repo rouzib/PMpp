@@ -19,7 +19,6 @@ import shutil
 import subprocess
 import sys
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -31,10 +30,11 @@ def _query(command, *, cwd=None):
 
 
 def _write_manifest(build_dir: Path, python: str, architectures: str):
-    artifact = next(
-        (candidate for candidate in (build_dir / "libpmpp_cuda_routing.so", build_dir / "pmpp_cuda_routing.so") if candidate.exists()),
-        None,
-    )
+    artifact = next((
+        candidate for candidate in (build_dir / "libpmpp_cuda_routing.so", build_dir / "pmpp_cuda_routing.so")
+        if candidate.exists()
+    ), None,
+                    )
     jax_version = _query([python, "-c", "import jax; print(jax.__version__)"])
     jaxlib_version = _query([python, "-c", "import jaxlib; print(jaxlib.__version__)"])
     source_checkout = (ROOT / ".git").exists()
@@ -48,36 +48,48 @@ def _write_manifest(build_dir: Path, python: str, architectures: str):
     if artifact is not None:
         artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
     manifest = {
-        "build_identifier": artifact_hash[:16] if artifact_hash else None,
-        "compiler": _query(["nvcc", "--version"]),
-        "cuda_toolkit": _query(["nvcc", "--version"]),
-        "pmpp_commit": commit,
-        "pmpp_dirty": dirty,
-        "pmpp_version": pmpp_version,
-        "jax_version": jax_version,
-        "jaxlib_version": jaxlib_version,
+        "build_identifier":
+        artifact_hash[:16] if artifact_hash else None,
+        "compiler":
+        _query(["nvcc", "--version"]),
+        "cuda_toolkit":
+        _query(["nvcc", "--version"]),
+        "pmpp_commit":
+        commit,
+        "pmpp_dirty":
+        dirty,
+        "pmpp_version":
+        pmpp_version,
+        "jax_version":
+        jax_version,
+        "jaxlib_version":
+        jaxlib_version,
         "embedded_cuda_architectures": [part for part in architectures.split(";") if part],
-        "build_timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "record_format_version": 2,
-        "record_words_by_dtype": {"float32": 8, "float64": 14},
+        "build_timestamp_utc":
+        datetime.now(timezone.utc).isoformat(),
+        "record_format_version":
+        3,
+        "routing_key_format":
+        "uint64_le_limbs",
+        "features": ["wide_keys", "int16_bidir", "lean_primal_merge", "fused_drift_primal_i16_f32", ],
+        "record_words_by_dtype": {
+            "float32": 8,
+            "float64": 14
+        },
         "particle_float_dtypes": ["float32", "float64"],
-        "artifact": None if artifact is None else artifact.name,
-        "artifact_sha256": artifact_hash,
+        "artifact":
+        None if artifact is None else artifact.name,
+        "artifact_sha256":
+        artifact_hash,
         "routing_targets": [
-            "pmpp_route_pack",
-            "pmpp_route_merge",
-            "pmpp_route_merge_aux",
-            "pmpp_route_transpose_split",
-            "pmpp_route_transpose_scatter",
-            "pmpp_route_bidir_pack",
-            "pmpp_route_merge_bidir",
-            "pmpp_route_pack_f64",
-            "pmpp_route_merge_f64",
-            "pmpp_route_merge_aux_f64",
-            "pmpp_route_transpose_split_f64",
-            "pmpp_route_transpose_scatter_f64",
-            "pmpp_route_bidir_pack_f64",
-            "pmpp_route_merge_bidir_f64",
+            "pmpp_route_offset_probe", "pmpp_route_pack", "pmpp_route_merge", "pmpp_route_merge_aux",
+            "pmpp_route_transpose_split", "pmpp_route_transpose_scatter", "pmpp_route_bidir_pack",
+            "pmpp_route_merge_bidir", "pmpp_route_bidir_pack_i16", "pmpp_route_merge_bidir_i16",
+            "pmpp_route_merge_bidir_primal_i16", "pmpp_route_bidir_drift_pack_primal_i16",
+            "pmpp_route_bidir_drift_merge_primal_i16", "pmpp_route_pack_f64", "pmpp_route_merge_f64",
+            "pmpp_route_merge_aux_f64", "pmpp_route_transpose_split_f64", "pmpp_route_transpose_scatter_f64",
+            "pmpp_route_bidir_pack_f64", "pmpp_route_merge_bidir_f64", "pmpp_route_bidir_pack_f64_i16",
+            "pmpp_route_merge_bidir_f64_i16",
         ],
     }
     manifest_path = build_dir / "pmpp_cuda_routing.manifest.json"
@@ -100,22 +112,13 @@ def main() -> int:
         shutil.rmtree(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    subprocess.run(
-        [
-            "cmake",
-            "-S",
-            str(ROOT / "cuda"),
-            "-B",
-            str(build_dir),
-            "-DCMAKE_BUILD_TYPE=Release",
-            f"-DPython3_EXECUTABLE={args.python}",
-            f"-DCMAKE_CUDA_ARCHITECTURES={args.cuda_architectures}",
-            f"-DPMPP_CUDA_ARCHITECTURES={args.cuda_architectures}",
-        ],
-        check=True,
-        cwd=ROOT,
-        env=env,
-    )
+    subprocess.run([
+        "cmake", "-S",
+        str(ROOT / "cuda"), "-B",
+        str(build_dir), "-DCMAKE_BUILD_TYPE=Release", f"-DPython3_EXECUTABLE={args.python}",
+        f"-DCMAKE_CUDA_ARCHITECTURES={args.cuda_architectures}", f"-DPMPP_CUDA_ARCHITECTURES={args.cuda_architectures}",
+    ], check=True, cwd=ROOT, env=env,
+                   )
     subprocess.run(["cmake", "--build", str(build_dir), "--config", "Release"], check=True, cwd=ROOT, env=env)
     manifest = _write_manifest(build_dir, args.python, args.cuda_architectures)
     print(build_dir / "libpmpp_cuda_routing.so")

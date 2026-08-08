@@ -27,16 +27,23 @@ from .cuda import enabled_for_configuration as cuda_routing_enabled
 from .cuda import requested_backend as cuda_routing_backend
 from .cuda import route_merge as cuda_route_merge
 from .cuda import route_merge_bidir_cuda
+from .cuda import route_merge_bidir_drift_primal_i16
+from .cuda import route_merge_bidir_primal_i16
 from .cuda import route_pack as cuda_route_pack
 from .cuda import route_pack_bidir_cuda
+from .cuda import route_pack_bidir_drift_primal_i16
 from .cuda import route_transpose_scatter as cuda_route_transpose_scatter
 from .cuda import route_transpose_split as cuda_route_transpose_split
+from .cuda import supported_fused_primal_configuration as cuda_fused_primal_supported
 
 # Debug-only oracle for the native bidirectional route. This is read at
 # import time so it remains a static JIT decision. It must never be enabled
 # for timing runs: it executes the canonical JAX route in addition to the FFI
 # route and emits one line per shard per move.
 _DEBUG_BIDIR_ROUTE = os.environ.get("PMPP_BIDIR_DEBUG_ROUTE", "").strip().lower() in {"1", "true", "yes", "on", }
+
+_INT32_MAX = (1 << 31) - 1
+_UINT32_MAX = (1 << 32) - 1
 
 
 def _use_bidir_cuda_routing(conf):
@@ -104,7 +111,135 @@ def compute_halo_mask(x_mod, halo_start, halo_end, unused_indexes):
 
 def _key_fill_value(conf):
     """Sentinel raveled key that sorts after every real particle key."""
-    return jnp.asarray(conf.mesh_size, dtype=jnp.int32)
+    if conf.mesh_size <= _INT32_MAX:
+        return jnp.asarray(conf.mesh_size, dtype=jnp.int32)
+    return jnp.asarray((_UINT32_MAX, _UINT32_MAX), dtype=jnp.uint32)
+
+
+def _u32_multiply_wide(a, b):
+    """Return the low/high limbs of an unsigned 32-by-32-bit product.
+
+    JAX disables 64-bit array types by default. Splitting each operand into
+    16-bit halves keeps every partial product representable in ``uint32`` and
+    produces the exact two-limb result without requesting x64 mode.
+    """
+    mask = jnp.asarray(0xffff, dtype=jnp.uint32)
+    a = jnp.asarray(a, dtype=jnp.uint32)
+    b = jnp.asarray(b, dtype=jnp.uint32)
+    a_lo = a & mask
+    a_hi = a >> jnp.uint32(16)
+    b_lo = b & mask
+    b_hi = b >> jnp.uint32(16)
+    product_lo = a_lo * b_lo
+    cross_a = a_lo * b_hi
+    cross_b = a_hi * b_lo
+    middle = (product_lo >> jnp.uint32(16)) + (cross_a & mask) + (cross_b & mask)
+    lo = (product_lo & mask) | (middle << jnp.uint32(16))
+    hi = a_hi * b_hi + (cross_a >> jnp.uint32(16)) + (cross_b >> jnp.uint32(16))
+    hi = hi + (middle >> jnp.uint32(16))
+    return lo, hi
+
+
+def _wide_multiply_add(lo, hi, multiplier, addend):
+    """Compute ``(hi:lo) * multiplier + addend`` modulo 2**64."""
+    multiplier = jnp.asarray(multiplier, dtype=jnp.uint32)
+    product_lo, carry = _u32_multiply_wide(lo, multiplier)
+    product_hi = carry + hi * multiplier
+    addend = jnp.asarray(addend, dtype=jnp.uint32)
+    result_lo = product_lo + addend
+    result_hi = product_hi + (result_lo < product_lo).astype(jnp.uint32)
+    return result_lo, result_hi
+
+
+def _routing_keys_from_pmid(pmid, conf):
+    """Return canonical routing keys without requiring JAX x64 arrays.
+
+    Small meshes retain the legacy one-dimensional ``int32`` representation.
+    Meshes whose flattened index crosses ``INT32_MAX`` use ``(low, high)``
+    ``uint32`` limbs in the final dimension. The latter remains correctly
+    ordered by :func:`_key_searchsorted`.
+    """
+    if conf.mesh_size <= _INT32_MAX:
+        return pmid_to_idx(pmid, conf)
+
+    lo = jnp.zeros((pmid.shape[0], ), dtype=jnp.uint32)
+    hi = jnp.zeros_like(lo)
+    for component, dimension in enumerate(conf.mesh_shape):
+        coordinate = pmid[:, component].astype(jnp.int32) % jnp.asarray(dimension, dtype=jnp.int32)
+        lo, hi = _wide_multiply_add(lo, hi, dimension, coordinate.astype(jnp.uint32))
+    return jnp.stack((lo, hi), axis=-1)
+
+
+def _fill_invalid_keys(keys, valid, key_fill):
+    """Fill invalid scalar or two-limb keys with their canonical sentinel."""
+    mask_shape = valid.shape + (1, ) * (keys.ndim - valid.ndim)
+    return jnp.where(valid.reshape(mask_shape), keys, jnp.asarray(key_fill, dtype=keys.dtype))
+
+
+def _key_searchsorted(sorted_keys, values, *, side):
+    """Search scalar or ``(low, high)`` sorted keys with stable semantics."""
+    if sorted_keys.ndim == 1:
+        return jnp.searchsorted(sorted_keys, values, side=side).astype(jnp.int32)
+    if sorted_keys.ndim != 2 or sorted_keys.shape[-1] != 2 or values.shape[-1] != 2:
+        raise ValueError("wide routing keys must have shape (n, 2)")
+    if side not in {"left", "right"}:
+        raise ValueError("side must be 'left' or 'right'")
+
+    length = sorted_keys.shape[0]
+    if length == 0:
+        return jnp.zeros(values.shape[:-1], dtype=jnp.int32)
+    lo = jnp.zeros(values.shape[:-1], dtype=jnp.int32)
+    hi = jnp.full(values.shape[:-1], length, dtype=jnp.int32)
+
+    def search_step(_, bounds):
+        lower, upper = bounds
+        middle = lower + (upper - lower) // 2
+        candidate = sorted_keys[jnp.minimum(middle, length - 1)]
+        candidate_hi, candidate_lo = candidate[..., 1], candidate[..., 0]
+        value_hi, value_lo = values[..., 1], values[..., 0]
+        less = (candidate_hi < value_hi) | ((candidate_hi == value_hi) & (candidate_lo < value_lo))
+        equal = (candidate_hi == value_hi) & (candidate_lo == value_lo)
+        advance = less | (equal if side == "right" else jnp.zeros_like(equal))
+        return jnp.where(advance, middle + 1, lower), jnp.where(advance, upper, middle)
+
+    steps = max(1, length.bit_length())
+    lo, _ = jax.lax.fori_loop(0, steps, search_step, (lo, hi))
+    return lo
+
+
+def _keys_not_equal(left, right):
+    """Return a per-row inequality mask for scalar or two-limb keys."""
+    unequal = left != right
+    return jnp.any(unequal, axis=-1) if unequal.ndim > 1 else unequal
+
+
+def _saturating_sum_nonnegative_int32(values):
+    """Sum a small replicated count vector without signed-int32 overflow."""
+    limit = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+
+    def add_one(index, total):
+        value = jnp.maximum(values[index].astype(jnp.int32), jnp.int32(0))
+        remaining = limit - total
+        return jnp.where(value > remaining, limit, total + value)
+
+    return jax.lax.fori_loop(0, values.shape[0], add_one, jnp.int32(0))
+
+
+def _saturating_add_nonnegative_int32(*values):
+    """Saturating scalar count addition without materializing a large array."""
+    limit = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+    total = jnp.int32(0)
+    for value in values:
+        value = jnp.maximum(jnp.asarray(value, dtype=jnp.int32), jnp.int32(0))
+        remaining = limit - total
+        total = jnp.where(value > remaining, limit, total + value)
+    return total
+
+
+def _native_keys_for_conf(native_keys, valid, conf):
+    """Adapt the ABI-v3 two-limb output to the active portable key shape."""
+    keys = native_keys[:, 0].astype(jnp.int32) if conf.mesh_size <= _INT32_MAX else native_keys
+    return _fill_invalid_keys(keys, valid, _key_fill_value(conf))
 
 
 def _owned_slice_bounds(global_nMesh, num_gpus, offsets):
@@ -212,8 +347,8 @@ def _exchange_compacted_particles_packed(compacted, perm, conf):
     pmid_width = pmid.shape[-1]
     incoming_pmid = incoming_metadata[:, :pmid_width].astype(pmid.dtype)
     incoming_valid = incoming_metadata[:, pmid_width] != 0
-    incoming_keys = pmid_to_idx(incoming_pmid, conf)
-    incoming_keys = jnp.where(incoming_valid, incoming_keys, _key_fill_value(conf))
+    incoming_keys = _routing_keys_from_pmid(incoming_pmid, conf)
+    incoming_keys = _fill_invalid_keys(incoming_keys, incoming_valid, _key_fill_value(conf))
 
     fields = []
     start = 0
@@ -264,11 +399,11 @@ def _linear_merge_plan_two(keys_a, valid_a, keys_b, valid_b, capacity, key_fill)
     count_a = jnp.sum(valid_a)
     count_b = jnp.sum(valid_b)
     total = count_a + count_b
-    keys_a_filled = jnp.where(valid_a, keys_a, key_fill)
-    keys_b_filled = jnp.where(valid_b, keys_b, key_fill)
+    keys_a_filled = _fill_invalid_keys(keys_a, valid_a, key_fill)
+    keys_b_filled = _fill_invalid_keys(keys_b, valid_b, key_fill)
 
     b_source_idx = jnp.arange(keys_b.shape[0], dtype=jnp.int32)
-    pos_b = (b_source_idx + jnp.searchsorted(keys_a_filled, keys_b_filled, side="right").astype(jnp.int32))
+    pos_b = b_source_idx + _key_searchsorted(keys_a_filled, keys_b_filled, side="right")
     # Force padded migration entries out of bounds so they can never collide
     # with a valid insertion slot in scatter-set lowering.
     pos_b = jnp.where(valid_b, pos_b, jnp.asarray(capacity, pos_b.dtype))
@@ -345,14 +480,14 @@ def _sparse_route_plan_two(
     skipped, stay_pos, stay_valid, count_stay = _sparse_stay_source_plan(
         valid_a, outgoing_slots, outgoing_valid, capacity
     )
-    keys_a_filled = jnp.where(valid_a, keys_a, key_fill)
-    outgoing_filled = jnp.where(outgoing_valid, outgoing_keys, key_fill)
-    keys_b_filled = jnp.where(valid_b, keys_b, key_fill)
+    keys_a_filled = _fill_invalid_keys(keys_a, valid_a, key_fill)
+    outgoing_filled = _fill_invalid_keys(outgoing_keys, outgoing_valid, key_fill)
+    keys_b_filled = _fill_invalid_keys(keys_b, valid_b, key_fill)
 
     b_source_idx = jnp.arange(keys_b.shape[0], dtype=jnp.int32)
     rank_stay_b = (
-        jnp.searchsorted(keys_a_filled, keys_b_filled, side="right") -
-        jnp.searchsorted(outgoing_filled, keys_b_filled, side="right")
+        _key_searchsorted(keys_a_filled, keys_b_filled, side="right") -
+        _key_searchsorted(outgoing_filled, keys_b_filled, side="right")
     ).astype(jnp.int32)
     pos_b = b_source_idx + rank_stay_b
     pos_b = jnp.where(valid_b, pos_b, jnp.int32(capacity))
@@ -364,7 +499,7 @@ def _sparse_route_plan_two(
     b_idx = jnp.clip(incoming_prefix - 1, 0, keys_b.shape[0] - 1)
     stay_rank = jnp.clip(slots - incoming_prefix, 0, capacity - 1)
     a_idx = jnp.clip(stay_rank + skipped[stay_rank], 0, valid_a.shape[0] - 1)
-    total = count_stay + jnp.sum(valid_b)
+    total = _saturating_add_nonnegative_int32(count_stay, jnp.sum(valid_b))
     out_valid = slots < total
     return source_code, a_idx, b_idx, stay_rank, out_valid, total, stay_pos, stay_valid
 
@@ -377,15 +512,15 @@ def _sparse_route_plan_one_incoming_two_outgoing(
     skipped, stay_pos, stay_valid, count_stay = _sparse_stay_source_plan(
         valid_a, outgoing_left_slots, outgoing_left_valid, capacity, outgoing_right_slots, outgoing_right_valid,
     )
-    keys_a_filled = jnp.where(valid_a, keys_a, key_fill)
-    outgoing_left_filled = jnp.where(outgoing_left_valid, outgoing_left_keys, key_fill)
-    outgoing_right_filled = jnp.where(outgoing_right_valid, outgoing_right_keys, key_fill)
-    incoming_filled = jnp.where(incoming_valid, incoming_keys, key_fill)
+    keys_a_filled = _fill_invalid_keys(keys_a, valid_a, key_fill)
+    outgoing_left_filled = _fill_invalid_keys(outgoing_left_keys, outgoing_left_valid, key_fill)
+    outgoing_right_filled = _fill_invalid_keys(outgoing_right_keys, outgoing_right_valid, key_fill)
+    incoming_filled = _fill_invalid_keys(incoming_keys, incoming_valid, key_fill)
     incoming_source_idx = jnp.arange(incoming_keys.shape[0], dtype=jnp.int32)
     rank_stay = (
-        jnp.searchsorted(keys_a_filled, incoming_filled, side="right") -
-        jnp.searchsorted(outgoing_left_filled, incoming_filled, side="right") -
-        jnp.searchsorted(outgoing_right_filled, incoming_filled, side="right")
+        _key_searchsorted(keys_a_filled, incoming_filled, side="right") -
+        _key_searchsorted(outgoing_left_filled, incoming_filled, side="right") -
+        _key_searchsorted(outgoing_right_filled, incoming_filled, side="right")
     ).astype(jnp.int32)
     incoming_pos = incoming_source_idx + rank_stay
     incoming_pos = jnp.where(incoming_valid, incoming_pos, jnp.int32(capacity))
@@ -396,7 +531,7 @@ def _sparse_route_plan_one_incoming_two_outgoing(
     incoming_idx = jnp.clip(incoming_prefix - 1, 0, incoming_keys.shape[0] - 1)
     stay_rank = jnp.clip(slots - incoming_prefix, 0, capacity - 1)
     a_idx = jnp.clip(stay_rank + skipped[stay_rank], 0, valid_a.shape[0] - 1)
-    total = count_stay + jnp.sum(incoming_valid)
+    total = _saturating_add_nonnegative_int32(count_stay, jnp.sum(incoming_valid))
     out_valid = slots < total
     return (is_incoming, a_idx, incoming_idx, stay_rank, out_valid, total, stay_pos, stay_valid, )
 
@@ -410,7 +545,7 @@ def _merge_small_incoming_streams(incoming_b, incoming_c, key_fill):
     source_code, b_idx, c_idx, out_valid, _ = plan
     out_keys = _linear_take_two(keys_b, keys_c, source_code, b_idx, c_idx)
     fields = [_linear_take_two(b, c, source_code, b_idx, c_idx) for b, c in zip(payload_b, payload_c)]
-    out_keys = jnp.where(out_valid, out_keys, key_fill)
+    out_keys = _fill_invalid_keys(out_keys, out_valid, key_fill)
     fields = [_zero_invalid_merge_values(field, out_valid) for field in fields]
     source_tag = jnp.where(source_code == 1, jnp.int32(2), jnp.int32(1))
     source_tag = jnp.where(out_valid, source_tag, jnp.int32(3))
@@ -434,7 +569,7 @@ def _sparse_route_merge_two(
     _capacity_check(total, capacity, error_message)
     out_keys = _linear_take_two(keys_a, keys_b, source_code, a_idx, b_idx)
     fields = [_linear_take_two(a, b, source_code, a_idx, b_idx) for a, b in zip(payload_a, payload_b)]
-    out_keys = jnp.where(out_valid, out_keys, key_fill)
+    out_keys = _fill_invalid_keys(out_keys, out_valid, key_fill)
     fields = [_zero_invalid_merge_values(field, out_valid) for field in fields]
     merged = (out_keys, *fields, out_valid)
     if provenance:
@@ -467,7 +602,7 @@ def _sparse_route_merge_three(
         _linear_take_two(a, incoming, is_incoming, a_idx, incoming_idx)
         for a, incoming in zip(payload_a, incoming_payload)
     ]
-    out_keys = jnp.where(out_valid, out_keys, key_fill)
+    out_keys = _fill_invalid_keys(out_keys, out_valid, key_fill)
     fields = [_zero_invalid_merge_values(field, out_valid) for field in fields]
     merged = (out_keys, *fields, out_valid)
     if provenance:
@@ -600,16 +735,16 @@ def _pack_authoritative_only_no_acc(auth_pmid, auth_disp, auth_vel, auth_valid, 
 def _authoritative_prefix_from_owned_only(pmid, disp, vel, acc, unused_index, conf, ):
     """Treat a mesh-halo packed state as its already-authoritative prefix block."""
     valid = ~unused_index
-    keys = pmid_to_idx(pmid, conf)
-    keys = jnp.where(valid, keys, _key_fill_value(conf))
+    keys = _routing_keys_from_pmid(pmid, conf)
+    keys = _fill_invalid_keys(keys, valid, _key_fill_value(conf))
     return keys, pmid, disp, vel, acc, valid
 
 
 def _authoritative_prefix_from_owned_only_no_acc(pmid, disp, vel, unused_index, conf, ):
     """Treat a mesh-halo packed state as an authoritative prefix without acceleration."""
     valid = ~unused_index
-    keys = pmid_to_idx(pmid, conf)
-    keys = jnp.where(valid, keys, _key_fill_value(conf))
+    keys = _routing_keys_from_pmid(pmid, conf)
+    keys = _fill_invalid_keys(keys, valid, _key_fill_value(conf))
     return keys, pmid, disp, vel, valid
 
 
@@ -627,7 +762,7 @@ def _canonical_authoritative_from_full(
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
     x_mod = _x_mod_from_disp(pmid, source_disp, global_nMesh, disp_size)
     owned_mask = particles_in_slice_mask(x_mod, owned_start, owned_end) & ~unused_index
-    keys = pmid_to_idx(pmid, conf)
+    keys = _routing_keys_from_pmid(pmid, conf)
     return _compact_sorted_particles(
         keys, pmid, carried_disp, vel, acc, owned_mask, pmid.shape[0], _key_fill_value(conf),
         "[ERROR] Exceeded authoritative compact capacity. "
@@ -642,7 +777,7 @@ def _canonical_authoritative_from_full_with_slots(
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
     x_mod = _x_mod_from_disp(pmid, source_disp, global_nMesh, disp_size)
     owned_mask = particles_in_slice_mask(x_mod, owned_start, owned_end) & ~unused_index
-    keys = pmid_to_idx(pmid, conf)
+    keys = _routing_keys_from_pmid(pmid, conf)
     return _compact_sorted_particles_with_slots(
         keys, pmid, carried_disp, vel, acc, owned_mask, pmid.shape[0], _key_fill_value(conf),
         "[ERROR] Exceeded authoritative compact capacity. "
@@ -805,14 +940,12 @@ def _canonical_route_authoritative_no_acc_bidir_cuda(
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
     mesh_shape = tuple(int(value) for value in conf.mesh_shape)
     x_mod = _x_mod_from_disp(pmid, disp, global_nMesh, disp_size)
-    (
-        send_left_records, send_right_records, send_left_count, send_right_count, classes, stay_keys, stay_indices,
-        stay_count,
-    ) = route_pack_bidir_cuda(
-        pmid, disp, vel, valid, x_mod, global_nmesh=global_nMesh, mesh_shape=mesh_shape, owned_start=owned_start,
-        owned_end=owned_end, slice_width=global_nMesh // num_gpus, num_devices=num_gpus, capacity=max_values_to_share,
-        stay_capacity=pmid.shape[0],
-    )
+    (send_left_records, send_right_records, send_left_count, send_right_count, classes, stay_indices, stay_count,
+     ) = route_pack_bidir_cuda(
+         pmid, disp, vel, valid, x_mod, global_nmesh=global_nMesh, mesh_shape=mesh_shape, owned_start=owned_start,
+         owned_end=owned_end, slice_width=global_nMesh // num_gpus, num_devices=num_gpus, capacity=max_values_to_share,
+         stay_capacity=pmid.shape[0],
+     )
     _synchronized_nonzero_check(
         jnp.sum(classes == 4), "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
         "particles_outside_neighbor_range={x}.",
@@ -827,19 +960,30 @@ def _canonical_route_authoritative_no_acc_bidir_cuda(
     incoming_from_right = jax.lax.ppermute(send_left_records, axis_name=AXIS_NAME, perm=left_perm)
     incoming_from_right_count = jax.lax.ppermute(send_left_count, axis_name=AXIS_NAME, perm=left_perm)
     _synchronized_capacity_check(
-        stay_count + incoming_from_left_count + incoming_from_right_count, pmid.shape[0],
-        "[ERROR] Exceeded canonical authoritative capacity after migration. "
+        _saturating_add_nonnegative_int32(stay_count, incoming_from_left_count, incoming_from_right_count),
+        pmid.shape[0], "[ERROR] Exceeded canonical authoritative capacity after migration. "
         "required_particles={x}, max_ptcl_per_slice={y}.",
     )
-    (merged_pmid, merged_disp, merged_vel, merged_valid, _merged_tag, _merged_idx, _merged_key, _merged_count,
-     ) = route_merge_bidir_cuda(
-         pmid, disp, vel, stay_keys, stay_indices, stay_count, incoming_from_left, incoming_from_left_count,
-         incoming_from_right, incoming_from_right_count, mesh_shape=mesh_shape, capacity=pmid.shape[0],
-     )
+    use_lean_primal = pmid.dtype == jnp.int16 and disp.dtype == jnp.float32 and vel.dtype == jnp.float32
+    if use_lean_primal:
+        merged_pmid, merged_disp, merged_vel, merged_valid, _merged_count = route_merge_bidir_primal_i16(
+            pmid, disp, vel, stay_indices, stay_count, incoming_from_left, incoming_from_left_count,
+            incoming_from_right, incoming_from_right_count, mesh_shape=mesh_shape, capacity=pmid.shape[0],
+        )
+        merged_key = None
+    else:
+        (merged_pmid, merged_disp, merged_vel, merged_valid, _merged_tag, _merged_idx, merged_key, _merged_count,
+         ) = route_merge_bidir_cuda(
+             pmid, disp, vel, stay_indices, stay_count, incoming_from_left, incoming_from_left_count,
+             incoming_from_right, incoming_from_right_count, mesh_shape=mesh_shape, capacity=pmid.shape[0],
+         )
     merged_valid = merged_valid != 0
-    merged_keys = pmid_to_idx(merged_pmid, conf)
-    merged_keys = jnp.where(merged_valid, merged_keys, _key_fill_value(conf))
     if _DEBUG_BIDIR_ROUTE:
+        if merged_key is None:
+            merged_keys = _routing_keys_from_pmid(merged_pmid, conf)
+            merged_keys = _fill_invalid_keys(merged_keys, merged_valid, _key_fill_value(conf))
+        else:
+            merged_keys = _native_keys_for_conf(merged_key, merged_valid, conf)
         left_start = (owned_start - global_nMesh // num_gpus) % global_nMesh
         right_end = (owned_end + global_nMesh // num_gpus) % global_nMesh
         expected_stay = valid & particles_in_slice_mask(x_mod, owned_start, owned_end)
@@ -863,7 +1007,7 @@ def _canonical_route_authoritative_no_acc_bidir_cuda(
         reference_keys, reference_pmid, reference_disp, reference_vel, _, reference_valid = reference
         active = merged_valid | reference_valid
         row_mismatch = ((merged_valid != reference_valid)
-                        | (active & (merged_keys != reference_keys))
+                        | (active & _keys_not_equal(merged_keys, reference_keys))
                         | (active & jnp.any(merged_pmid != reference_pmid, axis=1))
                         | (active & jnp.any(merged_disp != reference_disp, axis=1))
                         | (active & jnp.any(merged_vel != reference_vel, axis=1)))
@@ -896,6 +1040,8 @@ def _canonical_route_authoritative_no_acc_bidir_cuda(
             reference_key=reference_keys[safe_first], native_pmid=merged_pmid[safe_first],
             reference_pmid=reference_pmid[safe_first], disp_max=disp_max_error, vel_max=vel_max_error,
         )
+    else:
+        merged_keys = None
     return ((merged_keys, merged_pmid.astype(pmid.dtype), merged_disp, merged_vel, merged_valid),
             jnp.maximum(send_left_count, send_right_count),
             )
@@ -941,7 +1087,7 @@ def _canonical_route_authoritative_no_acc_cuda(
         incoming_from_right = jax.lax.ppermute(send_left_records, axis_name=AXIS_NAME, perm=left_perm)
         incoming_from_right_count = jax.lax.ppermute(send_left_count, axis_name=AXIS_NAME, perm=left_perm)
         _synchronized_capacity_check(
-            jnp.sum(stay_mask) + incoming_from_right_count, pmid.shape[0],
+            _saturating_add_nonnegative_int32(jnp.sum(stay_mask), incoming_from_right_count), pmid.shape[0],
             "[ERROR] Exceeded canonical authoritative capacity after migration. "
             "required_particles={x}, max_ptcl_per_slice={y}.",
         )
@@ -967,7 +1113,7 @@ def _canonical_route_authoritative_no_acc_cuda(
         incoming_from_left = jax.lax.ppermute(send_right_records, axis_name=AXIS_NAME, perm=right_perm)
         incoming_from_left_count = jax.lax.ppermute(send_right_count, axis_name=AXIS_NAME, perm=right_perm)
         _synchronized_capacity_check(
-            jnp.sum(stay_mask) + incoming_from_left_count, pmid.shape[0],
+            _saturating_add_nonnegative_int32(jnp.sum(stay_mask), incoming_from_left_count), pmid.shape[0],
             "[ERROR] Exceeded canonical authoritative capacity after migration. "
             "required_particles={x}, max_ptcl_per_slice={y}.",
         )
@@ -990,9 +1136,7 @@ def _canonical_route_authoritative_no_acc_cuda(
         max_particles_moved = jnp.maximum(send_left_count, send_right_count)
 
     merged_valid = merged_valid != 0
-    merged_keys = pmid_to_idx(merged_pmid, conf)
-    merged_keys = jnp.where(merged_valid, merged_keys, _key_fill_value(conf))
-    return ((merged_keys, merged_pmid.astype(pmid.dtype), merged_disp, merged_vel, merged_valid), max_particles_moved, )
+    return ((None, merged_pmid.astype(pmid.dtype), merged_disp, merged_vel, merged_valid), max_particles_moved, )
 
 
 def _canonical_route_authoritative_with_aux_bidir_cuda(
@@ -1004,14 +1148,12 @@ def _canonical_route_authoritative_with_aux_bidir_cuda(
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
     mesh_shape = tuple(int(value) for value in conf.mesh_shape)
     x_mod = _x_mod_from_disp(pmid, disp, global_nMesh, disp_size)
-    (
-        send_left_records, send_right_records, send_left_count, send_right_count, classes, stay_keys, stay_indices,
-        stay_count,
-    ) = route_pack_bidir_cuda(
-        pmid, disp, vel, valid, x_mod, global_nmesh=global_nMesh, mesh_shape=mesh_shape, owned_start=owned_start,
-        owned_end=owned_end, slice_width=global_nMesh // num_gpus, num_devices=num_gpus, capacity=max_values_to_share,
-        stay_capacity=pmid.shape[0],
-    )
+    (send_left_records, send_right_records, send_left_count, send_right_count, classes, stay_indices, stay_count,
+     ) = route_pack_bidir_cuda(
+         pmid, disp, vel, valid, x_mod, global_nmesh=global_nMesh, mesh_shape=mesh_shape, owned_start=owned_start,
+         owned_end=owned_end, slice_width=global_nMesh // num_gpus, num_devices=num_gpus, capacity=max_values_to_share,
+         stay_capacity=pmid.shape[0],
+     )
     stay_mask = classes == 1
     send_left_mask = classes == 2
     send_right_mask = classes == 3
@@ -1053,13 +1195,13 @@ def _canonical_route_authoritative_with_aux_bidir_cuda(
     incoming_from_right_count = jax.lax.ppermute(send_left_count, axis_name=AXIS_NAME, perm=left_perm)
     incoming_from_right_acc = jax.lax.ppermute(send_left_acc, axis_name=AXIS_NAME, perm=left_perm)
     _synchronized_capacity_check(
-        stay_count + incoming_from_left_count + incoming_from_right_count, auth_size,
+        _saturating_add_nonnegative_int32(stay_count, incoming_from_left_count, incoming_from_right_count), auth_size,
         "[ERROR] Exceeded canonical authoritative capacity after migration. required_particles={x}, max_ptcl_per_slice={y}.",
     )
-    (merged_pmid, merged_disp, merged_vel, merged_valid, merged_tag, merged_idx, _merged_key, _merged_count,
+    (merged_pmid, merged_disp, merged_vel, merged_valid, merged_tag, merged_idx, merged_key, _merged_count,
      ) = route_merge_bidir_cuda(
-         pmid, disp, vel, stay_keys, stay_indices, stay_count, incoming_from_left, incoming_from_left_count,
-         incoming_from_right, incoming_from_right_count, mesh_shape=mesh_shape, capacity=auth_size,
+         pmid, disp, vel, stay_indices, stay_count, incoming_from_left, incoming_from_left_count, incoming_from_right,
+         incoming_from_right_count, mesh_shape=mesh_shape, capacity=auth_size,
      )
     merged_valid = merged_valid != 0
     merged_idx = jnp.where(merged_valid, merged_idx, jnp.int32(-1))
@@ -1073,8 +1215,7 @@ def _canonical_route_authoritative_with_aux_bidir_cuda(
                                                ),
                                      ),
                            )
-    merged_keys = pmid_to_idx(merged_pmid, conf)
-    merged_keys = jnp.where(merged_valid, merged_keys, _key_fill_value(conf))
+    merged_keys = _native_keys_for_conf(merged_key, merged_valid, conf)
     route_aux = (
         stay_pos, stay_valid, send_left_pos, send_left_valid, send_right_pos, send_right_valid, merged_tag, merged_idx,
     )
@@ -1143,7 +1284,7 @@ def _canonical_route_authoritative_with_aux_cuda(
     incoming_from_right_acc = jax.lax.ppermute(send_left_acc, axis_name=AXIS_NAME, perm=left_perm)
 
     _synchronized_capacity_check(
-        jnp.sum(stay_mask) + incoming_from_right_count, auth_size,
+        _saturating_add_nonnegative_int32(jnp.sum(stay_mask), incoming_from_right_count), auth_size,
         "[ERROR] Exceeded canonical authoritative capacity after migration. "
         "required_particles={x}, max_ptcl_per_slice={y}.",
     )
@@ -1170,8 +1311,8 @@ def _canonical_route_authoritative_with_aux_cuda(
             stay_pos, stay_valid, send_left_pos, send_left_valid, send_right_pos, send_right_valid, merged_tag,
             merged_idx,
         )
-        merged_keys = pmid_to_idx(merged_pmid, conf)
-        merged_keys = jnp.where(merged_valid, merged_keys, _key_fill_value(conf))
+        merged_keys = _routing_keys_from_pmid(merged_pmid, conf)
+        merged_keys = _fill_invalid_keys(merged_keys, merged_valid, _key_fill_value(conf))
         return (
             merged_keys, merged_pmid.astype(pmid.dtype), merged_disp, merged_vel, merged_acc, merged_valid,
         ), route_aux
@@ -1196,7 +1337,7 @@ def _canonical_route_authoritative_with_aux_cuda(
     incoming_from_left_acc = jax.lax.ppermute(send_right_acc, axis_name=AXIS_NAME, perm=right_perm)
 
     _synchronized_capacity_check(
-        jnp.sum(stay_mask) + incoming_from_left_count, auth_size,
+        _saturating_add_nonnegative_int32(jnp.sum(stay_mask), incoming_from_left_count), auth_size,
         "[ERROR] Exceeded canonical authoritative capacity after migration. "
         "required_particles={x}, max_ptcl_per_slice={y}.",
     )
@@ -1237,8 +1378,8 @@ def _canonical_route_authoritative_with_aux_cuda(
                                                ),
                                      ),
                            )
-    merged_keys = pmid_to_idx(merged_pmid, conf)
-    merged_keys = jnp.where(merged_valid, merged_keys, _key_fill_value(conf))
+    merged_keys = _routing_keys_from_pmid(merged_pmid, conf)
+    merged_keys = _fill_invalid_keys(merged_keys, merged_valid, _key_fill_value(conf))
     route_aux = (
         stay_pos, stay_valid, send_left_pos, send_left_valid, send_right_pos, send_right_valid, merged_tag, merged_idx,
     )
@@ -1771,16 +1912,97 @@ def move_particles_mesh_halo_no_acc_shard_map(
         max_particles_moved)`` for the next force-producing step.
     """
     del disp_before, halo_start, halo_end, max_halo_values_to_share
-    auth = _authoritative_prefix_from_owned_only_no_acc(pmid, disp_after, vel, unused_indexes, conf, )
+    if cuda_routing_enabled(conf) and not _DEBUG_BIDIR_ROUTE:
+        # Native forward routes classify and merge directly from the packed
+        # particle state. Avoid constructing a full input key array that both
+        # native backends immediately discard.
+        auth = (None, pmid, disp_after, vel, ~unused_indexes)
+    else:
+        auth = _authoritative_prefix_from_owned_only_no_acc(pmid, disp_after, vel, unused_indexes, conf, )
     (_auth_keys, auth_pmid, auth_disp, auth_vel, auth_valid), max_particles_moved = (
         _canonical_route_authoritative_no_acc(
             *auth, global_nMesh, max_values_to_share, left_perm, right_perm, num_gpus, disp_size, offsets, conf,
         )
     )
-    pmid, disp, vel, halo_mask, unused_indexes = _pack_authoritative_only_no_acc(
-        auth_pmid, auth_disp, auth_vel, auth_valid, max_ptcl_per_slice,
-    )
+    if cuda_routing_enabled(conf) and auth_pmid.shape[0] == max_ptcl_per_slice:
+        # Both native merge backends clear their fixed-capacity outputs before
+        # writing the valid prefix. Returning those arrays directly avoids a
+        # redundant full-capacity jnp.where repack after every forward drift.
+        pmid, disp, vel = auth_pmid, auth_disp, auth_vel
+        unused_indexes = ~auth_valid
+        halo_mask = jnp.zeros_like(unused_indexes)
+    else:
+        pmid, disp, vel, halo_mask, unused_indexes = _pack_authoritative_only_no_acc(
+            auth_pmid, auth_disp, auth_vel, auth_valid, max_ptcl_per_slice,
+        )
     return pmid, disp, vel, halo_mask, unused_indexes, jnp.bool_(False), max_particles_moved
+
+
+def move_particles_mesh_halo_fused_drift_low_memory_shard_map(
+    pmid, disp, vel, drift_factor, unused_indexes, global_nMesh, max_values_to_share, left_perm, right_perm, num_gpus,
+    disp_size, offsets, conf,
+):
+    """Production-only fused drift and bidirectional authoritative route.
+
+    This path is intentionally separate from the standard differentiable
+    mover. CUDA computes drifted displacement, ownership, outgoing records,
+    and the final stable merge without materializing particle-sized x-position,
+    class, key, or stay-index arrays in JAX.
+
+    Returns ``(pmid, disp, vel, halo_mask, unused, has_failed,
+    global_max_moved, global_invalid_count)``. All three scalar diagnostics are
+    explicitly replicated across the routing mesh.
+    """
+    valid = ~unused_indexes
+    owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
+    mesh_shape = tuple(int(value) for value in conf.mesh_shape)
+    (
+        send_left_records, send_right_records, send_left_count, send_right_count, stay_block_counts, stay_count,
+        invalid_count,
+    ) = route_pack_bidir_drift_primal_i16(
+        pmid, disp, vel, valid, drift_factor, disp_size=disp_size, global_nmesh=global_nMesh, mesh_shape=mesh_shape,
+        owned_start=owned_start, owned_end=owned_end, slice_width=global_nMesh // num_gpus, num_devices=num_gpus,
+        capacity=max_values_to_share,
+    )
+    incoming_from_left = jax.lax.ppermute(send_right_records, axis_name=AXIS_NAME, perm=right_perm)
+    incoming_from_left_count = jax.lax.ppermute(send_right_count, axis_name=AXIS_NAME, perm=right_perm)
+    incoming_from_right = jax.lax.ppermute(send_left_records, axis_name=AXIS_NAME, perm=left_perm)
+    incoming_from_right_count = jax.lax.ppermute(send_left_count, axis_name=AXIS_NAME, perm=left_perm)
+
+    merged_pmid, merged_disp, merged_vel, merged_valid, _merged_count = route_merge_bidir_drift_primal_i16(
+        pmid, disp, vel, valid, drift_factor, stay_block_counts, stay_count, incoming_from_left,
+        incoming_from_left_count, incoming_from_right, incoming_from_right_count, disp_size=disp_size,
+        global_nmesh=global_nMesh, mesh_shape=mesh_shape, owned_start=owned_start, owned_end=owned_end,
+        slice_width=global_nMesh // num_gpus, num_devices=num_gpus, record_capacity=max_values_to_share,
+        capacity=pmid.shape[0],
+    )
+
+    # Counts are uncapped device scalars. Check overflow without adding three
+    # signed int32 values, whose mathematical sum can exceed INT32_MAX even
+    # though every individual fixed-capacity stream is below that limit.
+    output_capacity = jnp.asarray(pmid.shape[0], dtype=jnp.int32)
+    share_capacity = jnp.asarray(max_values_to_share, dtype=jnp.int32)
+    stay_nonnegative = jnp.maximum(stay_count, jnp.int32(0))
+    left_nonnegative = jnp.maximum(incoming_from_left_count, jnp.int32(0))
+    right_nonnegative = jnp.maximum(incoming_from_right_count, jnp.int32(0))
+    remaining_after_stay = jnp.maximum(output_capacity - stay_nonnegative, jnp.int32(0))
+    remaining_after_left = jnp.maximum(remaining_after_stay - left_nonnegative, jnp.int32(0))
+    local_overflow = ((send_left_count < 0) | (send_right_count < 0) | (stay_count < 0) |
+                      (incoming_from_left_count < 0)
+                      | (incoming_from_right_count < 0) | (send_left_count > share_capacity)
+                      | (send_right_count > share_capacity) | (stay_nonnegative > output_capacity)
+                      | (left_nonnegative > remaining_after_stay) | (right_nonnegative > remaining_after_left))
+    global_overflow = jax.lax.pmax(local_overflow.astype(jnp.int32), AXIS_NAME) != 0
+    invalid_present = jax.lax.pmax((invalid_count != 0).astype(jnp.int32), AXIS_NAME) != 0
+    invalid_counts = jax.lax.all_gather(invalid_count, AXIS_NAME, axis=0, tiled=False)
+    global_invalid_count = _saturating_sum_nonnegative_int32(invalid_counts)
+    global_max_moved = jax.lax.pmax(jnp.maximum(send_left_count, send_right_count), AXIS_NAME)
+    has_failed = global_overflow | invalid_present
+    halo_mask = jnp.zeros_like(merged_valid)
+    return (
+        merged_pmid, merged_disp, merged_vel, halo_mask, ~merged_valid, has_failed, global_max_moved,
+        global_invalid_count,
+    )
 
 
 def reconstruct_pre_drift_canonical_shard_map(
@@ -2122,6 +2344,32 @@ def initialize_mGPU_halo_movement_no_acc(conf):
         ),
         out_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), P(AXIS_NAME), P(), P(),
                    ), check_vma=False,
+    )
+
+
+def initialize_mGPU_halo_movement_low_memory(conf):
+    """Create the profile-only fused float32/int16 drift-route callable.
+
+    The returned callable has signature
+    ``(pmid, disp, vel, drift_factor, unused)`` and returns
+    ``(pmid, drifted_disp, vel, halo_mask, unused, has_failed,
+    global_max_moved, global_invalid_count)``. It is unavailable unless the
+    selected ABI-v3 library explicitly advertises and registers the fused
+    primal feature.
+    """
+    if (conf.num_devices == 1 or conf.multigpu_mode != "mesh_halo" or not cuda_fused_primal_supported(conf)):
+        return None
+
+    func = partial(
+        move_particles_mesh_halo_fused_drift_low_memory_shard_map, global_nMesh=conf.nMesh,
+        max_values_to_share=conf.max_share_ptcl, left_perm=conf.left_perm, right_perm=conf.right_perm,
+        num_gpus=conf.num_devices, disp_size=conf.disp_size, offsets=conf.offsets, conf=conf,
+    )
+    return shard_map(
+        func, mesh=conf.compute_mesh,
+        in_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(), P(AXIS_NAME)), out_specs=(
+            P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), P(AXIS_NAME), P(), P(), P(),
+        ), check_vma=False,
     )
 
 

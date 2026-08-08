@@ -11,9 +11,9 @@ The extension ABI is intentionally small:
 
 * ``pmpp_route_pack`` classifies a local authoritative buffer and emits a
   fixed-capacity opaque ``uint32`` record.  Float32 records use eight words
-  (32 bytes), while float64 records use fourteen words (56 bytes): a raveled
-  pmid, validity, three displacement values, and three velocity values (the
-  floating-point values are bit-copied).
+  (32 bytes), while float64 records use fourteen words (56 bytes): low and
+  high limbs of the raveled pmid followed by three displacement values and
+  three velocity values (the floating-point values are bit-copied).
 * ``pmpp_route_merge`` performs a stable merge against a virtual stay stream
   and emits canonical ``pmid``, displacement, velocity, and validity arrays.
 * ``pmpp_route_merge_aux`` has the same operation but additionally emits source
@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -43,9 +44,19 @@ _FLOAT32_TARGETS = (
     "pmpp_route_pack", "pmpp_route_merge", "pmpp_route_merge_aux", "pmpp_route_transpose_split",
     "pmpp_route_transpose_scatter",
 )
-_FLOAT32_BIDIR_TARGETS = ("pmpp_route_bidir_pack", "pmpp_route_merge_bidir", )
+_FLOAT32_BIDIR_TARGETS = (
+    "pmpp_route_bidir_pack", "pmpp_route_merge_bidir", "pmpp_route_bidir_pack_i16", "pmpp_route_merge_bidir_i16",
+    "pmpp_route_merge_bidir_primal_i16",
+)
 _FLOAT64_TARGETS = tuple(f"{target}_f64" for target in _FLOAT32_TARGETS)
-_FLOAT64_BIDIR_TARGETS = tuple(f"{target}_f64" for target in _FLOAT32_BIDIR_TARGETS)
+_FLOAT64_BIDIR_TARGETS = (
+    "pmpp_route_bidir_pack_f64", "pmpp_route_merge_bidir_f64", "pmpp_route_bidir_pack_f64_i16",
+    "pmpp_route_merge_bidir_f64_i16",
+)
+_FUSED_PRIMAL_FEATURE = "fused_drift_primal_i16_f32"
+_FUSED_PRIMAL_TARGETS = (
+    "pmpp_route_bidir_drift_pack_primal_i16", "pmpp_route_bidir_drift_merge_primal_i16", "pmpp_route_offset_probe",
+)
 # Backward-compatible names used by diagnostics and older tests.
 _CURRENT_TARGETS = _FLOAT32_TARGETS
 _BIDIR_TARGETS = _FLOAT32_BIDIR_TARGETS
@@ -56,7 +67,8 @@ _REGISTERED = False
 _BIDIR_REGISTERED = False
 _FLOAT64_REGISTERED = False
 _FLOAT64_BIDIR_REGISTERED = False
-_RECORD_FORMAT_VERSION = 2
+_FUSED_PRIMAL_REGISTERED = False
+_RECORD_FORMAT_VERSION = 3
 
 
 def _truthy_env(name: str, default: bool) -> bool:
@@ -100,12 +112,18 @@ def _load_build_manifest() -> dict[str, Any] | None:
         # package or cache manifest.
         candidates = [Path(explicit)]
     else:
-        candidates = []
-        for library in _candidate_library_paths():
-            candidates.extend([
-                library.with_suffix(library.suffix + ".manifest.json"),
-                library.parent / "pmpp_cuda_routing.manifest.json",
-            ])
+        # Resolve the library first and only accept a manifest adjacent to that
+        # exact artifact. Otherwise an explicit stale library with no manifest
+        # could accidentally borrow a v3 manifest from the package or cache.
+        library = _LIBRARY if _LIBRARY is not None else _load_library()
+        library_name = None if library is None else getattr(library, "_name", None)
+        if library_name is None:
+            return None
+        library_path = Path(library_name)
+        candidates = [
+            library_path.with_suffix(library_path.suffix + ".manifest.json"),
+            library_path.parent / "pmpp_cuda_routing.manifest.json",
+        ]
     for candidate in dict.fromkeys(candidates):
         try:
             if candidate.is_file():
@@ -138,8 +156,13 @@ def _load_library() -> ctypes.CDLL | None:
 def _register_targets(*, strict: bool = False) -> bool:
     global _REGISTERED, _BIDIR_REGISTERED
     global _FLOAT64_REGISTERED, _FLOAT64_BIDIR_REGISTERED
+    global _FUSED_PRIMAL_REGISTERED
     manifest = _load_build_manifest()
-    if manifest is not None and int(manifest.get("record_format_version", -1)) != _RECORD_FORMAT_VERSION:
+    if manifest is None:
+        if strict:
+            raise RuntimeError("PM++ CUDA routing artifact is missing its record format manifest")
+        return False
+    if int(manifest.get("record_format_version", -1)) != _RECORD_FORMAT_VERSION:
         if strict:
             raise RuntimeError("PM++ CUDA routing artifact has an incompatible record format manifest")
         return False
@@ -190,6 +213,20 @@ def _register_targets(*, strict: bool = False) -> bool:
             _FLOAT64_BIDIR_REGISTERED = False
         else:
             _FLOAT64_BIDIR_REGISTERED = True
+    manifest_features = set(manifest.get("features") or ())
+    if (
+        not _FUSED_PRIMAL_REGISTERED and _FUSED_PRIMAL_FEATURE in manifest_features
+        and all(hasattr(library, target) for target in _FUSED_PRIMAL_TARGETS)
+    ):
+        try:
+            for target in _FUSED_PRIMAL_TARGETS:
+                jax.ffi.register_ffi_target(target, jax.ffi.pycapsule(getattr(library, target)), platform="CUDA", )
+        except (AttributeError, RuntimeError, TypeError, ValueError, OSError):
+            _FUSED_PRIMAL_REGISTERED = False
+            if strict:
+                raise
+        else:
+            _FUSED_PRIMAL_REGISTERED = True
     return _REGISTERED
 
 
@@ -214,16 +251,22 @@ def extension_status() -> dict[str, Any]:
         bool(_FLOAT64_REGISTERED),
         "float64_bidir_registered":
         bool(_FLOAT64_BIDIR_REGISTERED),
+        "fused_primal_registered":
+        bool(_FUSED_PRIMAL_REGISTERED),
         "bidir_targets":
         tuple(target for target in _BIDIR_TARGETS if library is not None and hasattr(library, target)),
         "float64_targets":
         tuple(target for target in _FLOAT64_TARGETS if library is not None and hasattr(library, target)),
         "float64_bidir_targets":
         tuple(target for target in _FLOAT64_BIDIR_TARGETS if library is not None and hasattr(library, target)),
+        "fused_primal_targets":
+        tuple(target for target in _FUSED_PRIMAL_TARGETS if library is not None and hasattr(library, target)),
+        "fused_primal_feature":
+        bool(manifest is not None and _FUSED_PRIMAL_FEATURE in (manifest.get("features") or ())),
         "build_identifier":
         None if manifest is None else manifest.get("build_identifier"),
         "record_format_version":
-        _RECORD_FORMAT_VERSION if manifest is None else manifest.get("record_format_version"),
+        None if manifest is None else manifest.get("record_format_version"),
         "embedded_architectures": () if manifest is None else tuple(manifest.get("embedded_cuda_architectures", ())),
         "manifest":
         manifest,
@@ -247,10 +290,14 @@ def supported_configuration(conf: Any, *, num_devices: int | None = None, mode: 
     if (mode if mode is not None else getattr(conf, "multigpu_mode", None)) != "mesh_halo":
         return False
     try:
-        mesh_size = int(np.prod(tuple(int(value) for value in conf.mesh_shape)))
+        mesh_shape = tuple(int(value) for value in conf.mesh_shape)
+        mesh_size = math.prod(mesh_shape)
     except (AttributeError, TypeError, ValueError):
         return False
-    if mesh_size > np.iinfo(np.uint32).max or not _register_targets():
+    if (
+        len(mesh_shape) != 3 or any(value <= 0 or value > np.iinfo(np.int32).max for value in mesh_shape)
+        or mesh_size >= 1 << 64 or not _register_targets()
+    ):
         return False
     return float_dtype == jnp.float32 or bool(_FLOAT64_REGISTERED)
 
@@ -262,6 +309,24 @@ def supported_bidir_configuration(conf: Any, *, num_devices: int | None = None, 
     if jnp.dtype(conf.float_dtype) == jnp.float64:
         return bool(_FLOAT64_BIDIR_REGISTERED)
     return bool(_BIDIR_REGISTERED)
+
+
+def supported_fused_primal_configuration(
+    conf: Any, *, num_devices: int | None = None, mode: str | None = None,
+) -> bool:
+    """Check the production fused-drift float32/int16 forward-route ABI."""
+    if requested_backend(conf) != "bidir_mergepath":
+        return False
+    if not supported_bidir_configuration(conf, num_devices=num_devices, mode=mode):
+        return False
+    try:
+        mesh_shape = tuple(int(value) for value in conf.mesh_shape)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return bool(
+        _FUSED_PRIMAL_REGISTERED and jnp.dtype(conf.float_dtype) == jnp.float32
+        and jnp.dtype(conf.pmid_dtype) == jnp.int16 and all(0 < value <= 32768 for value in mesh_shape)
+    )
 
 
 def requested_backend(conf: Any | None = None) -> str:
@@ -295,6 +360,19 @@ def _shape_dtype(shape: tuple[int, ...], dtype: Any) -> jax.ShapeDtypeStruct:
     return jax.ShapeDtypeStruct(shape, jnp.dtype(dtype))
 
 
+def route_offset_probe(row: int, *, component: int, record_words: int) -> jax.Array:
+    """Exercise native 64-bit vector/record addressing without allocating rows."""
+    row = int(row)
+    if row < 0 or row >= 1 << 64:
+        raise ValueError("row must fit in uint64")
+    if not _FUSED_PRIMAL_REGISTERED:
+        raise RuntimeError("the loaded PM++ CUDA routing library has no offset probe ABI")
+    return jax.ffi.ffi_call("pmpp_route_offset_probe", _shape_dtype((4, ), jnp.uint32))(
+        jnp.asarray(row & np.iinfo(np.uint32).max, dtype=jnp.uint32), jnp.asarray(row >> 32, dtype=jnp.uint32),
+        component=np.int32(component), record_words=np.int32(record_words),
+    )
+
+
 def _float_abi(*values: jax.Array) -> tuple[jnp.dtype, int, str]:
     """Resolve the typed FFI suffix and record width for routing payloads."""
     dtypes = {jnp.dtype(value.dtype) for value in values}
@@ -308,6 +386,16 @@ def _float_abi(*values: jax.Array) -> tuple[jnp.dtype, int, str]:
             raise RuntimeError("the loaded PM++ CUDA routing library has no float64 ABI")
         return dtype, 14, "_f64"
     raise TypeError(f"CUDA routing supports float32 or float64 payloads, got {dtype}")
+
+
+def _coordinate_abi(pmid: jax.Array) -> tuple[jnp.dtype, str]:
+    """Resolve the bidirectional native coordinate dtype and target suffix."""
+    dtype = jnp.dtype(pmid.dtype)
+    if dtype == jnp.int16:
+        return dtype, "_i16"
+    if dtype == jnp.int32:
+        return dtype, ""
+    raise TypeError(f"CUDA bidirectional routing supports int16 or int32 pmid, got {dtype}")
 
 
 def route_pack(
@@ -339,23 +427,26 @@ def route_pack_bidir_cuda(
     """Run the fused native bidirectional classification/packing target.
 
     Returns left records, right records, their uncapped counts, the per-slot
-    classification, compact stay keys/indices, and the uncapped stay count.
+    classification, compact stay indices, and the uncapped stay count. Stay
+    keys are recomputed from ``pmid`` during merge instead of occupying a
+    full-capacity buffer.
     The record arrays use the same dtype-specific format as ``route_pack``.
     """
     n = int(pmid.shape[0])
     float_dtype, record_words, target_suffix = _float_abi(disp, vel, x_mod)
+    coordinate_dtype, coordinate_suffix = _coordinate_abi(pmid)
     if float_dtype == jnp.float64 and not _FLOAT64_BIDIR_REGISTERED:
         raise RuntimeError("the loaded PM++ CUDA routing library has no float64 bidirectional ABI")
     if stay_capacity is None:
         stay_capacity = capacity
     outputs = (
-        _shape_dtype((capacity, record_words), jnp.uint32), _shape_dtype((capacity, record_words), jnp.uint32),
-        _shape_dtype((), jnp.int32), _shape_dtype((), jnp.int32), _shape_dtype((n, ), jnp.uint8),
-        _shape_dtype((stay_capacity, ), jnp.uint32), _shape_dtype((stay_capacity, ),
-                                                                  jnp.int32), _shape_dtype((), jnp.int32),
+        _shape_dtype((capacity, record_words),
+                     jnp.uint32), _shape_dtype((capacity, record_words),
+                                               jnp.uint32), _shape_dtype((), jnp.int32), _shape_dtype((), jnp.int32),
+        _shape_dtype((n, ), jnp.uint8), _shape_dtype((stay_capacity, ), jnp.int32), _shape_dtype((), jnp.int32),
     )
-    return jax.ffi.ffi_call(f"pmpp_route_bidir_pack{target_suffix}", outputs)(
-        pmid.astype(jnp.int32), disp.astype(float_dtype), vel.astype(float_dtype), valid.astype(jnp.uint8),
+    return jax.ffi.ffi_call(f"pmpp_route_bidir_pack{target_suffix}{coordinate_suffix}", outputs)(
+        pmid.astype(coordinate_dtype), disp.astype(float_dtype), vel.astype(float_dtype), valid.astype(jnp.uint8),
         x_mod.astype(float_dtype), jnp.asarray(owned_start, dtype=jnp.int32), jnp.asarray(owned_end, dtype=jnp.int32),
         global_nmesh=np.int32(global_nmesh), mesh_x=np.int32(mesh_shape[0]), mesh_y=np.int32(mesh_shape[1]),
         mesh_z=np.int32(mesh_shape[2]), slice_width=np.int32(slice_width), num_devices=np.int32(num_devices),
@@ -364,26 +455,107 @@ def route_pack_bidir_cuda(
 
 
 def route_merge_bidir_cuda(
-    pmid: jax.Array, disp: jax.Array, vel: jax.Array, stay_keys: jax.Array, stay_indices: jax.Array,
-    stay_count: jax.Array, left_records: jax.Array, left_count: jax.Array, right_records: jax.Array,
-    right_count: jax.Array, *, mesh_shape: tuple[int, int, int], capacity: int,
+    pmid: jax.Array, disp: jax.Array, vel: jax.Array, stay_indices: jax.Array, stay_count: jax.Array,
+    left_records: jax.Array, left_count: jax.Array, right_records: jax.Array, right_count: jax.Array, *,
+    mesh_shape: tuple[int, int, int], capacity: int,
 ) -> tuple[jax.Array, ...]:
     """Merge stay, left, and right streams with stable source provenance."""
     float_dtype, _, target_suffix = _float_abi(disp, vel)
+    coordinate_dtype, coordinate_suffix = _coordinate_abi(pmid)
     if float_dtype == jnp.float64 and not _FLOAT64_BIDIR_REGISTERED:
         raise RuntimeError("the loaded PM++ CUDA routing library has no float64 bidirectional ABI")
     outputs = (
-        _shape_dtype((capacity, 3), jnp.int32), _shape_dtype((capacity, 3), float_dtype),
+        _shape_dtype((capacity, 3), coordinate_dtype), _shape_dtype((capacity, 3), float_dtype),
         _shape_dtype((capacity, 3), float_dtype), _shape_dtype((capacity, ),
                                                                jnp.uint8), _shape_dtype((capacity, ), jnp.uint8),
-        _shape_dtype((capacity, ), jnp.int32), _shape_dtype((capacity, ), jnp.uint32), _shape_dtype((), jnp.int32),
+        _shape_dtype((capacity, ), jnp.int32), _shape_dtype((capacity, 2), jnp.uint32), _shape_dtype((), jnp.int32),
     )
-    return jax.ffi.ffi_call(f"pmpp_route_merge_bidir{target_suffix}", outputs)(
-        pmid.astype(jnp.int32), disp.astype(float_dtype), vel.astype(float_dtype), stay_keys.astype(jnp.uint32),
-        stay_indices.astype(jnp.int32), stay_count.astype(jnp.int32), left_records.astype(jnp.uint32),
+    return jax.ffi.ffi_call(f"pmpp_route_merge_bidir{target_suffix}{coordinate_suffix}", outputs)(
+        pmid.astype(coordinate_dtype), disp.astype(float_dtype),
+        vel.astype(float_dtype), stay_indices.astype(jnp.int32), stay_count.astype(jnp.int32),
+        left_records.astype(jnp.uint32), left_count.astype(jnp.int32), right_records.astype(jnp.uint32),
+        right_count.astype(jnp.int32), mesh_x=np.int32(mesh_shape[0]), mesh_y=np.int32(mesh_shape[1]),
+        mesh_z=np.int32(mesh_shape[2]), capacity=np.int32(capacity),
+    )
+
+
+def route_merge_bidir_primal_i16(
+    pmid: jax.Array, disp: jax.Array, vel: jax.Array, stay_indices: jax.Array, stay_count: jax.Array,
+    left_records: jax.Array, left_count: jax.Array, right_records: jax.Array, right_count: jax.Array, *,
+    mesh_shape: tuple[int, int, int], capacity: int,
+) -> tuple[jax.Array, ...]:
+    """Merge the float32/int16 primal route without provenance or key outputs."""
+    if jnp.dtype(pmid.dtype) != jnp.int16 or jnp.dtype(disp.dtype
+                                                       ) != jnp.float32 or jnp.dtype(vel.dtype) != jnp.float32:
+        raise TypeError("the lean primal route requires int16 pmid and float32 displacement/velocity")
+    outputs = (
+        _shape_dtype((capacity, 3), jnp.int16), _shape_dtype((capacity, 3), jnp.float32),
+        _shape_dtype((capacity, 3), jnp.float32), _shape_dtype((capacity, ), jnp.uint8), _shape_dtype((), jnp.int32),
+    )
+    return jax.ffi.ffi_call("pmpp_route_merge_bidir_primal_i16", outputs)(
+        pmid, disp, vel, stay_indices.astype(jnp.int32), stay_count.astype(jnp.int32), left_records.astype(jnp.uint32),
         left_count.astype(jnp.int32), right_records.astype(jnp.uint32), right_count.astype(jnp.int32),
         mesh_x=np.int32(mesh_shape[0]), mesh_y=np.int32(mesh_shape[1]), mesh_z=np.int32(mesh_shape[2]),
         capacity=np.int32(capacity),
+    )
+
+
+def _validate_fused_primal_arrays(pmid, disp, vel, valid):
+    if jnp.dtype(pmid.dtype) != jnp.int16:
+        raise TypeError("the fused primal route requires int16 pmid")
+    if jnp.dtype(disp.dtype) != jnp.float32 or jnp.dtype(vel.dtype) != jnp.float32:
+        raise TypeError("the fused primal route requires float32 displacement and velocity")
+    if jnp.dtype(valid.dtype) != jnp.bool_:
+        raise TypeError("the fused primal route requires a boolean validity mask")
+
+
+def route_pack_bidir_drift_primal_i16(
+    pmid: jax.Array, disp: jax.Array, vel: jax.Array, valid: jax.Array, drift_factor: jax.Array, *, disp_size: float,
+    global_nmesh: int, mesh_shape: tuple[int, int, int], owned_start: jax.Array, owned_end: jax.Array, slice_width: int,
+    num_devices: int, capacity: int,
+) -> tuple[jax.Array, ...]:
+    """Pack a fused float32/int16 drift using only compact block metadata."""
+    _validate_fused_primal_arrays(pmid, disp, vel, valid)
+    if not _FUSED_PRIMAL_REGISTERED:
+        raise RuntimeError("the loaded PM++ CUDA routing library has no fused primal drift ABI")
+    n = int(pmid.shape[0])
+    num_blocks = (n + 255) // 256
+    outputs = (
+        _shape_dtype((capacity, 8), jnp.uint32), _shape_dtype((capacity, 8), jnp.uint32), _shape_dtype((), jnp.int32),
+        _shape_dtype((), jnp.int32), _shape_dtype((num_blocks, ),
+                                                  jnp.uint32), _shape_dtype((), jnp.int32), _shape_dtype((), jnp.int32),
+    )
+    return jax.ffi.ffi_call("pmpp_route_bidir_drift_pack_primal_i16", outputs)(
+        pmid, disp, vel, valid, jnp.asarray(drift_factor, dtype=jnp.float32), jnp.asarray(disp_size, dtype=jnp.float32),
+        jnp.asarray(owned_start, dtype=jnp.int32), jnp.asarray(owned_end,
+                                                               dtype=jnp.int32), global_nmesh=np.int32(global_nmesh),
+        mesh_x=np.int32(mesh_shape[0]), mesh_y=np.int32(mesh_shape[1]), mesh_z=np.int32(mesh_shape[2]),
+        slice_width=np.int32(slice_width), num_devices=np.int32(num_devices), capacity=np.int32(capacity),
+    )
+
+
+def route_merge_bidir_drift_primal_i16(
+    pmid: jax.Array, disp: jax.Array, vel: jax.Array, valid: jax.Array, drift_factor: jax.Array,
+    stay_block_counts: jax.Array, stay_count: jax.Array, left_records: jax.Array, left_count: jax.Array,
+    right_records: jax.Array, right_count: jax.Array, *, disp_size: float, global_nmesh: int,
+    mesh_shape: tuple[int, int, int], owned_start: jax.Array, owned_end: jax.Array, slice_width: int, num_devices: int,
+    record_capacity: int, capacity: int,
+) -> tuple[jax.Array, ...]:
+    """Merge the fused route without particle-sized class, key, or index arrays."""
+    _validate_fused_primal_arrays(pmid, disp, vel, valid)
+    if not _FUSED_PRIMAL_REGISTERED:
+        raise RuntimeError("the loaded PM++ CUDA routing library has no fused primal drift ABI")
+    outputs = (
+        _shape_dtype((capacity, 3), jnp.int16), _shape_dtype((capacity, 3), jnp.float32),
+        _shape_dtype((capacity, 3), jnp.float32), _shape_dtype((capacity, ), jnp.bool_), _shape_dtype((), jnp.int32),
+    )
+    return jax.ffi.ffi_call("pmpp_route_bidir_drift_merge_primal_i16", outputs)(
+        pmid, disp, vel, valid, jnp.asarray(drift_factor, dtype=jnp.float32), jnp.asarray(disp_size, dtype=jnp.float32),
+        jnp.asarray(owned_start, dtype=jnp.int32), jnp.asarray(owned_end, dtype=jnp.int32), stay_block_counts,
+        stay_count.astype(jnp.int32), left_records, left_count.astype(jnp.int32), right_records,
+        right_count.astype(jnp.int32), global_nmesh=np.int32(global_nmesh), mesh_x=np.int32(mesh_shape[0]),
+        mesh_y=np.int32(mesh_shape[1]), mesh_z=np.int32(mesh_shape[2]), slice_width=np.int32(slice_width),
+        num_devices=np.int32(num_devices), record_capacity=np.int32(record_capacity), capacity=np.int32(capacity),
     )
 
 
@@ -451,6 +623,8 @@ def route_transpose_scatter(
 
 __all__ = [
     "enabled_for_configuration", "extension_status", "route_merge", "route_pack", "route_pack_bidir_cuda",
-    "route_merge_bidir_cuda", "requested_backend", "route_transpose_scatter", "route_transpose_split",
-    "supported_bidir_configuration", "supported_configuration",
+    "route_merge_bidir_cuda", "route_merge_bidir_primal_i16", "route_pack_bidir_drift_primal_i16",
+    "route_merge_bidir_drift_primal_i16", "route_offset_probe", "requested_backend", "route_transpose_scatter",
+    "route_transpose_split", "supported_bidir_configuration", "supported_configuration",
+    "supported_fused_primal_configuration",
 ]

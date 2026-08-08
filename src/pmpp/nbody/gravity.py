@@ -478,6 +478,46 @@ def _batched_gradient_meshes_from_potential(pot, conf: Configuration, gradient_k
     return conf.mGPU_irfftn_transposed_batched(spectral_grads).astype(conf.float_dtype)
 
 
+def _streamed_acceleration_from_potential(pot, ptcl, conf: Configuration):
+    """Transform and gather one force component at a time.
+
+    The component axis is an inner three-step ``lax.fori_loop``. Consequently
+    the real and spectral mesh for one component is consumed before the next
+    iteration starts, while the particle acceleration is the only large carry.
+    This is deliberately separate from the faster batched path so ordinary
+    simulations retain their existing execution plan.
+    """
+    if conf.dim != 3:
+        raise ValueError(f"streamed gravity requires three dimensions, got dim={conf.dim}.")
+
+    cached_factors = getattr(conf, "neg_ik", None)
+
+    def component_branch(axis):
+        """Build one statically selected FFT-and-gather loop branch."""
+        k = conf.kvec[axis]
+        factor = None if cached_factors is None else cached_factors[axis]
+
+        def transform_and_gather(potential):
+            spectral = neg_grad(k, potential, conf.cell_size) if factor is None else factor * potential
+            if conf.compute_mesh is None:
+                mesh = jnp.fft.irfftn(spectral)
+            else:
+                mesh = conf.mGPU_irfftn_transposed(spectral)
+            return gather(ptcl, conf, mesh.astype(conf.float_dtype))
+
+        return transform_and_gather
+
+    branches = tuple(component_branch(axis) for axis in range(conf.dim))
+
+    def body(axis, acc):
+        component = jax.lax.switch(axis, branches, pot)
+        return jax.lax.dynamic_update_slice_in_dim(acc, component[:, None], axis, axis=1)
+
+    can_reuse_acc = (ptcl.acc is not None and ptcl.acc.shape == ptcl.disp.shape and ptcl.acc.dtype == ptcl.disp.dtype)
+    acc = ptcl.acc if can_reuse_acc else jnp.zeros_like(ptcl.disp)
+    return jax.lax.fori_loop(0, conf.dim, body, acc)
+
+
 def _gradient_meshes_from_spectral_components(spectral_grads, conf: Configuration, use_batched=True):
     """Return real-space force meshes from prebuilt spectral components."""
     if use_batched and _can_use_batched_gradient_fft(conf):
@@ -564,6 +604,24 @@ def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration, a=None, correc
         pot, ptcl, conf, use_batched=use_batched, use_vmap_gather=correction is not None and not use_batched,
         gradient_kernel=force_gradient_kernel(correction),
     )
+
+
+def gravity_streamed(a, ptcl, cosmo, conf: Configuration, correction=None):
+    """Evaluate an uncorrected PM force with sequential component FFTs.
+
+    This forward-oriented path avoids constructing stacked three-component
+    spectral and real meshes.  It intentionally supports only the ordinary
+    uncorrected force; correction and interlacing variants keep using
+    :func:`gravity` until they have their own memory-qualified implementation.
+    """
+    if correction is not None:
+        raise ValueError("streamed gravity currently requires correction=None.")
+    if conf.compute_mesh is not None and conf.mGPU_irfftn_transposed is None:
+        raise ValueError("streamed distributed gravity requires the scalar distributed inverse FFT.")
+
+    dens = scatter(ptcl, conf)
+    pot = _gravity_potential_from_density(dens, cosmo.Omega_m, conf, a=a, cosmo=cosmo, correction=None)
+    return _streamed_acceleration_from_potential(pot, ptcl, conf)
 
 
 def _gravity_mesh_fields_from_density(dens, omega_m, conf: Configuration, a=None, cosmo=None, correction=None):
