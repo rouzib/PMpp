@@ -621,6 +621,15 @@ def _repository_commit() -> str | None:
     return value or None
 
 
+def _streamed_acceleration_updates(hlo_lines: list[str], local_disp_shape: tuple[int, ...]) -> int:
+    """Count optimized HLO updates of the carried particle acceleration."""
+    acceleration_type = f"f32[{','.join(str(int(value)) for value in local_disp_shape)}]"
+    return sum(
+        acceleration_type in line and ("dynamic_update_slice" in line or "dynamic-update-slice" in line)
+        for line in hlo_lines
+    )
+
+
 def write_nbody_compilation_artifacts(particles: Any, cosmo: Any, conf: Any, output_dir: Path) -> dict[str, Any]:
     """Persist whole-scan HLO, buffer assignment, and compiled memory stats."""
     from .nbody.solver import lower_nbody_low_memory
@@ -661,22 +670,23 @@ def write_nbody_compilation_artifacts(particles: Any, cosmo: Any, conf: Any, out
         if len(shape) == 4 and 3 in shape and math.prod(value for value in shape
                                                         if value != 3) >= max(1, local_mesh_elements // 4)
     })
-    irfft_lines = [line.lower() for line in hlo.splitlines() if "fft_type=irfft" in line.lower()]
+    hlo_lines = [line.lower() for line in hlo.splitlines()]
+    irfft_lines = [line for line in hlo_lines if "fft_type=irfft" in line]
     irfft_shapes = []
     irfft_branches = set()
     for line in irfft_lines:
         match = re.search(r"\b(?:f32|f64)\[([0-9,]+)\]", line)
         if match is not None:
             irfft_shapes.append(tuple(int(value) for value in match.group(1).split(",")))
-        branch = re.search(r"branch_([012])_fun", line)
-        if branch is not None:
-            irfft_branches.add(int(branch.group(1)))
-    streamed_updates = sum(
-        "dynamic_update_slice" in line and "gravity.py" in line for line in lowered_text.splitlines()
-    )
+    irfft_branches = {int(value) for value in re.findall(r"branch_([012])_fun", lowered_text)}
+    # Optimized GPU HLO spells the operation both with underscores and hyphens,
+    # and source metadata may be interned in the stack-frame table rather than
+    # repeated on the operation line.  Identify the streamed acceleration carry
+    # by its actual local particle-vector result type instead.
+    streamed_updates = _streamed_acceleration_updates(hlo_lines, tuple(local_disp.shape))
     checks = {
         "particle_state_alias_bytes": memory["alias_size_in_bytes"] >= required_state_alias_bytes,
-        "streamed_component_loop": streamed_updates > 0 and len(irfft_lines) >= 3 and len(irfft_lines) % 3 == 0,
+        "streamed_component_loop": streamed_updates > 0 and len(irfft_lines) >= 3 and irfft_branches == {0, 1, 2},
         "scalar_irfft_outputs": bool(irfft_shapes) and all(len(shape) == 3 for shape in irfft_shapes),
         "no_stacked_component_mesh": not stacked_component_fields,
     }
@@ -701,6 +711,7 @@ def write_nbody_compilation_artifacts(particles: Any, cosmo: Any, conf: Any, out
         "checks": checks,
         "passed": not failed,
     }
+    _atomic_json(output_dir / "nbody_low_memory.compilation.json", evidence)
     if failed:
         raise RuntimeError("low-memory N-body compilation evidence failed: " + ", ".join(failed))
     return evidence
@@ -1042,7 +1053,7 @@ def parse_memory_trace(path: Path, physical_ids: tuple[int, ...]) -> dict[str, A
 
 def _worker_command(
     args: argparse.Namespace, case: CaseSpec, output_dir: Path, save_density: bool, *, profile: str = "low_memory",
-    noise_mode: str = "nested", save_scientific_artifacts: bool = False,
+    noise_mode: str = "nested", save_scientific_artifacts: bool = False, skip_compilation_artifacts: bool | None = None,
 ) -> list[str]:
     command = [
         sys.executable, "-m", "pmpp.forward_cli", "--worker", "--worker-resolution",
@@ -1065,7 +1076,7 @@ def _worker_command(
         command.append("--save-density")
     if save_scientific_artifacts:
         command.append("--save-scientific-artifacts")
-    if args.skip_compilation_artifacts:
+    if args.skip_compilation_artifacts if skip_compilation_artifacts is None else skip_compilation_artifacts:
         command.append("--skip-compilation-artifacts")
     if args.allow_non_h200:
         command.append("--allow-non-h200")
@@ -1203,13 +1214,20 @@ def launch_case(
     args: argparse.Namespace, case: CaseSpec, allocator: str, selected: list[GPUInfo], budget_gib: float,
     output_dir: Path, *, save_density: bool, profile: str = "low_memory", noise_mode: str = "nested",
     memory_gate_override_gib: float | None = None, save_scientific_artifacts: bool = False,
+    include_compilation_artifacts: bool = False, allocator_pool_budget_gib: float | None = None,
 ) -> dict[str, Any]:
     """Launch one isolated worker and attach external memory telemetry."""
     case_selected = selected[:case.devices]
     if len(case_selected) != case.devices:
         raise RuntimeError(f"Case {case.label} needs {case.devices} GPUs")
     output_dir.mkdir(parents=True, exist_ok=True)
-    env = allocator_environment(allocator, case_selected, budget_gib)
+    gate = case_memory_gate_gib(case, budget_gib) if memory_gate_override_gib is None else memory_gate_override_gib
+    # A BFC pool is itself resident memory.  Size each qualification worker to
+    # its own cubic gate instead of preallocating the full 2048 target budget.
+    pool_budget = gate if allocator_pool_budget_gib is None else allocator_pool_budget_gib
+    if pool_budget <= 0 or pool_budget > gate:
+        raise ValueError("allocator pool budget must be positive and no larger than the resident-memory gate")
+    env = allocator_environment(allocator, case_selected, pool_budget)
     trace_path = output_dir / "nvidia_smi_memory.csv"
     sampler = _start_memory_sampler(trace_path)
     if sampler is None:
@@ -1232,13 +1250,13 @@ def launch_case(
                 _worker_command(
                     args, case, output_dir, save_density, profile=profile, noise_mode=noise_mode,
                     save_scientific_artifacts=save_scientific_artifacts,
+                    skip_compilation_artifacts=not include_compilation_artifacts,
                 ), env=env, stdout=stdout, stderr=stderr, text=True,
             )
     finally:
         elapsed = time.perf_counter() - started
         _stop_memory_sampler(sampler)
     memory = parse_memory_trace(trace_path, tuple(device.index for device in case_selected))
-    gate = case_memory_gate_gib(case, budget_gib) if memory_gate_override_gib is None else memory_gate_override_gib
     supervisor_report = {
         "status": "failed",
         "case": dataclasses.asdict(case),
@@ -1786,7 +1804,8 @@ def supervisor_main(args: argparse.Namespace) -> int:
                 "peak": max(row["resident_memory"]["max_used_gib"] for row in rows),
                 "median_elapsed": (elapsed[0] + elapsed[1]) / 2,
             }
-        if not by_allocator:
+        required_allocator = "bfc" if production_target else None
+        if not by_allocator or (required_allocator is not None and required_allocator not in by_allocator):
             _atomic_json(
                 output_root / "allocator_selection.json", {
                     "selected": None,
@@ -1795,19 +1814,40 @@ def supervisor_main(args: argparse.Namespace) -> int:
                     "failures": failures,
                 },
             )
+            if required_allocator is not None:
+                raise RuntimeError("BFC did not complete two fresh-process production qualification repeats")
             raise RuntimeError("Neither allocator completed two fresh-process qualification repeats")
-        selected_allocator = min(
-            by_allocator, key=lambda name: (by_allocator[name]["peak"], by_allocator[name]["median_elapsed"])
-        )
+        if required_allocator is not None:
+            selected_allocator = required_allocator
+            selection_reason = "production requires bounded BFC preallocation; async is diagnostic only"
+        else:
+            selected_allocator = min(
+                by_allocator, key=lambda name: (by_allocator[name]["peak"], by_allocator[name]["median_elapsed"])
+            )
+            selection_reason = "lower resident peak, then lower median runtime"
         _atomic_json(
             output_root / "allocator_selection.json", {
                 "selected": selected_allocator,
+                "selection_reason": selection_reason,
                 "candidates": by_allocator,
                 "runs": candidates,
                 "failures": failures,
             },
         )
         allocator_candidates = candidates
+    compilation_evidence = None
+    if production_target:
+        args._qualification_stage = "compilation_evidence"
+        evidence_case = CaseSpec(256, 8)
+        evidence_path = output_root / "compilation_evidence"
+        evidence_report = launch_case(
+            args, evidence_case, selected_allocator, selected, budget_gib, evidence_path, save_density=False,
+            memory_gate_override_gib=budget_gib, include_compilation_artifacts=True,
+            allocator_pool_budget_gib=min(16.0, budget_gib),
+        )
+        compilation_evidence = evidence_report.get("compilation")
+        if not compilation_evidence or not compilation_evidence.get("passed"):
+            raise RuntimeError("Dedicated low-memory N-body compilation evidence did not pass")
     base_particle_factor = float(args.max_ptcl_factor)
     base_communication_capacities = {
         "max_share_ptcl": int(args.max_share_ptcl),
@@ -1905,6 +1945,12 @@ def supervisor_main(args: argparse.Namespace) -> int:
     final_report = launch_case(
         args, target_case, selected_allocator, selected, budget_gib, final_path, save_density=final_case,
     )
+    if compilation_evidence is not None:
+        final_report["compilation"] = compilation_evidence
+        final_report["compilation_evidence_worker_report"] = str(
+            (output_root / "compilation_evidence" / "worker_report.json").relative_to(output_root)
+        )
+        _atomic_json(final_path / "worker_report.json", final_report)
     ladder_reports.append(final_report)
     final_migration = _low_memory_high_water(final_report, "migration_high_water")
     final_gather = _low_memory_high_water(final_report, "gather_high_water")
