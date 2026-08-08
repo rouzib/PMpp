@@ -213,6 +213,48 @@ def _compute_processes() -> list[str]:
     return [line.strip() for line in output.splitlines() if line.strip() and "No running" not in line]
 
 
+def _fabric_sections(output: str) -> list[str]:
+    """Extract indented Fabric sections from ``nvidia-smi -q`` output."""
+    lines = output.splitlines()
+    sections = []
+    for index, line in enumerate(lines):
+        if line.strip().lower() != "fabric":
+            continue
+        base_indent = len(line) - len(line.lstrip())
+        body = [line]
+        for child in lines[index + 1:]:
+            if child.strip() and len(child) - len(child.lstrip()) <= base_indent:
+                break
+            body.append(child)
+        sections.append("\n".join(body))
+    return sections
+
+
+def _fabric_section_is_healthy(section: str) -> bool:
+    """Accept both legacy ``Success`` and current ``NVML_SUCCESS`` status."""
+    state = re.search(r"^\s*State\s*:\s*([^\r\n]+)", section, flags=re.IGNORECASE | re.MULTILINE)
+    status = re.search(r"^\s*Status\s*:\s*([^\r\n]+)", section, flags=re.IGNORECASE | re.MULTILINE)
+    if state is None or status is None:
+        return False
+    normalized_status = status.group(1).strip().lower()
+    return state.group(1).strip().lower() == "completed" and normalized_status in {"success", "nvml_success"}
+
+
+def _query_fabric(device_index: int) -> tuple[str, bool]:
+    """Query one GPU, falling back when ``-d FABRIC`` is unsupported."""
+    commands = (["nvidia-smi", "-i", str(device_index), "-q", "-d",
+                 "FABRIC"], ["nvidia-smi", "-i", str(device_index), "-q"],
+                )
+    last_output = ""
+    for command in commands:
+        output = _run_text(command, check=False)
+        last_output = output or last_output
+        sections = _fabric_sections(output)
+        if sections:
+            return output, all(_fabric_section_is_healthy(section) for section in sections)
+    return last_output, False
+
+
 def validate_h200_node(selected: list[GPUInfo], *, require_eight: bool, allow_non_h200: bool,
                        output_dir: Path) -> dict[str, Any]:
     """Fail closed on an unsuitable production node and capture topology."""
@@ -260,14 +302,22 @@ def validate_h200_node(selected: list[GPUInfo], *, require_eight: bool, allow_no
                 column = int(destination.removeprefix("GPU"))
                 if column >= len(row) or not row[column].startswith("NV"):
                     raise RuntimeError(f"Selected GPUs are not in one NVLink/NVSwitch domain: {source}->{destination}")
-    fabric = _run_text(["nvidia-smi", "-q", "-d", "FABRIC"], check=False)
-    if not allow_non_h200 and (not fabric or not ("Completed" in fabric and "Success" in fabric)):
-        raise RuntimeError("NVLink fabric is not reported as Completed/Success")
+    fabric_reports = {}
+    unhealthy_fabric = []
+    for device in selected:
+        output, healthy = _query_fabric(device.index)
+        fabric_reports[str(device.index)] = output
+        if not healthy:
+            unhealthy_fabric.append(device.index)
+    if not allow_non_h200 and unhealthy_fabric:
+        raise RuntimeError(
+            "NVLink fabric is not reported as Completed/Success for selected GPUs " + str(unhealthy_fabric)
+        )
     driver = _run_text(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], check=False)
     return {
         "gpus": [dataclasses.asdict(device) for device in selected],
         "topology": topology,
-        "fabric": fabric,
+        "fabric": fabric_reports,
         "driver_versions": sorted(set(line.strip() for line in driver.splitlines() if line.strip())),
         "platform": platform.platform(),
         "free_output_gib": free_gib,
@@ -279,7 +329,10 @@ def allocator_environment(
 ) -> dict[str, str]:
     """Build a clean worker environment for one allocator policy."""
     env = dict(os.environ if base is None else base)
-    for name in ("TF_GPU_ALLOCATOR", "XLA_PYTHON_CLIENT_MEM_FRACTION", "XLA_PYTHON_CLIENT_PREALLOCATE"):
+    for name in (
+        "TF_GPU_ALLOCATOR", "XLA_PYTHON_CLIENT_MEM_FRACTION", "XLA_PYTHON_CLIENT_PREALLOCATE", "JAX_PLATFORMS",
+        "JAX_SKIP_CUDA_CONSTRAINTS_CHECK",
+    ):
         env.pop(name, None)
     env["CUDA_VISIBLE_DEVICES"] = ",".join(str(device.index) for device in selected)
     if allocator == "async":
