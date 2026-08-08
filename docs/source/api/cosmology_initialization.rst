@@ -65,3 +65,7 @@ Lagrangian perturbation theory
 ------------------------------
 
 .. autofunction:: pmpp.initial_conditions.lpt.lpt
+
+.. autofunction:: pmpp.initial_conditions.lpt.lpt_low_memory
+
+.. autofunction:: pmpp.initial_conditions.lpt.lpt_low_memory_with_telemetry

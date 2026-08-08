@@ -35,6 +35,14 @@ Forward evolution
 
 .. autofunction:: pmpp.nbody.solver.nbody
 
+.. autofunction:: pmpp.nbody.solver.nbody_low_memory
+
+.. autofunction:: pmpp.nbody.solver.nbody_low_memory_with_occupancy
+
+.. autofunction:: pmpp.nbody.solver.nbody_low_memory_with_telemetry
+
+.. autofunction:: pmpp.nbody.solver.lower_nbody_low_memory
+
 .. autofunction:: pmpp.nbody.solver.nbody_observe
 
 .. autofunction:: pmpp.nbody.solver.nbody_collect

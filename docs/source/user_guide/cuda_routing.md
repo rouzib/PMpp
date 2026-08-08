@@ -46,9 +46,10 @@ compatible CUDA 13 toolkit. See
 for checks and cluster-module guidance.
 
 CUDA routing supports float32 and float64 simulation fields, `int16` or
-`int32` particle mesh indices (`pmid`), and `mesh_halo` mode. The indices are
-converted to int32 at the FFI boundary; the persistent PM++ particle arrays
-retain the configured integer dtype.
+`int32` particle mesh indices (`pmid`), and `mesh_halo` mode. Its targets are
+specialized by payload and coordinate dtype. The forward-only fused drift route
+used by the low-memory solver specifically requires float32 fields, int16
+coordinates, and the `bidir_mergepath` backend.
 
 ## Install from PyPI and build CUDA routing
 
