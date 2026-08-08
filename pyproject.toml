@@ -41,7 +41,6 @@ dependencies = [
 
 [project.scripts]
 pmpp-build-cuda-routing = "pmpp.distributed:build_cuda_main"
-pmpp-run-h200-forward = "pmpp_cli:main"
 
 [project.optional-dependencies]
 docs = [
@@ -105,7 +104,7 @@ Documentation = "https://pmpp-docs.readthedocs.io/en/latest/"
 Issues = "https://github.com/rouzib/PMpp/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pmpp", "src/pmpp_cli", "benchmarks"]
+packages = ["src/pmpp", "benchmarks"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "cuda/CMakeLists.txt" = "pmpp/distributed/cuda/CMakeLists.txt"
@@ -115,7 +114,6 @@ packages = ["src/pmpp", "src/pmpp_cli", "benchmarks"]
 [tool.hatch.build.targets.sdist]
 include = [
   "/src/pmpp",
-  "/src/pmpp_cli",
   "/benchmarks",
   "/cuda",
   "/scripts/build_cuda_routing.py",
