@@ -1,3 +1,4 @@
+import importlib
 import types
 
 import jax
@@ -217,6 +218,36 @@ def test_large_local_gradient_mesh_avoids_signed_32bit_batched_fft_overflow():
     )
     assert _can_use_batched_gradient_fft(boundary_safe)
     assert not _can_use_batched_gradient_fft(boundary_unsafe)
+
+
+def test_large_density_fft_streams_before_constructing_component_stack(monkeypatch):
+    gravity_module = importlib.import_module("pmpp.nbody.gravity")
+    calls = []
+    potential = jnp.asarray([3 + 4j], dtype=jnp.complex64)
+    expected = jnp.asarray([[1.0, 2.0, 3.0]], dtype=jnp.float32)
+
+    def laplace_stub(kvec, density, conf, kernel="continuum"):
+        calls.append(("laplace", density.shape, kernel))
+        return potential
+
+    def streamed_stub(actual_potential, particles, conf):
+        calls.append(("streamed", actual_potential is potential))
+        return expected
+
+    def forbidden_stack(*_args, **_kwargs):
+        raise AssertionError("large-mesh gravity constructed a component stack")
+
+    monkeypatch.setattr(gravity_module, "laplace_transposed_with_kernel", laplace_stub)
+    monkeypatch.setattr(gravity_module, "_streamed_acceleration_from_potential", streamed_stub)
+    monkeypatch.setattr(gravity_module, "_spectral_gradient_components_from_density_hat", forbidden_stack)
+
+    large = types.SimpleNamespace(
+        replicated_mesh=False, compute_mesh=object(), mGPU_irfftn_transposed_batched=lambda value: value,
+        local_mesh_shape=(320, 2560, 2560), local_mesh_with_halo_shape=(322, 2560, 2560), dim=3, kvec=(),
+    )
+    actual = _acceleration_from_density_hat(jnp.ones((1, ), dtype=jnp.complex64), object(), large)
+    np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+    assert calls == [("laplace", (1, ), "continuum"), ("streamed", True)]
 
 
 def test_single_device_gravity_is_zero_for_uniform_lattice_and_sensitive_to_tiny_perturbations():

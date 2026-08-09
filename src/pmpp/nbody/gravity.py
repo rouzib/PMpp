@@ -596,6 +596,15 @@ def _acceleration_from_potential(
 
 def _acceleration_from_density_hat(dens_hat, ptcl, conf: Configuration):
     """Evaluate acceleration directly from the density FFT for the continuum force."""
+    if not conf.replicated_mesh and not _can_use_batched_gradient_fft(conf):
+        # Do not build a three-component spectral stack when the corresponding
+        # real stack exceeds the signed 32-bit indexing range.  This matters
+        # even before the inverse transform for meshes such as 2560^3, where
+        # three local spectral slabs also exceed INT32_MAX elements.  Consume
+        # one derivative, inverse transform, and gather at a time instead.
+        pot = laplace_transposed_with_kernel(conf.kvec, dens_hat, conf)
+        return _streamed_acceleration_from_potential(pot, ptcl, conf)
+
     spectral_grads = _spectral_gradient_components_from_density_hat(dens_hat, conf)
     if conf.replicated_mesh:
         grad_meshes = jnp.fft.irfftn(spectral_grads, axes=(1, 2, 3)).astype(conf.float_dtype)
