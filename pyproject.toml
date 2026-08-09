@@ -114,10 +114,7 @@ packages = ["src/pmpp", "benchmarks"]
 [tool.hatch.build.targets.sdist]
 include = [
   "/src/pmpp",
-  "/benchmarks",
   "/cuda",
-  "/scripts/build_cuda_routing.py",
-  "/scripts/check_cuda_artifact.py",
   "/README.md",
   "/LICENSE",
   "/THIRD_PARTY_NOTICES.md",
