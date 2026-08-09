@@ -310,6 +310,23 @@ def test_fused_low_memory_route_fails_closed_on_uncapped_counts(monkeypatch):
     assert int(result[7]) == np.iinfo(np.int32).max
 
 
+def test_migration_domain_failure_reports_slab_and_displacement(monkeypatch):
+    monkeypatch.setattr(routing.jax.lax, "pmax", lambda value, *args, **kwargs: value)
+    disp = jnp.asarray([[-3.0, 4.0, 0.0], [1.5, 0.0, 0.0]], dtype=jnp.float32)
+    valid = jnp.asarray([True, True])
+
+    with pytest.raises(Exception) as error:
+        routing._synchronized_migration_domain_check(jnp.int32(1), disp, valid, 8, 2.0)
+        jax.effects_barrier()
+
+    message = str(error.value)
+    assert "particles_outside_neighbor_range=1" in message
+    assert "slab_width_mesh_cells=8" in message
+    assert "slab_width_simulation_units=4" in message
+    assert "max_abs_x_displacement_mesh_cells=6" in message
+    assert "max_abs_x_displacement_simulation_units=3" in message
+
+
 def _conf(mode, devices=2):
     available = jax.devices("gpu")
     if len(available) < devices:

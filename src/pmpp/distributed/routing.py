@@ -379,6 +379,30 @@ def _synchronized_nonzero_check(count, message):
     _ = jax.lax.cond(global_count > 0, lambda _: raise_error(message, x=global_count), lambda _: None, operand=None, )
 
 
+def _synchronized_migration_domain_check(count, disp, outside_mask, slice_width, disp_size):
+    """Report the geometry of particles that exceed the one-hop domain."""
+
+    global_count = jax.lax.pmax(count, axis_name=AXIS_NAME)
+
+    def fail(_):
+        local_max_abs_x = jnp.max(jnp.where(outside_mask, jnp.abs(disp[:, 0]), 0))
+        max_abs_x = jax.lax.pmax(local_max_abs_x, axis_name=AXIS_NAME)
+        slab_width_cells = jnp.asarray(slice_width, dtype=disp.dtype)
+        inverse_cell_size = jnp.asarray(disp_size, dtype=disp.dtype)
+        raise_error(
+            "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
+            "particles_outside_neighbor_range={particles}. "
+            "slab_width_mesh_cells={slab_cells}, "
+            "slab_width_simulation_units={slab_units}, "
+            "max_abs_x_displacement_mesh_cells={max_disp_cells}, "
+            "max_abs_x_displacement_simulation_units={max_disp_units}.", particles=global_count,
+            slab_cells=slab_width_cells, slab_units=slab_width_cells / inverse_cell_size,
+            max_disp_cells=max_abs_x * inverse_cell_size, max_disp_units=max_abs_x,
+        )
+
+    _ = jax.lax.cond(global_count > 0, fail, lambda _: None, operand=None, )
+
+
 def _exchange_compacted_particles(compacted, perm, conf):
     """Exchange migration payloads through the packed mesh-halo collective."""
     return _exchange_compacted_particles_packed(compacted, perm, conf)
@@ -818,10 +842,7 @@ def _canonical_route_authoritative(
         send_right_mask = jnp.zeros_like(send_right_mask)
     dropped_mask = valid & ~(stay_mask | send_left_mask | send_right_mask)
 
-    _synchronized_nonzero_check(
-        jnp.sum(dropped_mask), "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
-        "particles_outside_neighbor_range={x}.",
-    )
+    _synchronized_migration_domain_check(jnp.sum(dropped_mask), disp, dropped_mask, slice_width, disp_size, )
     _synchronized_capacity_check(
         jnp.maximum(jnp.sum(send_left_mask), jnp.sum(send_right_mask)), max_values_to_share,
         "[ERROR] Exceeded migration share capacity. "
@@ -886,10 +907,7 @@ def _canonical_route_authoritative_no_acc(
         send_right_mask = jnp.zeros_like(send_right_mask)
     dropped_mask = valid & ~(stay_mask | send_left_mask | send_right_mask)
 
-    _synchronized_nonzero_check(
-        jnp.sum(dropped_mask), "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
-        "particles_outside_neighbor_range={x}.",
-    )
+    _synchronized_migration_domain_check(jnp.sum(dropped_mask), disp, dropped_mask, slice_width, disp_size, )
     _synchronized_capacity_check(
         jnp.maximum(jnp.sum(send_left_mask), jnp.sum(send_right_mask)), max_values_to_share,
         "[ERROR] Exceeded migration share capacity. "
@@ -946,9 +964,8 @@ def _canonical_route_authoritative_no_acc_bidir_cuda(
          owned_end=owned_end, slice_width=global_nMesh // num_gpus, num_devices=num_gpus, capacity=max_values_to_share,
          stay_capacity=pmid.shape[0],
      )
-    _synchronized_nonzero_check(
-        jnp.sum(classes == 4), "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
-        "particles_outside_neighbor_range={x}.",
+    _synchronized_migration_domain_check(
+        jnp.sum(classes == 4), disp, classes == 4, global_nMesh // num_gpus, disp_size,
     )
     _synchronized_capacity_check(
         jnp.maximum(send_left_count, send_right_count), max_values_to_share,
@@ -1073,10 +1090,7 @@ def _canonical_route_authoritative_no_acc_cuda(
         pmid, disp, vel, valid, x_mod, global_nmesh=global_nMesh, mesh_shape=mesh_shape, owned_start=owned_start,
         owned_end=owned_end, slice_width=slice_width, direction=-1, num_devices=num_gpus, capacity=max_values_to_share,
     )
-    _synchronized_nonzero_check(
-        jnp.sum(classes == 4), "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
-        "particles_outside_neighbor_range={x}.",
-    )
+    _synchronized_migration_domain_check(jnp.sum(classes == 4), disp, classes == 4, slice_width, disp_size, )
     _synchronized_capacity_check(
         send_left_count, max_values_to_share, "[ERROR] Exceeded migration share capacity. "
         "particles_to_share={x}, max_share_ptcl={y}.",
@@ -1157,9 +1171,8 @@ def _canonical_route_authoritative_with_aux_bidir_cuda(
     stay_mask = classes == 1
     send_left_mask = classes == 2
     send_right_mask = classes == 3
-    _synchronized_nonzero_check(
-        jnp.sum(classes == 4), "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
-        "particles_outside_neighbor_range={x}.",
+    _synchronized_migration_domain_check(
+        jnp.sum(classes == 4), disp, classes == 4, global_nMesh // num_gpus, disp_size,
     )
     _synchronized_capacity_check(
         jnp.maximum(send_left_count, send_right_count), max_values_to_share,
@@ -1253,10 +1266,7 @@ def _canonical_route_authoritative_with_aux_cuda(
     stay_mask = classes == 1
     send_left_mask = classes == 2
     send_right_mask = classes == 3
-    _synchronized_nonzero_check(
-        jnp.sum(classes == 4), "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
-        "particles_outside_neighbor_range={x}.",
-    )
+    _synchronized_migration_domain_check(jnp.sum(classes == 4), disp, classes == 4, slice_width, disp_size, )
     _synchronized_capacity_check(
         send_left_count, max_values_to_share, "[ERROR] Exceeded migration share capacity. "
         "particles_to_share={x}, max_share_ptcl={y}.",
@@ -1409,10 +1419,7 @@ def _canonical_route_authoritative_with_aux(
         send_right_mask = jnp.zeros_like(send_right_mask)
 
     dropped_mask = valid & ~(stay_mask | send_left_mask | send_right_mask)
-    _synchronized_nonzero_check(
-        jnp.sum(dropped_mask), "[ERROR] Canonical halo move only supports same-slab or neighboring-slab migration. "
-        "particles_outside_neighbor_range={x}.",
-    )
+    _synchronized_migration_domain_check(jnp.sum(dropped_mask), disp, dropped_mask, slice_width, disp_size, )
     _synchronized_capacity_check(
         jnp.maximum(jnp.sum(send_left_mask), jnp.sum(send_right_mask)), max_values_to_share,
         "[ERROR] Exceeded migration share capacity. "

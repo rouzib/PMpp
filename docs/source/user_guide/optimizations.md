@@ -165,6 +165,8 @@ Particle exchange currently supports the same ownership slab or an immediate
 left or right neighbor in one route. A failure such as
 `particles_outside_neighbor_range` means the displacement crossed more than
 one slab. Increasing HBM, the BFC pool, or a share capacity cannot fix it.
+The failure reports the slab width and the maximum absolute x displacement of
+the offending particles in both mesh cells and simulation length units.
 Smaller N-body steps can reduce a per-step drift, but they do not fix an LPT
 state whose total initial displacement already exceeds the one-hop contract.
 
