@@ -385,7 +385,10 @@ def _synchronized_migration_domain_check(count, disp, outside_mask, slice_width,
     global_count = jax.lax.pmax(count, axis_name=AXIS_NAME)
 
     def fail(_):
-        local_max_abs_x = jnp.max(jnp.where(outside_mask, jnp.abs(disp[:, 0]), 0))
+        # This value is diagnostic-only.  Prevent the failure branch's pmax
+        # from entering route/LPT transposes, where pmax has no AD rule.
+        diagnostic_disp_x = jax.lax.stop_gradient(disp[:, 0])
+        local_max_abs_x = jnp.max(jnp.where(outside_mask, jnp.abs(diagnostic_disp_x), 0))
         max_abs_x = jax.lax.pmax(local_max_abs_x, axis_name=AXIS_NAME)
         slab_width_cells = jnp.asarray(slice_width, dtype=disp.dtype)
         inverse_cell_size = jnp.asarray(disp_size, dtype=disp.dtype)
