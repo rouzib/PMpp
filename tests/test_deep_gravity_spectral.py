@@ -179,6 +179,46 @@ def test_batched_and_distributed_fft_dispatches_preserve_component_order_and_dty
     assert not _can_use_batched_gradient_fft(fake_no_batch)
 
 
+def test_large_local_gradient_mesh_avoids_signed_32bit_batched_fft_overflow():
+    calls = []
+
+    def batched(values):
+        calls.append(("batched", values.shape))
+        return values.real
+
+    def scalar(value):
+        calls.append(("scalar", value.shape))
+        return value.real
+
+    # This is the per-GPU owned real-mesh shape for a 2048^3 force mesh on
+    # eight devices. The three-component result has 3,221,225,472 elements,
+    # exceeding INT32_MAX even before mesh halos are attached.
+    large = types.SimpleNamespace(
+        compute_mesh=object(), mGPU_irfftn_transposed_batched=batched, mGPU_irfftn_transposed=scalar,
+        local_mesh_shape=(256, 2048, 2048), local_mesh_with_halo_shape=(258, 2048, 2048), dim=3,
+        float_dtype=jnp.float32,
+    )
+    assert not _can_use_batched_gradient_fft(large)
+
+    spectral = jnp.ones((3, 2, 2, 2), dtype=jnp.complex64)
+    components = _gradient_meshes_from_spectral_components(spectral, large, use_batched=True)
+    assert calls == [("scalar", (2, 2, 2))] * 3
+    assert len(components) == 3
+
+    # The guard is based on the halo-expanded array that is consumed by the
+    # stacked gather, not only on the smaller owned FFT output.
+    boundary_safe = types.SimpleNamespace(
+        compute_mesh=object(), mGPU_irfftn_transposed_batched=batched, local_mesh_shape=(170, 2048, 2048),
+        local_mesh_with_halo_shape=(170, 2048, 2048), dim=3,
+    )
+    boundary_unsafe = types.SimpleNamespace(
+        compute_mesh=object(), mGPU_irfftn_transposed_batched=batched, local_mesh_shape=(171, 2048, 2048),
+        local_mesh_with_halo_shape=(171, 2048, 2048), dim=3,
+    )
+    assert _can_use_batched_gradient_fft(boundary_safe)
+    assert not _can_use_batched_gradient_fft(boundary_unsafe)
+
+
 def test_single_device_gravity_is_zero_for_uniform_lattice_and_sensitive_to_tiny_perturbations():
     conf = _conf()
     cosmo = SimpleLCDM(conf)

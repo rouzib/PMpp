@@ -1,3 +1,4 @@
+import math
 from functools import partial
 
 import jax
@@ -468,8 +469,32 @@ def _spectral_gradient_components(pot, conf: Configuration, gradient_kernel="spe
 
 
 def _can_use_batched_gradient_fft(conf: Configuration):
-    """Return whether this configuration has a distributed batched iRFFT path."""
-    return conf.compute_mesh is not None and conf.mGPU_irfftn_transposed_batched is not None
+    """Return whether the distributed batched iRFFT is safe for this mesh.
+
+    The batched inverse produces one local real mesh with a leading component
+    dimension.  CUDA/XLA currently misnormalizes that result when its local
+    element count exceeds the signed 32-bit indexing range.  For example, the
+    eight-way ``2048^3`` force mesh used by a ``1024^3`` particle run with
+    ``mesh_shape=2`` contains ``3 * 256 * 2048 * 2048`` local output elements.
+    The observed result is too large by exactly ``2048^2``.
+
+    Keep smaller configurations on the faster batched path.  Larger ones use
+    the scalar component transforms, whose local arrays remain within the
+    supported indexing range.
+    """
+    if conf.compute_mesh is None or conf.mGPU_irfftn_transposed_batched is None:
+        return False
+
+    local_shape = getattr(conf, "local_mesh_with_halo_shape", None)
+    if not local_shape:
+        local_shape = getattr(conf, "local_mesh_shape", None)
+    if not local_shape:
+        # Lightweight test doubles and external callers may not expose the
+        # derived local shape. Preserve the historical dispatch for them.
+        return True
+
+    component_count = int(getattr(conf, "dim", len(local_shape)))
+    return component_count * math.prod(int(size) for size in local_shape) <= 2**31 - 1
 
 
 def _batched_gradient_meshes_from_potential(pot, conf: Configuration, gradient_kernel="spectral"):
