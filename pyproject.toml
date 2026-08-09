@@ -78,7 +78,7 @@ markers = [
   "logical4: validates four-device topology semantics",
   "hopper: requires a Hopper GPU and native sm_90 artifact",
   "gpu4: requires four H100 GPUs",
-  "slow: production-scale scientific test",
+  "slow: production-scale test",
 ]
 
 [tool.coverage.run]
