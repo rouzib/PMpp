@@ -13,11 +13,18 @@ perturbation theory (LPT), N-body evolution, density fields, summary statistics,
 and gradients. Its distributed runtime scales the same model across a
 one-dimensional mesh of accelerators.
 
+For cosmologists, this means that larger volumes or higher particle counts can
+be simulated without giving up derivatives with respect to the initial modes
+and cosmological parameters. Those derivatives enable gradient-based
+reconstruction, inference, and sensitivity studies at scales that can be
+difficult to fit on one accelerator.
+
 ```{note}
 PM++ is designed primarily for multi-accelerator simulations. For single-GPU
 work, [PMWD](https://github.com/eelregit/pmwd) is a closely related alternative.
-With matched inputs and numerical settings, the two should agree within
-validated tolerances.
+Some maintained tests directly validate matched PM++ and PMWD forward and
+gradient calculations. For the configurations covered by those tests, PM++
+agrees with PMWD down to machine precision.
 ```
 
 ::::{grid} 1 2 2 3

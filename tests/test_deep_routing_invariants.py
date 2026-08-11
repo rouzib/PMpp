@@ -669,5 +669,8 @@ def test_three_stream_loopback_route_preserves_stable_order_and_exact_transpose(
         _canonical_route_authoritative_no_acc_cuda(key, particle, displacement, velocity, is_valid, **common),
         mesh=mesh, in_specs=particle_specs, out_specs=no_acc_out, check_vma=False,
     )(keys, pmid, disp, vel, valid)
-    for actual, expected in zip(native_no_acc[0][:4], (keys, pmid, disp, vel)):
+    assert native_no_acc[0][0] is None
+    for actual, expected in zip(native_no_acc[0][1:4], (pmid, disp, vel)):
         np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), rtol=0, atol=1e-7)
+    np.testing.assert_array_equal(np.asarray(native_no_acc[0][4]), True)
+    assert int(native_no_acc[1]) == 2

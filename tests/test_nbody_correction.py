@@ -143,8 +143,8 @@ def test_phase_correction_runs_once_after_last_raw_drift_before_force(monkeypatc
         phase_inputs.append(np.asarray(phase_ptcl.disp))
         return phase_ptcl.disp, jnp.zeros_like(phase_ptcl.vel)
 
-    def fake_force_acceleration(a, force_ptcl, cosmo, conf, correction=None):
-        del a, cosmo, conf, correction
+    def fake_force_acceleration(a, force_ptcl, cosmo, conf, correction=None, *, streamed_gravity=False):
+        del a, cosmo, conf, correction, streamed_gravity
         force_inputs.append(np.asarray(force_ptcl.disp))
         return jnp.zeros_like(force_ptcl.disp)
 

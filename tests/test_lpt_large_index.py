@@ -44,14 +44,14 @@ def _test_modes(conf):
 
 
 def test_large_shape_products_remain_host_width_with_x64_disabled():
-    with jax.experimental.disable_x64():
+    with jax.enable_x64(False):
         conf = Configuration(1.0, (2048, 2048, 2048), mesh_shape=1, pallas_cic=False)
     assert conf.ptcl_num == 8_589_934_592
     assert _host_shape_product((2048, 2048, 2048)) == 8_589_934_592
 
 
 def test_public_single_word_raveled_ids_fail_closed_without_x64():
-    with jax.experimental.disable_x64():
+    with jax.enable_x64(False):
         conf = Configuration(1.0, (2048, 2048, 2048), mesh_shape=1, pallas_cic=False, max_ptcl_per_slice=1, )
         particles = Particles(
             conf, jnp.asarray([[0, 0, 0]], dtype=jnp.int16), jnp.zeros((1, 3), dtype=jnp.float32),
