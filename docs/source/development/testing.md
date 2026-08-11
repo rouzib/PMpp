@@ -19,6 +19,8 @@ Apply any required formatting with
 ## Core focused checks
 
 ```bash
+PYTHONPATH="$PWD:$PWD/tests" \
+XLA_PYTHON_CLIENT_PREALLOCATE=false \
 python -m pytest tests/test_nested_white_noise.py -q
 python -m pytest tests/test_mesh_halo_scatter_gather.py -q
 python -m pytest tests/test_grad_gather.py tests/test_grad_gravity.py -q
