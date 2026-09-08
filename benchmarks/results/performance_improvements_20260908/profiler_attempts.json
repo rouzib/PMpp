@@ -1,0 +1,39 @@
+{
+  "profiler": "NVIDIA Nsight Systems 2023.4.4",
+  "accepted_for_performance_claims": false,
+  "attempts": [
+    {
+      "name": "pmpp-performance-baseline-20260908",
+      "exit_code": 1,
+      "cuda_activity_tables": [],
+      "measurement_ranges": 0,
+      "application_streams": [
+        {
+          "filename": "/tmp/nvidia/nsight_systems/quadd_session_10192027/streams/pid_192049_stdout.log",
+          "content": "Compiling nbody_grad\n"
+        },
+        {
+          "filename": "/tmp/nvidia/nsight_systems/quadd_session_10192027/streams/pid_192049_stderr.log",
+          "content": ""
+        }
+      ]
+    },
+    {
+      "name": "pmpp-performance-profiler-smoke-20260908",
+      "exit_code": 1,
+      "cuda_activity_tables": [],
+      "measurement_ranges": 0,
+      "application_streams": [
+        {
+          "filename": "/tmp/nvidia/nsight_systems/quadd_session_10193884/streams/pid_193906_stdout.log",
+          "content": "Compiling force\n"
+        },
+        {
+          "filename": "/tmp/nvidia/nsight_systems/quadd_session_10193884/streams/pid_193906_stderr.log",
+          "content": ""
+        }
+      ]
+    }
+  ],
+  "limitation": "Both captures ended before any warmed measurement range and contain no CUDA activity tables. Communication durations and CUDA allocation peaks are unavailable; only unprofiled timings, compiler buffer estimates, and compiled communication shapes are reported."
+}

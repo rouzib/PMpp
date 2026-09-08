@@ -115,18 +115,18 @@ def _L_streaming_2lpt(kvec, pot, conf):
             device=NamedSharding(conf.compute_mesh, P(AXIS_NAME, None, None)),
         )
 
-    left_terms = jnp.asarray((0, 0, 1), dtype=jnp.int32)
-    right_terms = jnp.asarray((1, 2, 2), dtype=jnp.int32)
-    cross_terms = jnp.asarray((3, 4, 5), dtype=jnp.int32)
+    def diagonal(term, carry):
+        running_sum, value = carry
+        strain = _streaming_strain(term, kvec, pot, conf)
+        return running_sum + strain, value + running_sum * strain
 
-    def accumulate(pair, value):
-        strain_left = _streaming_strain(left_terms[pair], kvec, pot, conf)
-        strain_right = _streaming_strain(right_terms[pair], kvec, pot, conf)
-        value = value + strain_left * strain_right
-        strain_cross = _streaming_strain(cross_terms[pair], kvec, pot, conf)
-        return value - strain_cross * strain_cross
+    _, source = jax.lax.fori_loop(0, 3, diagonal, (source, source))
 
-    return jax.lax.fori_loop(0, 3, accumulate, source)
+    def off_diagonal(term, value):
+        strain = _streaming_strain(term, kvec, pot, conf)
+        return value - strain * strain
+
+    return jax.lax.fori_loop(3, 6, off_diagonal, source)
 
 
 def _low_memory_particle_grid(conf):

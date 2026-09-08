@@ -498,7 +498,10 @@ def _can_use_batched_gradient_fft(conf: Configuration):
 
 
 def _batched_gradient_meshes_from_potential(pot, conf: Configuration, gradient_kernel="spectral"):
-    """Transform all three force components with one batched distributed iRFFT."""
+    """Transform force components, sharing the y/z intermediate when supported."""
+    shared = getattr(getattr(conf, "multigpu", None), "gradient_fft_shared", None)
+    if shared is not None and gradient_kernel == "spectral":
+        return shared(pot, *conf.neg_ik).astype(conf.float_dtype)
     spectral_grads = _spectral_gradient_components(pot, conf, gradient_kernel)
     return conf.mGPU_irfftn_transposed_batched(spectral_grads).astype(conf.float_dtype)
 
@@ -605,6 +608,10 @@ def _acceleration_from_density_hat(dens_hat, ptcl, conf: Configuration):
         pot = laplace_transposed_with_kernel(conf.kvec, dens_hat, conf)
         return _streamed_acceleration_from_potential(pot, ptcl, conf)
 
+    if not conf.replicated_mesh and _can_use_batched_gradient_fft(conf):
+        pot = laplace_transposed_with_kernel(conf.kvec, dens_hat, conf)
+        return _acceleration_from_potential(pot, ptcl, conf)
+
     spectral_grads = _spectral_gradient_components_from_density_hat(dens_hat, conf)
     if conf.replicated_mesh:
         grad_meshes = jnp.fft.irfftn(spectral_grads, axes=(1, 2, 3)).astype(conf.float_dtype)
@@ -613,14 +620,6 @@ def _acceleration_from_density_hat(dens_hat, ptcl, conf: Configuration):
             return acc
         mask = ptcl.unused_index.reshape(ptcl.unused_index.shape + (1, ) * (acc.ndim - 1))
         return jnp.where(mask, jnp.zeros_like(acc), acc)
-
-    if _can_use_batched_gradient_fft(conf):
-        grad_meshes = conf.mGPU_irfftn_transposed_batched(spectral_grads).astype(conf.float_dtype)
-        return gather_stacked_mesh_halo(ptcl, conf, jnp.moveaxis(grad_meshes, 0, -1))
-
-    grad_meshes = _gradient_meshes_from_spectral_components(spectral_grads, conf, use_batched=False)
-    acc = [gather(ptcl, conf, grad) for grad in grad_meshes]
-    return jnp.stack(acc, axis=-1)
 
 
 def _gravity_from_density(dens, ptcl, cosmo, conf: Configuration, a=None, correction=None):

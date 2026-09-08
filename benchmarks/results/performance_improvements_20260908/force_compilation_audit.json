@@ -1,0 +1,51 @@
+{
+  "baseline": {
+    "file": "baseline_native_256_final_force.hlo",
+    "sha256": "c0716540854023157f47e527a7861f0d62fbaa1cc43a367b4ef7ea79a041da93",
+    "all_to_all_instructions": [
+      "ROOT %all-to-all.3 = c64[128,2,128,129]{3,2,0,1} all-to-all(%param_0.76), channel_id=8, replica_groups=[1,2]<=[2], dimensions={1}, metadata={op_name=\"jit(<lambda>)/jit(_rfftn)/custom_partitioning\" stack_frame_id=17}",
+      "ROOT %all-to-all.1.1 = c64[3,2,128,128,129]{4,3,2,0,1} all-to-all(%param_0.77), channel_id=9, replica_groups=[1,2]<=[2], dimensions={1}, metadata={op_name=\"jit(<lambda>)/jit(_batched_irfftn_transposed)/custom_partitioning\" stack_frame_id=19}"
+    ],
+    "entry_layout_excerpt": [
+      "%pallas_call.6 = f32[130,256,256]{2,1,0} custom-call(%loop_pad_fusion.1, %loop_pad_fusion.5, %loop_pad_fusion.4, %loop_pad_fusion.2, %bitcast.93, /*index=5*/%constant_184_0, %loop_broadcast_fusion), custom_call_target=\"__gpu$xla.gpu.triton\", operand_layout_constraints={s16[11744128,3]{1,0}, f32[11744128,3]{1,0}, pred[11744128]{0}, f32[11744128]{0}, f32[3]{0}, f32[], f32[130,256,256]{2,1,0}}, output_to_operand_aliasing={{}: (6, {})}, api_version=API_VERSION_TYPED_FFI, metadata={op_name=\"jit(<lambda>)/shard_map/pmpp_cic_scatter_tiled/pallas_call\" stack_frame_id=22}",
+      "%fft.0.0 = c64[128,256,129]{2,1,0} fft(%loop_multiply_fusion), fft_type=RFFT, fft_length={256,256}, metadata={op_name=\"jit(<lambda>)/jit(_rfftn)/custom_partitioning\" stack_frame_id=16}",
+      "%loop_transpose_fusion.1 = c64[2,128,128,129]{3,2,1,0} fusion(%fft.0.0), kind=kInput, calls=%fused_transpose.3, metadata={op_name=\"jit(<lambda>)/jit(_rfftn)/custom_partitioning\" stack_frame_id=17}",
+      "%bitcast.82.0 = c64[128,2,128,129]{3,2,0,1} bitcast(%loop_transpose_fusion.1)",
+      "%input_transpose_fusion.1 = c64[128,129,256]{2,1,0} fusion(%all-to-all-done), kind=kInput, calls=%fused_transpose.1, metadata={op_name=\"jit(<lambda>)/jit(_rfftn)/custom_partitioning\" stack_frame_id=17}",
+      "%fft.1.0 = c64[128,129,256]{2,1,0} fft(%input_transpose_fusion.1), fft_type=FFT, fft_length={256}, metadata={op_name=\"jit(<lambda>)/jit(_rfftn)/custom_partitioning\" stack_frame_id=17}",
+      "%fft.2.0 = c64[3,128,129,256]{3,2,1,0} fft(%input_concatenate_fusion), fft_type=IFFT, fft_length={256}, metadata={op_name=\"jit(<lambda>)/jit(_batched_irfftn_transposed)/custom_partitioning\" stack_frame_id=18}",
+      "%input_transpose_fusion = c64[2,3,128,128,129]{4,3,2,1,0} fusion(%fft.2.0), kind=kInput, calls=%fused_transpose, metadata={op_name=\"jit(<lambda>)/jit(_batched_irfftn_transposed)/custom_partitioning\" stack_frame_id=19}",
+      "%bitcast.86.0 = c64[3,2,128,128,129]{4,3,2,0,1} bitcast(%input_transpose_fusion)",
+      "%loop_transpose_fusion = c64[3,128,2,128,129]{4,3,2,1,0} fusion(%all-to-all-done.1), kind=kInput, calls=%fused_transpose.2, metadata={op_name=\"jit(<lambda>)/jit(_batched_irfftn_transposed)/custom_partitioning\" stack_frame_id=19}",
+      "%bitcast.8.0 = c64[3,128,256,129]{3,2,1,0} bitcast(%loop_transpose_fusion), metadata={op_name=\"jit(<lambda>)/jit(_batched_irfftn_transposed)/custom_partitioning\" stack_frame_id=19}",
+      "%fft.3.0 = f32[3,128,256,256]{3,2,1,0} fft(%bitcast.8.0), fft_type=IRFFT, fft_length={256,256}, metadata={op_name=\"jit(<lambda>)/jit(_batched_irfftn_transposed)/custom_partitioning\" stack_frame_id=19}",
+      "%loop_pad_fusion = f32[130,256,256,3]{3,2,1,0} fusion(%fft.3.0), kind=kInput, calls=%fused_pad, metadata={op_name=\"jit(<lambda>)/shard_map/jit(_pad)/pad\"}",
+      "%pallas_call.7 = f32[11744128,3]{1,0} custom-call(%loop_pad_fusion.1, %loop_pad_fusion.5, %loop_pad_fusion.3, %bitcast.93, %constant_184_0, /*index=5*/%loop_dynamic_update_slice_fusion.1), custom_call_target=\"__gpu$xla.gpu.triton\", operand_layout_constraints={s16[11744128,3]{1,0}, f32[11744128,3]{1,0}, pred[11744128]{0}, f32[3]{0}, f32[], f32[130,256,256,3]{3,2,1,0}}, api_version=API_VERSION_TYPED_FFI, metadata={op_name=\"jit(<lambda>)/shard_map/pmpp_cic_gather_tiled/pallas_call\" stack_frame_id=26}"
+    ]
+  },
+  "candidate": {
+    "file": "candidate_native_256_final_force.hlo",
+    "sha256": "7fb9fba5249114f97e4bff1c55c921fb7d5879ff905a942776811cab78090633",
+    "all_to_all_instructions": [
+      "ROOT %all-to-all.3 = c64[128,2,128,129]{3,2,0,1} all-to-all(%param_0.78), channel_id=8, replica_groups=[1,2]<=[2], dimensions={1}, metadata={op_name=\"jit(<lambda>)/jit(_rfftn)/custom_partitioning\" stack_frame_id=17}",
+      "ROOT %all-to-all.1.1 = c64[2,2,128,128,129]{4,3,2,0,1} all-to-all(%param_0.79), channel_id=9, replica_groups=[1,2]<=[2], dimensions={1}, metadata={op_name=\"jit(<lambda>)/jit(transform)/custom_partitioning\" stack_frame_id=19}"
+    ],
+    "entry_layout_excerpt": [
+      "%pallas_call.6 = f32[130,256,256]{2,1,0} custom-call(%loop_pad_fusion, %loop_pad_fusion.4, %loop_pad_fusion.3, %loop_pad_fusion.1, %bitcast.99, /*index=5*/%constant_175_0, %loop_broadcast_fusion), custom_call_target=\"__gpu$xla.gpu.triton\", operand_layout_constraints={s16[11744128,3]{1,0}, f32[11744128,3]{1,0}, pred[11744128]{0}, f32[11744128]{0}, f32[3]{0}, f32[], f32[130,256,256]{2,1,0}}, output_to_operand_aliasing={{}: (6, {})}, api_version=API_VERSION_TYPED_FFI, metadata={op_name=\"jit(<lambda>)/shard_map/pmpp_cic_scatter_tiled/pallas_call\" stack_frame_id=23}",
+      "%fft.0.0 = c64[128,256,129]{2,1,0} fft(%loop_multiply_fusion), fft_type=RFFT, fft_length={256,256}, metadata={op_name=\"jit(<lambda>)/jit(_rfftn)/custom_partitioning\" stack_frame_id=16}",
+      "%loop_transpose_fusion = c64[2,128,128,129]{3,2,1,0} fusion(%fft.0.0), kind=kInput, calls=%fused_transpose.2, metadata={op_name=\"jit(<lambda>)/jit(_rfftn)/custom_partitioning\" stack_frame_id=17}",
+      "%bitcast.88.0 = c64[128,2,128,129]{3,2,0,1} bitcast(%loop_transpose_fusion)",
+      "%input_transpose_fusion.1 = c64[128,129,256]{2,1,0} fusion(%all-to-all-done), kind=kInput, calls=%fused_transpose.1, metadata={op_name=\"jit(<lambda>)/jit(_rfftn)/custom_partitioning\" stack_frame_id=17}",
+      "%fft.1.0 = c64[128,129,256]{2,1,0} fft(%input_transpose_fusion.1), fft_type=FFT, fft_length={256}, metadata={op_name=\"jit(<lambda>)/jit(_rfftn)/custom_partitioning\" stack_frame_id=17}",
+      "%fft.2.0 = c64[2,128,129,256]{3,2,1,0} fft(%input_concatenate_fusion), fft_type=IFFT, fft_length={256}, metadata={op_name=\"jit(<lambda>)/jit(transform)/custom_partitioning\" stack_frame_id=19}",
+      "%input_transpose_fusion = c64[2,2,128,128,129]{4,3,2,1,0} fusion(%fft.2.0), kind=kInput, calls=%fused_transpose, metadata={op_name=\"jit(<lambda>)/jit(transform)/custom_partitioning\" stack_frame_id=19}",
+      "%bitcast.92.0 = c64[2,2,128,128,129]{4,3,2,0,1} bitcast(%input_transpose_fusion)",
+      "%fft.3.0 = f32[3,128,256,256]{3,2,1,0} fft(%input_concatenate_fusion.1), fft_type=IRFFT, fft_length={256,256}, metadata={op_name=\"jit(<lambda>)/jit(transform)/custom_partitioning\" stack_frame_id=20}",
+      "%pallas_call.7 = f32[11744128,3]{1,0} custom-call(%loop_pad_fusion, %loop_pad_fusion.4, %loop_pad_fusion.2, %bitcast.99, %constant_175_0, /*index=5*/%wrapped_transpose, %get-tuple-element.29, %get-tuple-element.30), custom_call_target=\"__gpu$xla.gpu.triton\", operand_layout_constraints={s16[11744128,3]{1,0}, f32[11744128,3]{1,0}, pred[11744128]{0}, f32[3]{0}, f32[], f32[128,256,256,3]{3,2,1,0}, f32[1,256,256,3]{3,2,1,0}, f32[1,256,256,3]{3,2,1,0}}, api_version=API_VERSION_TYPED_FFI, metadata={op_name=\"jit(<lambda>)/shard_map/pmpp_gather_separate_halos/pallas_call\" stack_frame_id=28}"
+    ],
+    "channel_layout_transpose": [
+      "ROOT %transpose.10.1 = f32[128,256,256,3]{3,2,1,0} transpose(%param_0.82), dimensions={1,2,3,0}, metadata={op_name=\"jit(<lambda>)/jit(transform)/custom_partitioning\" stack_frame_id=20}",
+      "%wrapped_transpose = f32[128,256,256,3]{3,2,1,0} fusion(%fft.3.0), kind=kInput, calls=%wrapped_transpose_computation, metadata={op_name=\"jit(<lambda>)/jit(transform)/custom_partitioning\" stack_frame_id=20}"
+    ]
+  }
+}

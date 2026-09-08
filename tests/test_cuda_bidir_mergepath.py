@@ -23,6 +23,45 @@ def _fused_primal_ready():
     return _bidir_ready() and bool(cuda_routing.extension_status().get("fused_primal_registered"))
 
 
+@pytest.mark.skipif(not _bidir_ready(), reason="requires native bidirectional library")
+@pytest.mark.parametrize("capacity", [0, 7, 23])
+def test_bidir_merge_duplicate_ties_truncation_and_inactive_suffix(capacity):
+    streams = ([1, 2, 2, 5, 8], [0, 2, 2, 9], [1, 2, 3, 5, 5, 9])
+    payloads = [
+        np.arange(len(keys) * 3, dtype=np.float32).reshape(-1, 3) + tag * 100 for tag, keys in enumerate(streams)
+    ]
+    records = []
+    for keys, values in zip(streams[1:], payloads[1:]):
+        record = np.zeros((len(keys), 8), np.uint32)
+        record[:, 0] = keys
+        record[:, 2:5] = values.view(np.uint32)
+        record[:, 5:8] = (values + 1000).view(np.uint32)
+        records.append(jnp.asarray(record))
+    ids = jnp.asarray([[key, 0, 0] for key in streams[0]], dtype=jnp.int16)
+    values = jnp.asarray(payloads[0])
+    args = (
+        ids, values, values + 1000, jnp.arange(5, dtype=jnp.int32), jnp.int32(5), records[0], jnp.int32(4), records[1],
+        jnp.int32(6)
+    )
+    expected = sorted((key, tag, rank) for tag, keys in enumerate(streams) for rank, key in enumerate(keys))
+    for fn in (cuda_routing.route_merge_bidir_cuda, cuda_routing.route_merge_bidir_primal_i16):
+        output = jax.jit(lambda *a: fn(*a, mesh_shape=(16, 1, 1), capacity=capacity))(*args)
+        used = min(capacity, 15)
+        assert int(output[-1]) == 15
+        np.testing.assert_array_equal(np.asarray(output[3]), np.arange(capacity) < used)
+        for i, (key, tag, rank) in enumerate(expected[:used]):
+            np.testing.assert_array_equal(output[0][i], [key, 0, 0])
+            np.testing.assert_array_equal(output[1][i], payloads[tag][rank])
+            np.testing.assert_array_equal(output[2][i], payloads[tag][rank] + 1000)
+            if fn is cuda_routing.route_merge_bidir_cuda:
+                assert int(output[4][i]) == tag
+                assert int(output[5][i]) == rank
+        for value in output[:3]:
+            assert not np.asarray(value)[used:].any()
+        if fn is cuda_routing.route_merge_bidir_cuda:
+            np.testing.assert_array_equal(np.asarray(output[5])[used:], -1)
+
+
 @pytest.mark.skipif(not _bidir_ready(), reason="requires the rebuilt CUDA bidirectional routing library")
 @pytest.mark.parametrize("float_dtype", (jnp.float32, jnp.float64))
 @pytest.mark.parametrize("pmid_dtype", (jnp.int16, jnp.int32))

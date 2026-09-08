@@ -1046,7 +1046,7 @@ __global__ void ScatterDriftIncomingKernelI16(
 }
 
 template <typename Real, typename Coord>
-__device__ uint32_t StayPosition(const Coord* pmid,
+__device__ uint64_t StayPosition(const Coord* pmid,
                                  const int32_t* stay_indices,
                                  uint32_t stay_count,
                                  const uint32_t* left_records,
@@ -1056,12 +1056,12 @@ __device__ uint32_t StayPosition(const Coord* pmid,
                                  int mesh_x, int mesh_y, int mesh_z) {
   Key64 key = CompactStayKeyAt(pmid, stay_indices, rank, mesh_x, mesh_y,
                                mesh_z);
-  return rank + LowerBoundRecordKeys<Real>(left_records, left_count, key) +
+  return static_cast<uint64_t>(rank) + LowerBoundRecordKeys<Real>(left_records, left_count, key) +
          LowerBoundRecordKeys<Real>(right_records, right_count, key);
 }
 
 template <typename Real, typename Coord>
-__device__ uint32_t LeftPosition(const Coord* pmid,
+__device__ uint64_t LeftPosition(const Coord* pmid,
                                  const int32_t* stay_indices,
                                  uint32_t stay_count,
                                 const uint32_t* left_records,
@@ -1070,13 +1070,13 @@ __device__ uint32_t LeftPosition(const Coord* pmid,
                                 uint32_t right_count, uint32_t rank,
                                 int mesh_x, int mesh_y, int mesh_z) {
   Key64 key = RecordKeyAt<Real>(left_records, rank);
-  return rank + UpperBoundCompactStay(pmid, stay_indices, stay_count, key,
+  return static_cast<uint64_t>(rank) + UpperBoundCompactStay(pmid, stay_indices, stay_count, key,
                                       mesh_x, mesh_y, mesh_z) +
          LowerBoundRecordKeys<Real>(right_records, right_count, key);
 }
 
 template <typename Real, typename Coord>
-__device__ uint32_t RightPosition(const Coord* pmid,
+__device__ uint64_t RightPosition(const Coord* pmid,
                                   const int32_t* stay_indices,
                                   uint32_t stay_count,
                                  const uint32_t* left_records,
@@ -1085,15 +1085,13 @@ __device__ uint32_t RightPosition(const Coord* pmid,
                                  uint32_t right_count, uint32_t rank,
                                  int mesh_x, int mesh_y, int mesh_z) {
   Key64 key = RecordKeyAt<Real>(right_records, rank);
-  return rank + UpperBoundCompactStay(pmid, stay_indices, stay_count, key,
+  return static_cast<uint64_t>(rank) + UpperBoundCompactStay(pmid, stay_indices, stay_count, key,
                                       mesh_x, mesh_y, mesh_z) +
          UpperBoundRecordKeys<Real>(left_records, left_count, key);
 }
 
-// Each output thread computes the co-rank of its output diagonal in the three
-// sorted streams.  The strict/lower and non-strict/upper bounds encode the
-// canonical tie order stay < left < right without materializing a concatenated
-// candidate array.
+// Each source computes its insertion position once. Strict/upper bounds
+// retain stable stay < left < right order, without nested co-rank searches.
 template <bool Metadata, typename Real, typename Coord>
 __global__ void MergePathBidirKernel(
     const Coord* pmid, const Real* disp, const Real* vel,
@@ -1104,8 +1102,9 @@ __global__ void MergePathBidirKernel(
     int mesh_x, int mesh_y, int mesh_z, int capacity, Coord* out_pmid,
     Real* out_disp, Real* out_vel, uint8_t* out_valid, uint8_t* out_tag,
     int32_t* out_index, uint32_t* out_key) {
-  int output = blockIdx.x * blockDim.x + threadIdx.x;
-  if (output >= capacity) return;
+  uint32_t source_rank = blockIdx.x * blockDim.x + threadIdx.x;
+  if (source_rank >= static_cast<uint32_t>(capacity)) return;
+  uint8_t source_tag = static_cast<uint8_t>(blockIdx.y);
   int stay_signed = *stay_count_value;
   int left_signed = *left_count_value;
   int right_signed = *right_count_value;
@@ -1121,79 +1120,37 @@ __global__ void MergePathBidirKernel(
                              ? 0u
                              : min(static_cast<uint32_t>(right_signed),
                                    static_cast<uint32_t>(capacity));
-  uint32_t total = stay_count + left_count + right_count;
-  if (static_cast<uint32_t>(output) >= total) return;
-
-  uint32_t source_rank = 0;
-  uint8_t source_tag = 0;
-  bool found = false;
-
-  // Find a stay source on the output diagonal.
-  uint32_t lo = 0;
-  uint32_t hi = stay_count;
-  while (lo < hi) {
-    uint32_t mid = lo + (hi - lo) / 2;
-    uint32_t position = StayPosition<Real>(
-        pmid, stay_indices, stay_count, left_records, left_count,
-        right_records, right_count, mid, mesh_x, mesh_y, mesh_z);
-    if (position < static_cast<uint32_t>(output)) lo = mid + 1;
-    else hi = mid;
-  }
-  if (lo < stay_count &&
-      StayPosition<Real>(pmid, stay_indices, stay_count, left_records,
-                         left_count, right_records, right_count, lo, mesh_x,
-                         mesh_y, mesh_z) ==
-          static_cast<uint32_t>(output)) {
-    source_rank = lo;
-    source_tag = 0;
-    found = true;
-  }
-
-  // If no stay source owns the diagonal, locate a left source.
-  if (!found) {
-    lo = 0;
-    hi = left_count;
-    while (lo < hi) {
-      uint32_t mid = lo + (hi - lo) / 2;
-      uint32_t position = LeftPosition<Real>(
-          pmid, stay_indices, stay_count, left_records, left_count,
-          right_records, right_count, mid, mesh_x, mesh_y, mesh_z);
-      if (position < static_cast<uint32_t>(output)) lo = mid + 1;
-      else hi = mid;
+  uint64_t total = static_cast<uint64_t>(stay_count) + left_count + right_count;
+  // Only the stay lane initializes the inactive suffix. Every active slot is
+  // completely overwritten by exactly one source; no full-capacity memset.
+  if (source_tag == 0 && source_rank >= total) {
+    for (int c = 0; c < 3; ++c) {
+      out_pmid[VectorOffset(source_rank, c)] = 0;
+      out_disp[VectorOffset(source_rank, c)] = 0;
+      out_vel[VectorOffset(source_rank, c)] = 0;
     }
-    if (lo < left_count &&
-        LeftPosition<Real>(pmid, stay_indices, stay_count, left_records,
-                           left_count, right_records, right_count, lo, mesh_x,
-                           mesh_y, mesh_z) ==
-            static_cast<uint32_t>(output)) {
-      source_rank = lo;
-      source_tag = 1;
-      found = true;
+    out_valid[source_rank] = 0;
+    if constexpr (Metadata) {
+      out_tag[source_rank] = 0;
+      out_index[source_rank] = -1;
+      StoreKey(out_key + RecordOffset(source_rank, 2), Key64{0u, 0u});
     }
   }
-
-  // Remaining diagonals belong to the right stream.
-  if (!found) {
-    lo = 0;
-    hi = right_count;
-    while (lo < hi) {
-      uint32_t mid = lo + (hi - lo) / 2;
-      uint32_t position = RightPosition<Real>(
-          pmid, stay_indices, stay_count, left_records, left_count,
-          right_records, right_count, mid, mesh_x, mesh_y, mesh_z);
-      if (position < static_cast<uint32_t>(output)) lo = mid + 1;
-      else hi = mid;
-    }
-    if (lo >= right_count ||
-        RightPosition<Real>(pmid, stay_indices, stay_count, left_records,
-                            left_count, right_records, right_count, lo,
-                            mesh_x, mesh_y, mesh_z) !=
-            static_cast<uint32_t>(output)) {
-      return;
-    }
-    source_rank = lo;
-    source_tag = 2;
+  uint32_t count = source_tag == 0 ? stay_count :
+                   (source_tag == 1 ? left_count : right_count);
+  if (source_rank >= count) return;
+  uint64_t output;
+  if (source_tag == 0) {
+    output = StayPosition<Real>(pmid, stay_indices, stay_count, left_records,
+        left_count, right_records, right_count, source_rank, mesh_x, mesh_y, mesh_z);
+  } else if (source_tag == 1) {
+    output = LeftPosition<Real>(pmid, stay_indices, stay_count, left_records,
+        left_count, right_records, right_count, source_rank, mesh_x, mesh_y, mesh_z);
+  } else {
+    output = RightPosition<Real>(pmid, stay_indices, stay_count, left_records,
+        left_count, right_records, right_count, source_rank, mesh_x, mesh_y, mesh_z);
   }
+  if (output >= static_cast<uint32_t>(capacity)) return;
 
   const uint32_t* record = nullptr;
   Key64 key{0u, 0u};
@@ -1547,34 +1504,8 @@ ffi::Error RouteMergeBidirTypedImpl(
   if (n <= 0 || capacity < 0 || mesh_x <= 0 || mesh_y <= 0 || mesh_z <= 0) {
     return ffi::Error::InvalidArgument("invalid bidirectional route-merge shape");
   }
-  cudaError_t status = cudaSuccess;
   if (capacity > 0) {
-    status = cudaMemsetAsync(out_pmid->typed_data(), 0,
-                             sizeof(Coord) * capacity * 3, stream);
-    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge pmid clear failed");
-    status = cudaMemsetAsync(out_disp->typed_data(), 0,
-                             sizeof(Real) * capacity * 3, stream);
-    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge displacement clear failed");
-    status = cudaMemsetAsync(out_vel->typed_data(), 0,
-                             sizeof(Real) * capacity * 3, stream);
-    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge velocity clear failed");
-    status = cudaMemsetAsync(out_valid->typed_data(), 0,
-                             sizeof(uint8_t) * capacity, stream);
-    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge validity clear failed");
-    status = cudaMemsetAsync(out_tag->typed_data(), 0,
-                             sizeof(uint8_t) * capacity, stream);
-    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge tag clear failed");
-    status = cudaMemsetAsync(out_index->typed_data(), 0xff,
-                             sizeof(int32_t) * capacity, stream);
-    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge index clear failed");
-    status = cudaMemsetAsync(out_key->typed_data(), 0,
-                             sizeof(uint32_t) * capacity * 2, stream);
-    if (status != cudaSuccess) return ffi::Error::Internal("bidir merge key clear failed");
-
-    // Counts are device scalars.  The kernel clamps them to the fixed-
-    // capacity payloads; the uncapped total is written separately below by a
-    // tiny kernel. Avoiding a host read keeps the FFI handler asynchronous.
-    dim3 blocks((capacity + kThreads - 1) / kThreads);
+    dim3 blocks((static_cast<size_t>(capacity) + kThreads - 1) / kThreads, 3);
     MergePathBidirKernel<true, Real, Coord><<<blocks, kThreads, 0, stream>>>(
         pmid.typed_data(), disp.typed_data(), vel.typed_data(),
         stay_indices.typed_data(), left_records.typed_data(),
@@ -1616,31 +1547,8 @@ ffi::Error RouteMergeBidirPrimalI16Impl(
     return ffi::Error::InvalidArgument(
         "invalid primal bidirectional route-merge shape");
   }
-  cudaError_t status = cudaSuccess;
   if (capacity > 0) {
-    status = cudaMemsetAsync(out_pmid->typed_data(), 0,
-                             sizeof(int16_t) * capacity * 3, stream);
-    if (status != cudaSuccess) {
-      return ffi::Error::Internal("primal bidir merge pmid clear failed");
-    }
-    status = cudaMemsetAsync(out_disp->typed_data(), 0,
-                             sizeof(float) * capacity * 3, stream);
-    if (status != cudaSuccess) {
-      return ffi::Error::Internal(
-          "primal bidir merge displacement clear failed");
-    }
-    status = cudaMemsetAsync(out_vel->typed_data(), 0,
-                             sizeof(float) * capacity * 3, stream);
-    if (status != cudaSuccess) {
-      return ffi::Error::Internal("primal bidir merge velocity clear failed");
-    }
-    status = cudaMemsetAsync(out_valid->typed_data(), 0,
-                             sizeof(uint8_t) * capacity, stream);
-    if (status != cudaSuccess) {
-      return ffi::Error::Internal("primal bidir merge validity clear failed");
-    }
-
-    dim3 blocks((capacity + kThreads - 1) / kThreads);
+    dim3 blocks((static_cast<size_t>(capacity) + kThreads - 1) / kThreads, 3);
     MergePathBidirKernel<false, float, int16_t>
         <<<blocks, kThreads, 0, stream>>>(
             pmid.typed_data(), disp.typed_data(), vel.typed_data(),

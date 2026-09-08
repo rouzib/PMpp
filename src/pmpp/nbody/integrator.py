@@ -1,3 +1,5 @@
+from functools import partial
+
 import jax
 from jax import vjp, value_and_grad
 import jax.numpy as jnp
@@ -64,6 +66,31 @@ def _halo_move_vjp(ptcl, disp, vel, acc, disp_cot, vel_cot, acc_cot, conf):
         lambda disp_in, vel_in, acc_in: _halo_move_float_outputs(ptcl, disp_in, vel_in, acc_in, conf), disp, vel, acc,
     )
     return halo_move_vjp((disp_cot, vel_cot, acc_cot))
+
+
+@partial(jax.custom_vjp, nondiff_argnums=(5, ))
+def _fused_drift_route(pmid, disp, vel, factor, unused, conf):
+    """Fused native primal with the established route-reconstruction transpose."""
+    return conf.mGPU_halo_moving_low_memory(pmid, disp, vel, factor, unused)
+
+
+def _fused_drift_route_fwd(pmid, disp, vel, factor, unused, conf):
+    result = conf.mGPU_halo_moving_low_memory(pmid, disp, vel, factor, unused)
+    return result, (pmid, disp, vel, factor, unused)
+
+
+def _fused_drift_route_bwd(conf, res, cot):
+    pmid, disp, vel, factor, unused = res
+    # Reconstruct routing only in the backward pass. No particle-sized route
+    # metadata or drifted displacement is retained by the fused forward path.
+    zeros = jnp.zeros_like(vel)
+    d_cot, v_cot, _ = conf.mGPU_halo_move_pullback(
+        pmid, disp, disp + vel * factor, vel, zeros, conf.halo_end, unused, cot[1], cot[2], zeros,
+    )
+    return None, d_cot, v_cot + factor * d_cot, jnp.sum(d_cot * vel).astype(factor.dtype), None
+
+
+_fused_drift_route.defvjp(_fused_drift_route_fwd, _fused_drift_route_bwd)
 
 
 def partition_duplicate_slot_cot(ptcl, ptcl_cot, conf):
@@ -279,6 +306,23 @@ def drift_for_force(
 
     factor = drift_factor(a_vel, a_prev, a_next, cosmo, conf)
     factor = factor.astype(conf.float_dtype)
+    if (
+        phase is None and conf.use_mGPU and not conf.replicated_mesh and conf.static_mesh_halo_width == 0
+        and getattr(conf, "mGPU_halo_moving_low_memory", None) is not None
+    ):
+        pmid, disp, vel, halo_mask, unused, failed, moved, invalid = _fused_drift_route(
+            ptcl.pmid, ptcl.disp, ptcl.vel, factor, ptcl.unused_index, conf
+        )
+        jax.lax.cond(
+            invalid != 0, lambda _: raise_error(
+                "[ERROR] Fused drift exceeds neighboring-slab migration domain. particles_outside_neighbor_range={x}.",
+                x=invalid
+            ), lambda _: None, operand=None
+        )
+        _assert_halo_move_succeeded(failed, moved)
+        return ptcl.replace(
+            pmid=pmid, disp=disp, vel=vel, acc=jnp.zeros_like(vel), halo_mask=halo_mask, unused_index=unused
+        )
     disp = ptcl.disp + ptcl.vel * factor
 
     if phase is not None:

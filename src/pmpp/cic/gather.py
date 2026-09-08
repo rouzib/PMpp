@@ -13,7 +13,7 @@ from ..distributed.mesh_halo import (
     exchange_owned_mesh_halo_edges, extend_owned_mesh_from_halo_edges, extend_owned_mesh_with_halo,
     reduce_mesh_halo_to_owned,
 )
-from .pallas import (pallas_cic_supported, pallas_gather, pallas_gather_bwd, )
+from .pallas import (pallas_cic_supported, pallas_gather, pallas_gather_bwd, pallas_gather_halos)
 from ..core.utils import AXIS_NAME, raise_error
 
 
@@ -32,7 +32,7 @@ def initialize_mGPU_gather(conf):
     """
     if conf.multigpu_mode == "mesh_halo":
         return shard_map(
-            _gather_mGPU_mesh_halo,
+            _gather_mGPU_mesh_halo_dispatch,
             mesh=conf.compute_mesh,
             in_specs=(
                 P(AXIS_NAME, None),  # pmid
@@ -70,6 +70,18 @@ def initialize_mGPU_gather(conf):
         ),
         out_specs=P(AXIS_NAME),
         check_vma=False,
+    )
+
+
+def _gather_mGPU_mesh_halo_dispatch(pmid, disp, unused_index, conf, mesh):
+    """Use separate halo allocations for the supported Pallas path."""
+    if not getattr(conf, "pallas_cic", True) or not pallas_cic_supported(mesh.dtype):
+        return _gather_mGPU_mesh_halo(pmid, disp, unused_index, conf, mesh)
+    left, right = exchange_owned_mesh_halo_edges(mesh, conf.mesh_halo_width, conf.left_perm, conf.right_perm)
+    offset = conf.mesh_halo_offsets[jax.lax.axis_index(AXIS_NAME)]
+    return pallas_gather_halos(
+        pmid, disp, mesh, left, right, offset=offset, particle_cell_size=conf.cell_size, global_shape=conf.mesh_shape,
+        valid_mask=~unused_index,
     )
 
 
@@ -394,6 +406,10 @@ def gather_stacked_mesh_halo(ptcl, conf, mesh_channels):
                   ), out_specs=P(AXIS_NAME, None), check_vma=False,
     )
     def _gather_stacked_local(pmid_local, disp_local, unused_local, conf_local, mesh_channels_local):
+        if getattr(conf_local, "pallas_cic", True) and pallas_cic_supported(mesh_channels_local.dtype):
+            return _gather_mGPU_mesh_halo_dispatch(
+                pmid_local, disp_local, unused_local, conf_local, mesh_channels_local
+            )
         gpu_id = jax.lax.axis_index(AXIS_NAME)
         incoming_left, incoming_right = exchange_owned_mesh_halo_edges(
             mesh_channels_local, conf_local.mesh_halo_width, conf_local.left_perm, conf_local.right_perm,

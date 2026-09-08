@@ -1,0 +1,7 @@
+{
+  "baseline_revision": "1406f9188881cecb8ff20cfb1c7bbaea28a3a830",
+  "candidate_branch": "performance_imrpovements",
+  "verified_python_sources": 54,
+  "candidate_cuda_source_sha256": "4d7d2719cbc527b00347b15e786a0681f9b7e54b4d822252e64177e8deceb99b",
+  "candidate_cuda_artifact_sha256": "538d3c0e2a2d287f2f37295518613f36cb421dc48870a9efabf60649464abefe"
+}

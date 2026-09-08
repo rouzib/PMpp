@@ -409,6 +409,114 @@ def _make_scatter_bwd_kernel(
     return kernel
 
 
+def pallas_gather_halos(pmid, disp, owned, left, right, *, offset, particle_cell_size, global_shape, valid_mask):
+    """CIC and its transpose on separate owned/left/right allocations.
+
+    Coordinates retain the existing halo-offset convention. No concatenated
+    mesh or concatenated mesh cotangent is allocated, including in the VJP.
+    """
+    _require_pallas(owned.dtype)
+    count = pmid.shape[0]
+    block_size = _choose_block_size(count)
+    padded = _particle_extent(count, block_size)
+    channels = owned.shape[3:]
+    width = left.shape[0]
+    spatial = (owned.shape[0] + 2 * width, ) + owned.shape[1:3]
+    _, _, _, coordinates = _make_cic_coordinate_helper(
+        spatial_shape=spatial, global_shape=global_shape, cell_size_is_explicit=False, cell_dtype=particle_cell_size,
+        block_size=block_size,
+    )
+    particle_spec = _particle_block_spec(block_size, (3, ))
+    value_spec = _particle_block_spec(block_size, channels)
+    mesh_specs = (pl.no_block_spec, ) * 3
+
+    def body(pmid_ref, disp_ref, valid_ref, offset_ref, cell_ref, meshes, val_cot_ref, out_ref, mesh_cots):
+        lanes = jnp.arange(block_size, dtype=jnp.int32)
+        lane_valid = pl.program_id(0) * block_size + lanes < count
+        valid_particle = lane_valid & _load(valid_ref, (lanes, ), mask=lane_valid, other=False)
+        indices, fractions, derivs, scale = coordinates(pmid_ref, disp_ref, offset_ref, cell_ref, lanes, lane_valid)
+        backward = val_cot_ref is not None
+        disp_result = [jnp.zeros((block_size, ), dtype=jnp.float32) for _ in range(3)]
+        for channel in np.ndindex(channels) if channels else [()]:
+            result = jnp.zeros((block_size, ), dtype=jnp.float32)
+            if backward:
+                cot = _load(val_cot_ref, (lanes, ) + channel, mask=valid_particle, other=0)
+            for index, fraction, deriv in zip(indices, fractions, derivs):
+                x, y, z = index
+                value = jnp.zeros((block_size, ), dtype=jnp.float32)
+                # Every load and atomic is masked before addressing its buffer.
+                for buf, start in enumerate((width, 0, width + owned.shape[0])):
+                    local_index = (x - start, y, z)
+                    valid = valid_particle & _bounds_mask(local_index, meshes[buf].shape[:3])
+                    value += _load(meshes[buf], local_index + channel, mask=valid, other=0)
+                    if backward:
+                        _atomic_add(mesh_cots[buf], local_index + channel, cot * fraction, mask=valid)
+                if backward:
+                    for axis in range(3):
+                        disp_result[axis] += cot * value * deriv[axis]
+                else:
+                    result += value * fraction
+            if not backward:
+                _store(out_ref, (lanes, ) + channel, result, mask=lane_valid)
+        if backward:
+            for axis in range(3):
+                _store(out_ref, (lanes, axis), disp_result[axis] / scale, mask=lane_valid)
+
+    def forward_kernel(p, d, v, o, c, meshes, out):
+        body(p, d, v, o, c, meshes, None, out, None)
+
+    def backward_kernel(p, d, v, o, c, meshes, cot, zeros, out, mesh_cots):
+        del zeros
+        body(p, d, v, o, c, meshes, cot, out, mesh_cots)
+
+    def prepare(p, d, v, o):
+        return (
+            _pad_particles(p, padded), _pad_particles(d, padded), _valid_particles(v, count, padded),
+            _offset_array(o, 3, owned.dtype), jnp.asarray(0, dtype=owned.dtype)
+        )
+
+    specs = (
+        particle_spec, particle_spec, _particle_block_spec(block_size,
+                                                           ()), pl.no_block_spec, pl.no_block_spec, mesh_specs
+    )
+
+    def primal(p, d, meshes, v, o):
+        call = pl.pallas_call(
+            forward_kernel, out_shape=jax.ShapeDtypeStruct((padded, ) + channels,
+                                                           owned.dtype), grid=(padded // block_size, ), in_specs=specs,
+            out_specs=value_spec, compiler_params=pl_triton.CompilerParams(), name="pmpp_gather_separate_halos",
+        )
+        return call(*prepare(p, d, v, o), meshes)[:count]
+
+    @jax.custom_vjp
+    def gather_halos(p, d, meshes, v, o):
+        return primal(p, d, meshes, v, o)
+
+    def fwd(p, d, meshes, v, o):
+        return primal(p, d, meshes, v, o), (p, d, meshes, v, o)
+
+    def bwd(res, cot):
+        p, d, meshes, v, o = res
+        mesh_shapes = tuple(jax.ShapeDtypeStruct(m.shape, m.dtype) for m in meshes)
+        # Alias zero-initialized cotangent buffers to the three atomic outputs.
+        call = pl.pallas_call(
+            backward_kernel, out_shape=(jax.ShapeDtypeStruct((padded, 3),
+                                                             owned.dtype), mesh_shapes), grid=(padded // block_size, ),
+            in_specs=specs + (value_spec, mesh_specs), out_specs=(particle_spec, mesh_specs), input_output_aliases={
+                9: 1,
+                10: 2,
+                11: 3
+            }, compiler_params=pl_triton.CompilerParams(), name="pmpp_gather_separate_halos_bwd",
+        )
+        d_cot, meshes_cot = call(
+            *prepare(p, d, v, o), meshes, _pad_particles(cot, padded), tuple(jnp.zeros_like(m) for m in meshes)
+        )
+        return None, d_cot[:count], meshes_cot, None, None
+
+    gather_halos.defvjp(fwd, bwd)
+    return gather_halos(pmid, disp, (owned, left, right), valid_mask, offset)
+
+
 def pallas_gather(pmid, disp, mesh, *, offset, particle_cell_size, cell_size=None, global_shape, valid_mask=None):
     """Gather CIC values with a tiled Pallas kernel."""
 
