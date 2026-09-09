@@ -2169,18 +2169,40 @@ def reconstruct_pre_drift_and_pullback_mesh_halo_shard_map(
         ``(pmid, disp, vel, acc, unused_indexes, halo_mask, disp_cot,
         vel_cot, acc_cot)``.
     """
-    pre_pmid, pre_disp, pre_vel, pre_acc, pre_unused_index, pre_halo_mask = (
-        reconstruct_pre_drift_mesh_halo_shard_map(
-            pmid, disp, vel, acc, conf.halo_start, conf.halo_end, unused_indexes, drift_factor, global_nMesh,
-            max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice, left_perm, right_perm, num_gpus,
-            disp_size, offsets, conf,
-        )
+    del max_halo_values_to_share
+    # Reversing float32 drift is not bitwise reversible. Re-drifting the
+    # reconstructed positions can send a boundary particle to another slab,
+    # shifting the sorted rows and attaching many cotangents to the wrong IDs.
+    # Carry cotangents through the same post-to-pre route as their particles.
+    auth = _authoritative_prefix_from_owned_only(
+        pmid, disp - vel * drift_factor.astype(disp.dtype), vel, acc, unused_indexes, conf,
     )
-    disp_before_halo = pre_disp + pre_vel * drift_factor.astype(pre_disp.dtype)
-    disp_pullback, vel_pullback, acc_pullback = halo_move_pullback_mesh_halo_from_prestate_shard_map(
-        pre_pmid, pre_disp, disp_before_halo, pre_vel, pre_acc, conf.halo_end, pre_unused_index, disp_cot, vel_cot,
-        acc_cot, global_nMesh, max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice, left_perm, right_perm,
-        num_gpus, disp_size, offsets, conf,
+    state, route = _canonical_route_authoritative_with_aux(
+        *auth, global_nMesh, max_values_to_share, left_perm, right_perm, num_gpus, disp_size, offsets, conf,
+    )
+    _, pre_pmid, pre_disp, pre_vel, pre_acc, pre_valid = state
+    stay_pos, stay_valid, left_pos, left_valid, right_pos, right_valid, tag, index = route
+
+    def take(values, positions, valid):
+        selected = values[jnp.clip(positions, 0, values.shape[0] - 1)]
+        mask_shape = valid.shape + (1, ) * (values.ndim - 1)
+        return jnp.where(valid.reshape(mask_shape), selected, jnp.zeros_like(selected))
+
+    payload = jnp.stack((disp_cot, vel_cot, acc_cot), axis=-1)
+    incoming_right = jax.lax.ppermute(take(payload, left_pos, left_valid), AXIS_NAME, left_perm)
+    stay_index = jnp.clip(index, 0, stay_pos.shape[0] - 1)
+    # Index stay rows directly, avoiding a full-size compacted cotangent copy.
+    pulled = take(payload, stay_pos[stay_index], pre_valid & (tag == 0) & stay_valid[stay_index])
+    pulled += take(incoming_right, index, pre_valid & (tag == 2))
+    if num_gpus != 2:
+        incoming_left = jax.lax.ppermute(take(payload, right_pos, right_valid), AXIS_NAME, right_perm)
+        pulled += take(incoming_left, index, pre_valid & (tag == 1))
+
+    _, disp_pullback, vel_pullback, acc_pullback, _, _ = _pack_authoritative_only(
+        pre_pmid, pulled[..., 0], pulled[..., 1], pulled[..., 2], pre_valid, max_ptcl_per_slice,
+    )
+    pre_pmid, pre_disp, pre_vel, pre_acc, pre_halo_mask, pre_unused_index = _pack_authoritative_only(
+        pre_pmid, pre_disp, pre_vel, pre_acc, pre_valid, max_ptcl_per_slice,
     )
     return (
         pre_pmid, pre_disp, pre_vel, pre_acc, pre_unused_index, pre_halo_mask, disp_pullback, vel_pullback,

@@ -6,6 +6,33 @@ by **8.2%** relative to commit `1406f9188881cecb8ff20cfb1c7bbaea28a3a830`.
 All seven proposed areas are addressed; capacity defaults remain unchanged
 until representative workload measurements justify reducing them.
 
+## Follow-up AD correction
+
+The timing results below describe optimization commit `8d4ecc5`, before the
+subsequent mesh-halo drift-adjoint repair. The repair's runtime has not been
+benchmarked with this four-step workload.
+
+A separate 63-step cosmological workload exposed a pre-existing error: float32
+rounding during reverse-drift reconstruction could change a particle's GPU
+when the forward migration was replayed. This shifted sorted particle rows
+and attached cotangents to the wrong identities, despite correct forward mass
+and density. The repaired adjoint carries cotangents through the same
+post-to-pre routing plan as their particles, eliminating that replay.
+
+On two RTX 3090s, the reproduced 256-cubed failure changed from a scalar
+Omega_m gradient of approximately `0.278153` to `0.346317`, agreeing with
+PMWD's `0.346318`. The repaired 512-cubed gradient agrees with the saved PMWD
+reference within `0.00036%`; local PMWD forward finite differences also support
+that reference. The repaired density fields agree with local PMWD to relative
+L2 errors below `2.6e-7`, with exact total mass.
+
+The focused solver/routing suite passed all 35 tests. The new identity
+regression fails on the original helper with two, four, and eight logical CPU
+devices; the repair passes with four/eight logical devices and two physical
+GPUs, including native routing. Physical eight-H200 validation of the repair
+remains outstanding. Historical PM++ gradients affected by this error are not
+a correctness reference for new AD measurements.
+
 ![Runtime and compiler temporary-buffer changes](../_static/performance_improvements_256.png)
 
 ## Matched measurements
