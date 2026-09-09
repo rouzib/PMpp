@@ -9,10 +9,8 @@ or understand the project sources.
   changes, implementation discipline, and review evidence.
 - [Documentation](documentation.md): authoring, notebook, diagram, and build
   policy.
-- [Performance experiments](performance_improvements.md): communication and
-  memory changes, numerical checks, and reproducible benchmarks.
-- [Two-GPU performance results](performance_results.md): measured gains,
-  memory trade-offs, and validation evidence.
+- [Performance optimizations](performance_improvements.md): communication and
+  memory changes and numerical checks.
 - [Citation](../citation.md), [references](../references.md), and
   [license](../license.md).
 
@@ -27,7 +25,6 @@ testing
 contributing
 documentation
 performance_improvements
-performance_results
 ../citation
 ../references
 ../license

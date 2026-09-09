@@ -56,6 +56,8 @@ exclude_patterns = [
     "_config.yml",
     "_toc.yml",
     "api.md",
+    # Local benchmark report, excluded from published documentation.
+    "development/performance_results.md",
 ]
 
 # Read the Docs renders committed outputs. Notebook execution is an explicit

@@ -1,8 +1,7 @@
-# Performance experiments
+# Performance optimizations
 
 The `performance_imrpovements` branch implements the seven proposals from the
-review of commit `1406f91`. See the [two-GPU results](performance_results.md)
-for measured gains and remaining costs.
+review of commit `1406f91`.
 
 | Change | Scope and compatibility |
 | --- | --- |
@@ -52,57 +51,3 @@ for devices in 4 8; do
     tests/test_performance_improvements.py -q
 done
 ```
-
-## Measuring performance
-
-`benchmarks/performance_improvements.py` warms each compiled executable three
-times and records at least 15 synchronized repetitions lasting at least one
-second per phase. It measures the FFT pullback, force, a full initialized
-leapfrog step, the step gradient, a short N-body integration and its custom
-adjoint, and streamed 2LPT. JSON contains individual timings, norms, density
-mean, particle count and compiler buffer estimates. Run baseline and candidate
-in separate processes with the same device count, inputs and capacities.
-
-```bash
-python benchmarks/performance_improvements.py --size 256 --devices 2 --cuda \
-  --output notebooks/tests/output/performance_improvements/candidate_256.json
-```
-
-Compiler temporary-buffer estimates exclude external CUDA-library scratch
-allocations and are not measured peak resident memory. The saved validation
-report gives the observed timings and limits of the local measurements.
-
-To compare revisions, use the same benchmark script with separate baseline
-and candidate source trees and separately built CUDA libraries. Set
-`PYTHONPATH` to the intended tree's `src` directory before starting each fresh
-process. Select both its CUDA library and manifest as shown above. The JSON
-records the imported package path, hashes of its Python sources, and the CUDA
-build manifest; `workspace_commit` describes the command's working directory.
-Keep capacities, mesh size, device count and timing repetitions identical.
-
-```bash
-python benchmarks/summarize_performance.py baseline.json candidate.json \
-  --output-dir notebooks/tests/output/performance_improvements/comparison
-```
-
-The summary produces JSON, a Markdown table, and PNG/PDF figures. Norm
-comparisons are numerical diagnostics; the reference and gradient tests above
-provide the elementwise correctness checks.
-
-`--dump-hlo` also saves the compiled executable text. `--nvtx` adds
-`measure/<phase>` ranges around warmed timings for an independently qualified
-Nsight Systems setup. Collect profiles separately from the primary timing
-comparison, since profiling changes runtime and memory overhead.
-
-For a separate native merge measurement, use one GPU and repeat the command
-with each selected native library:
-
-```bash
-CUDA_VISIBLE_DEVICES=1 python benchmarks/benchmark_route_merge.py \
-  --output notebooks/tests/output/performance_improvements/merge.json
-```
-
-This case uses 1,048,576 particles, approximately 98% stays and 1% arrivals
-from each direction, with 40% output-capacity headroom. It checks particle
-identity and displacement before timing the lean and metadata-producing
-merges. It isolates the local merge and does not measure inter-GPU exchange.
