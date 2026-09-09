@@ -9,6 +9,8 @@ or understand the project sources.
   changes, implementation discipline, and review evidence.
 - [Documentation](documentation.md): authoring, notebook, diagram, and build
   policy.
+- [Performance optimizations](performance_improvements.md): communication and
+  memory changes and numerical checks.
 - [Citation](../citation.md), [references](../references.md), and
   [license](../license.md).
 
@@ -22,6 +24,7 @@ but only explicitly curated objects are public API.
 testing
 contributing
 documentation
+performance_improvements
 ../citation
 ../references
 ../license

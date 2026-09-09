@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh
 
-from .fft import create_batched_transposed_real_ffts, create_ffts
+from .fft import create_batched_transposed_real_ffts, create_ffts, create_shared_gradient_fft
 from .cuda import requested_backend as requested_cuda_routing_backend
 from .cuda import supported_bidir_configuration as cuda_bidir_routing_supported
 from .cuda import supported_configuration as cuda_routing_supported
@@ -92,6 +92,7 @@ class MultiGPUConfiguration:
     rfftn_transposed: Callable = _uninitialized_runtime_callable
     irfftn_transposed: Callable = _uninitialized_runtime_callable
     irfftn_transposed_batched: Callable | None = None
+    gradient_fft_shared: Callable | None = None
     scatter: Callable = _uninitialized_runtime_callable
     gather: Callable = _uninitialized_runtime_callable
 
@@ -241,6 +242,7 @@ def initialize_multigpu_runtime(conf: "Configuration", runtime: MultiGPUConfigur
     return runtime.replace(
         rfftn=rfftn_jit, irfftn=irfftn_jit, rfftn_transposed=rfftn_transposed_jit,
         irfftn_transposed=irfftn_transposed_jit, irfftn_transposed_batched=irfftn_transposed_batched_jit,
+        gradient_fft_shared=create_shared_gradient_fft(runtime.compute_mesh, conf.mesh_shape),
         halo_moving=initialize_mGPU_halo_movement_canonical(conf),
         halo_moving_no_acc=initialize_mGPU_halo_movement_no_acc(conf),
         halo_moving_low_memory=initialize_mGPU_halo_movement_low_memory(conf),

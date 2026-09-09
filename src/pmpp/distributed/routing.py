@@ -379,10 +379,11 @@ def _synchronized_nonzero_check(count, message):
     _ = jax.lax.cond(global_count > 0, lambda _: raise_error(message, x=global_count), lambda _: None, operand=None, )
 
 
-def _synchronized_migration_domain_check(count, disp, outside_mask, slice_width, disp_size):
+def _synchronized_migration_domain_check(count, disp, outside_mask, slice_width, disp_size, *, global_count=None):
     """Report the geometry of particles that exceed the one-hop domain."""
 
-    global_count = jax.lax.pmax(count, axis_name=AXIS_NAME)
+    if global_count is None:
+        global_count = jax.lax.pmax(count, axis_name=AXIS_NAME)
 
     def fail(_):
         # This value is diagnostic-only.  Prevent the failure branch's pmax
@@ -967,12 +968,14 @@ def _canonical_route_authoritative_no_acc_bidir_cuda(
          owned_end=owned_end, slice_width=global_nMesh // num_gpus, num_devices=num_gpus, capacity=max_values_to_share,
          stay_capacity=pmid.shape[0],
      )
-    _synchronized_migration_domain_check(
-        jnp.sum(classes == 4), disp, classes == 4, global_nMesh // num_gpus, disp_size,
+    diagnostics = jax.lax.pmax(
+        jnp.stack((jnp.sum(classes == 4, dtype=jnp.int32), jnp.maximum(send_left_count, send_right_count))), AXIS_NAME
     )
-    _synchronized_capacity_check(
-        jnp.maximum(send_left_count, send_right_count), max_values_to_share,
-        "[ERROR] Exceeded migration share capacity. "
+    _synchronized_migration_domain_check(
+        diagnostics[0], disp, classes == 4, global_nMesh // num_gpus, disp_size, global_count=diagnostics[0],
+    )
+    _capacity_check(
+        diagnostics[1], max_values_to_share, "[ERROR] Exceeded migration share capacity. "
         "particles_to_share={x}, max_share_ptcl={y}.",
     )
     incoming_from_left = jax.lax.ppermute(send_right_records, axis_name=AXIS_NAME, perm=right_perm)
@@ -1935,8 +1938,8 @@ def move_particles_mesh_halo_no_acc_shard_map(
         )
     )
     if cuda_routing_enabled(conf) and auth_pmid.shape[0] == max_ptcl_per_slice:
-        # Both native merge backends clear their fixed-capacity outputs before
-        # writing the valid prefix. Returning those arrays directly avoids a
+        # Both native merge backends initialize their inactive suffix and
+        # overwrite the valid prefix. Returning those arrays directly avoids a
         # redundant full-capacity jnp.where repack after every forward drift.
         pmid, disp, vel = auth_pmid, auth_disp, auth_vel
         unused_indexes = ~auth_valid
@@ -1952,10 +1955,10 @@ def move_particles_mesh_halo_fused_drift_low_memory_shard_map(
     pmid, disp, vel, drift_factor, unused_indexes, global_nMesh, max_values_to_share, left_perm, right_perm, num_gpus,
     disp_size, offsets, conf,
 ):
-    """Production-only fused drift and bidirectional authoritative route.
+    """Raw fused drift and bidirectional authoritative route.
 
-    This path is intentionally separate from the standard differentiable
-    mover. CUDA computes drifted displacement, ownership, outgoing records,
+    The integrator supplies a custom VJP for ordinary differentiable drifts.
+    CUDA computes drifted displacement, ownership, outgoing records,
     and the final stable merge without materializing particle-sized x-position,
     class, key, or stay-index arrays in JAX.
 
@@ -2002,11 +2005,16 @@ def move_particles_mesh_halo_fused_drift_low_memory_shard_map(
                       | (incoming_from_right_count < 0) | (send_left_count > share_capacity)
                       | (send_right_count > share_capacity) | (stay_nonnegative > output_capacity)
                       | (left_nonnegative > remaining_after_stay) | (right_nonnegative > remaining_after_left))
-    global_overflow = jax.lax.pmax(local_overflow.astype(jnp.int32), AXIS_NAME) != 0
-    invalid_present = jax.lax.pmax((invalid_count != 0).astype(jnp.int32), AXIS_NAME) != 0
-    invalid_counts = jax.lax.all_gather(invalid_count, AXIS_NAME, axis=0, tiled=False)
-    global_invalid_count = _saturating_sum_nonnegative_int32(invalid_counts)
-    global_max_moved = jax.lax.pmax(jnp.maximum(send_left_count, send_right_count), AXIS_NAME)
+    # One tiny collective carries all diagnostics. Preserve saturating invalid
+    # counts (a signed int32 psum can overflow on large multi-node runs).
+    diagnostics = jax.lax.all_gather(
+        jnp.stack((local_overflow.astype(jnp.int32), invalid_count, jnp.maximum(send_left_count, send_right_count))),
+        AXIS_NAME, axis=0, tiled=False
+    )
+    global_overflow = jnp.any(diagnostics[:, 0] != 0)
+    invalid_present = jnp.any(diagnostics[:, 1] != 0)
+    global_invalid_count = _saturating_sum_nonnegative_int32(diagnostics[:, 1])
+    global_max_moved = jnp.max(diagnostics[:, 2])
     has_failed = global_overflow | invalid_present
     halo_mask = jnp.zeros_like(merged_valid)
     return (
@@ -2161,18 +2169,40 @@ def reconstruct_pre_drift_and_pullback_mesh_halo_shard_map(
         ``(pmid, disp, vel, acc, unused_indexes, halo_mask, disp_cot,
         vel_cot, acc_cot)``.
     """
-    pre_pmid, pre_disp, pre_vel, pre_acc, pre_unused_index, pre_halo_mask = (
-        reconstruct_pre_drift_mesh_halo_shard_map(
-            pmid, disp, vel, acc, conf.halo_start, conf.halo_end, unused_indexes, drift_factor, global_nMesh,
-            max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice, left_perm, right_perm, num_gpus,
-            disp_size, offsets, conf,
-        )
+    del max_halo_values_to_share
+    # Reversing float32 drift is not bitwise reversible. Re-drifting the
+    # reconstructed positions can send a boundary particle to another slab,
+    # shifting the sorted rows and attaching many cotangents to the wrong IDs.
+    # Carry cotangents through the same post-to-pre route as their particles.
+    auth = _authoritative_prefix_from_owned_only(
+        pmid, disp - vel * drift_factor.astype(disp.dtype), vel, acc, unused_indexes, conf,
     )
-    disp_before_halo = pre_disp + pre_vel * drift_factor.astype(pre_disp.dtype)
-    disp_pullback, vel_pullback, acc_pullback = halo_move_pullback_mesh_halo_from_prestate_shard_map(
-        pre_pmid, pre_disp, disp_before_halo, pre_vel, pre_acc, conf.halo_end, pre_unused_index, disp_cot, vel_cot,
-        acc_cot, global_nMesh, max_values_to_share, max_halo_values_to_share, max_ptcl_per_slice, left_perm, right_perm,
-        num_gpus, disp_size, offsets, conf,
+    state, route = _canonical_route_authoritative_with_aux(
+        *auth, global_nMesh, max_values_to_share, left_perm, right_perm, num_gpus, disp_size, offsets, conf,
+    )
+    _, pre_pmid, pre_disp, pre_vel, pre_acc, pre_valid = state
+    stay_pos, stay_valid, left_pos, left_valid, right_pos, right_valid, tag, index = route
+
+    def take(values, positions, valid):
+        selected = values[jnp.clip(positions, 0, values.shape[0] - 1)]
+        mask_shape = valid.shape + (1, ) * (values.ndim - 1)
+        return jnp.where(valid.reshape(mask_shape), selected, jnp.zeros_like(selected))
+
+    payload = jnp.stack((disp_cot, vel_cot, acc_cot), axis=-1)
+    incoming_right = jax.lax.ppermute(take(payload, left_pos, left_valid), AXIS_NAME, left_perm)
+    stay_index = jnp.clip(index, 0, stay_pos.shape[0] - 1)
+    # Index stay rows directly, avoiding a full-size compacted cotangent copy.
+    pulled = take(payload, stay_pos[stay_index], pre_valid & (tag == 0) & stay_valid[stay_index])
+    pulled += take(incoming_right, index, pre_valid & (tag == 2))
+    if num_gpus != 2:
+        incoming_left = jax.lax.ppermute(take(payload, right_pos, right_valid), AXIS_NAME, right_perm)
+        pulled += take(incoming_left, index, pre_valid & (tag == 1))
+
+    _, disp_pullback, vel_pullback, acc_pullback, _, _ = _pack_authoritative_only(
+        pre_pmid, pulled[..., 0], pulled[..., 1], pulled[..., 2], pre_valid, max_ptcl_per_slice,
+    )
+    pre_pmid, pre_disp, pre_vel, pre_acc, pre_halo_mask, pre_unused_index = _pack_authoritative_only(
+        pre_pmid, pre_disp, pre_vel, pre_acc, pre_valid, max_ptcl_per_slice,
     )
     return (
         pre_pmid, pre_disp, pre_vel, pre_acc, pre_unused_index, pre_halo_mask, disp_pullback, vel_pullback,
@@ -2358,7 +2388,7 @@ def initialize_mGPU_halo_movement_no_acc(conf):
 
 
 def initialize_mGPU_halo_movement_low_memory(conf):
-    """Create the profile-only fused float32/int16 drift-route callable.
+    """Create the raw fused float32/int16 drift-route callable.
 
     The returned callable has signature
     ``(pmid, disp, vel, drift_factor, unused)`` and returns

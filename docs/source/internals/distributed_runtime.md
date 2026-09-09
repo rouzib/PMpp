@@ -64,6 +64,16 @@ simulation {cite:p}`plimpton1995domain,feng2016fastpm`.
 
 ## Static particle buffers
 
+Capacities can be calibrated with
+`pmpp.distributed.routing_capacity_report(owned_counts, migration_counts,
+headroom=0.1)`. Supply uncapped per-shard counts covering every measured step
+and both outgoing directions. The returned report retains the measured maxima,
+observation counts, headroom, and suggested `max_ptcl_per_slice` and
+`max_share_ptcl`. It rejects empty observations and runs marked `overflowed=True`.
+Apply its suggestions explicitly when constructing the next configuration.
+They describe the measured workload and do not bound other initial conditions.
+The default capacities and strict overflow failures remain in effect.
+
 PM++'s JIT-compiled routing path uses fixed-shape arrays, consistent with JAX's
 [compiled dynamic-shape restrictions][jax-dynamic-shapes]. Each device
 therefore stores `max_ptcl_per_slice` slots even though its active particle

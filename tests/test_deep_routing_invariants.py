@@ -290,7 +290,7 @@ def test_fused_low_memory_route_fails_closed_on_uncapped_counts(monkeypatch):
     monkeypatch.setattr(routing.jax.lax, "pmax", lambda value, *args, **kwargs: value)
     monkeypatch.setattr(
         routing.jax.lax, "all_gather",
-        lambda value, *args, **kwargs: jnp.asarray([np.iinfo(np.int32).max - 1, 10], dtype=jnp.int32),
+        lambda value, *args, **kwargs: jnp.stack((value.at[1].set(np.iinfo(np.int32).max - 1), value.at[1].set(10))),
     )
     monkeypatch.setattr(
         routing, "route_pack_bidir_drift_primal_i16", lambda *args, **kwargs:
