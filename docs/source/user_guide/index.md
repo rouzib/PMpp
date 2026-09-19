@@ -20,6 +20,8 @@ communication, and FFT paths.
   validation strategy.
 - [Multi-GPU execution](multigpu.md): device meshes, `mesh_halo`, ownership,
   distributed FFTs, and capacity planning.
+- [Multi-node execution](multinode.md): Slurm launch patterns for independent
+  campaigns and one JAX-distributed simulation across nodes.
 - [Optimizations](optimizations.md): measured forward and AD settings and
   portable fallbacks.
 - [Pallas CIC kernels](pallas_cic.md): the paired particle-mesh kernels,
@@ -42,6 +44,7 @@ initial_conditions
 evolution_and_analysis
 differentiation
 multigpu
+multinode
 optimizations
 pallas_cic
 cuda_routing
