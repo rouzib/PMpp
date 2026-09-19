@@ -42,6 +42,85 @@ def _host_shape_product(shape):
     return math.prod(int(size) for size in shape)
 
 
+def _rfft_transpose_input(g, real_shape):
+    """Hermitian weights for the real-linear transpose, without a full spectrum."""
+    frequencies = jnp.arange(g.shape[-1])
+    endpoint = frequencies == 0
+    if real_shape[-1] % 2 == 0:
+        endpoint = endpoint | (frequencies == real_shape[-1] // 2)
+    return g.conj() * jnp.where(endpoint, 1., .5).astype(g.real.dtype)
+
+
+def _irfft_with_shape(x, real_shape, compute_mesh):
+    """Inverse with an explicit real shape, including odd compressed axes."""
+    if compute_mesh.size == 1:
+        return jnp.fft.irfftn(x, s=real_shape)
+    first = create_sharded_fft(_ifftn_first_pass, P(None, "gpus", None), compute_mesh)
+    second = create_sharded_fft(
+        lambda y: jnp.fft.irfftn(y, s=real_shape[1:], axes=(1, 2)), P("gpus", None, None), compute_mesh,
+    )
+    # Keep the transpose result in owned-x slabs at the call boundary. Without
+    # an explicit output sharding, outer VJP compilation can replicate it.
+    inverse = jax.jit(
+        lambda value: second(first(value)), out_shardings=NamedSharding(compute_mesh, P("gpus", None, None))
+    )
+    return inverse(x)
+
+
+def create_shared_gradient_fft(compute_mesh, real_shape=None):
+    """Share the x inverse and redistribution of the y/z force components.
+
+    The input factors are the existing Nyquist-filtered derivative symbols.
+    Both the primal and its transpose redistribute two fields. All local FFT
+    lengths come from global shapes, independent of the number of slabs.
+    """
+    px = P(None, "gpus", None, None)
+    py = P(None, None, "gpus", None)
+
+    def local(fn, spec):
+        return fn if compute_mesh.size == 1 else create_sharded_fft(fn, spec, compute_mesh)
+
+    inverse_x = local(_batched_ifftn_first_pass, py)
+    inverse_yz = local(
+        _batched_irfftn_second_pass
+        if real_shape is None else lambda x: jnp.fft.irfftn(x, s=real_shape[1:], axes=(2, 3)), px
+    )
+    forward_yz = local(_batched_rfftn_second_pass, px)
+
+    def primal(pot, fx, fy, fz):
+        intermediate = inverse_x(jnp.stack((pot, fx * pot)))
+        intermediate = lax.with_sharding_constraint(intermediate, NamedSharding(compute_mesh, px))
+        return inverse_yz(jnp.stack((intermediate[1], fy * intermediate[0], fz * intermediate[0])))
+
+    @custom_vjp
+    def transform(pot, fx, fy, fz):
+        return primal(pot, fx, fy, fz)
+
+    def fwd(pot, fx, fy, fz):
+        return primal(pot, fx, fy, fz), (pot, fx, fy, fz)
+
+    def bwd(res, g):
+        pot, fx, fy, fz = res
+        # Transpose the local real inverse before crossing the slab boundary.
+        weights = jnp.full((g.shape[-1] // 2 + 1, ), 2., dtype=g.dtype).at[0].set(1.)
+        if g.shape[-1] % 2 == 0:
+            weights = weights.at[-1].set(1.)
+        local_cot = forward_yz(g).conj() * (weights / math.prod(g.shape[-2:]))
+        pair = inverse_x(jnp.stack((fy * local_cot[1] + fz * local_cot[2], local_cot[0])))
+        pot_cot = pair[0] + fx * pair[1]
+        # Factors are usually static Configuration arrays. Preserve their VJP
+        # contract too; dead cotangents are removed when only pot is active.
+        full_cot = inverse_x(local_cot)
+        factors_cot = tuple(
+            jnp.sum(full_cot[i] * pot, axis=tuple(a for a, n in enumerate(f.shape) if n == 1), keepdims=True)
+            for i, f in enumerate((fx, fy, fz))
+        )
+        return (pot_cot, *factors_cot)
+
+    transform.defvjp(fwd, bwd)
+    return jax.jit(transform)
+
+
 def split_array_for_gpus(array: np.ndarray, num_gpus: int, axis: int = 1) -> Array:
     """Split an array into equal chunks for host-side GPU distribution.
 
@@ -496,8 +575,7 @@ def create_ffts(compute_mesh: Mesh, ) -> Tuple[Callable, Callable, Callable, Cal
             g
                 Cotangent array supplied to a custom VJP backward rule.
             """
-            g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
-            g = _ifftn_jit(g.conj()).real
+            g = _irfft_with_shape(_rfft_transpose_input(g, x_shape), x_shape, compute_mesh)
             g *= jnp.asarray(_host_shape_product(x_shape), dtype=g.real.dtype)
             return (g, )
 
@@ -650,9 +728,7 @@ def create_ffts(compute_mesh: Mesh, ) -> Tuple[Callable, Callable, Callable, Cal
             Original real-space input shape saved for an inverse custom VJP.
         g
             Cotangent array supplied to a custom VJP backward rule."""
-        g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
-        g = _ifftn_jit(g.conj()).real
-        # the previous code is equivalent to jnp.fft.ifftn(g.conj(), s=x_shape).real
+        g = _irfft_with_shape(_rfft_transpose_input(g, x_shape), x_shape, compute_mesh)
         g *= jnp.asarray(_host_shape_product(x_shape), dtype=g.real.dtype)
         return (g, )
 
@@ -689,9 +765,7 @@ def create_ffts(compute_mesh: Mesh, ) -> Tuple[Callable, Callable, Callable, Cal
         g
             Cotangent array supplied to a custom VJP backward rule.
         """
-        g = jnp.pad(g, [(0, si - xi) for xi, si in zip(g.shape, x_shape)])
-        g = lax.with_sharding_constraint(g, NamedSharding(compute_mesh, P(None, "gpus", None)))
-        g = _ifftn_transposed_jit(g.conj()).real
+        g = _irfft_with_shape(_rfft_transpose_input(g, x_shape), x_shape, compute_mesh)
         g *= jnp.asarray(_host_shape_product(x_shape), dtype=g.real.dtype)
         return (g, )
 

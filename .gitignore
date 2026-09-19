@@ -27,3 +27,8 @@ __pycache__/
 # Optional locally built CUDA FFI artifact; the portable wheel never includes it.
 /cuda/build/
 *.py[cod]
+
+# Local benchmark scripts, results, and reports.
+/benchmarks/
+/docs/source/development/performance_results.md
+/docs/source/_static/performance_improvements_256.png
