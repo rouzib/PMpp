@@ -50,6 +50,11 @@ def _use_bidir_cuda_routing(conf):
     return cuda_routing_enabled(conf) and cuda_routing_backend(conf) == "bidir_mergepath"
 
 
+def _hybrid_enabled(conf, num_devices):
+    return (num_devices >= 4 and
+            getattr(getattr(conf, "multigpu", None), "migration_policy", "neighbor_only") == "hybrid")
+
+
 @jax.jit
 def particles_in_slice_mask(x_mod, slice_start, slice_end):
     """Return the wrapped x-slab membership mask for particle positions.
@@ -252,6 +257,299 @@ def _owned_slice_bounds(global_nMesh, num_gpus, offsets):
 def _x_mod_from_disp(pmid, disp, global_nMesh, disp_size):
     """Particle x-position in mesh-cell units, wrapped into ``[0, nMesh)``."""
     return (pmid[:, 0] + disp[:, 0] * disp_size) % global_nMesh
+
+
+def _far_destination(pmid, disp, vel, valid, factor, global_nmesh, disp_size, num_devices):
+    """Classify final logical owners with the fused float32 drift arithmetic."""
+    rank = jax.lax.axis_index(AXIS_NAME)
+    x = pmid[:, 0].astype(jnp.float32) + (
+        disp[:, 0] + vel[:, 0] * factor
+    ) * jnp.asarray(disp_size, jnp.float32)
+    finite = jnp.isfinite(x)
+    x = jnp.fmod(jnp.where(finite, x, 0), jnp.float32(global_nmesh))
+    x = jnp.where(x < 0, x + jnp.float32(global_nmesh), x)
+    owner = jnp.floor(x / jnp.float32(global_nmesh // num_devices)).astype(jnp.int32)
+    offset = (owner - rank) % num_devices
+    bad = valid & ~finite
+    far = valid & finite & (offset != 0) & (offset != 1) & (offset != num_devices - 1)
+    return offset, far, bad
+
+
+def _far_packet_from_slots(pmid, disp, vel, factor, slots, row_valid, mesh_shape):
+    """Pack ABI-v3 records from a bounded list of source slots."""
+    source_pmid = pmid[slots]
+    lo = jnp.zeros((slots.shape[0],), dtype=jnp.uint32)
+    hi = jnp.zeros_like(lo)
+    for component, dimension in enumerate(mesh_shape):
+        coordinate = source_pmid[:, component].astype(jnp.int32) % dimension
+        lo, hi = _wide_multiply_add(lo, hi, dimension, coordinate.astype(jnp.uint32))
+    drifted = disp[slots] + vel[slots] * factor
+    payload = jnp.concatenate((drifted, vel[slots]), axis=1).view(jnp.uint32)
+    packet = jnp.concatenate((lo[:, None], hi[:, None], payload), axis=1)
+    return jnp.where(row_valid[:, None], packet, jnp.uint32(0))
+
+
+def _exchange_far_drift_records(
+    pmid, disp, vel, valid, factor, *, global_nmesh, mesh_shape, disp_size,
+    num_devices, send_capacity, recv_capacity, chunk_size,
+):
+    """Direct, bounded ring-offset exchange of exceptional ABI-v3 records.
+
+    Call this only inside a globally replicated exceptional branch. All ranks
+    use the same active-offset and packet-round schedule from one small count
+    table; local zero-count senders still participate in each active round.
+    """
+    rank = jax.lax.axis_index(AXIS_NAME)
+    offset, far, bad = _far_destination(
+        pmid, disp, vel, valid, factor, global_nmesh, disp_size, num_devices,
+    )
+    far_count = jnp.sum(far, dtype=jnp.int32)
+    bad_count = jnp.sum(bad, dtype=jnp.int32)
+    counts = jnp.bincount(offset, weights=far.astype(jnp.int32), length=num_devices).astype(jnp.int32)
+    table = jax.lax.all_gather(counts, AXIS_NAME, axis=0, tiled=False)
+    sources = jnp.arange(num_devices, dtype=jnp.int32)
+    receive_by_source = table[sources, (rank - sources) % num_devices]
+    receive_by_source = jnp.where(
+        ((rank - sources) % num_devices != 0)
+        & ((rank - sources) % num_devices != 1)
+        & ((rank - sources) % num_devices != num_devices - 1),
+        receive_by_source, 0,
+    )
+    recv_total = jnp.sum(receive_by_source, dtype=jnp.int32)
+    source_slots = jnp.nonzero(far, size=send_capacity, fill_value=0)[0]
+    active_source = jnp.arange(send_capacity) < far_count
+    source_vel = vel[source_slots]
+    source_disp = disp[source_slots]
+    payload_finite = jnp.all(jnp.isfinite(source_disp + source_vel * factor), axis=1) & jnp.all(
+        jnp.isfinite(source_vel), axis=1,
+    )
+    bad_payload = jnp.any(active_source & ~payload_finite)
+    local_failed = (
+        (far_count > send_capacity) | (recv_total > recv_capacity) | (bad_count != 0) | bad_payload
+    )
+    global_failed = jax.lax.pmax(local_failed.astype(jnp.int32), AXIS_NAME) != 0
+
+    def transfer(_):
+        source_offset = jnp.where(
+            jnp.arange(send_capacity) < far_count, offset[source_slots], num_devices,
+        )
+        order = jnp.argsort(source_offset, stable=True)
+        grouped_slots = source_slots[order]
+        starts = jnp.cumsum(counts, dtype=jnp.int32) - counts
+        receive_starts = jnp.cumsum(receive_by_source, dtype=jnp.int32) - receive_by_source
+        arena = jax.lax.pcast(jnp.zeros((recv_capacity, 8), dtype=jnp.uint32),
+                              (AXIS_NAME,), to="varying")
+        packet_rows = jnp.arange(chunk_size, dtype=jnp.int32)
+
+        for delta in range(2, num_devices - 1):
+            source = (rank - delta) % num_devices
+            outgoing_count = counts[delta]
+            incoming_count = table[source, delta]
+            rounds = (jnp.max(table[:, delta]) + chunk_size - 1) // chunk_size
+            perm = tuple((src, (src + delta) % num_devices) for src in range(num_devices))
+
+            def exchange_round(round_index, current):
+                row = round_index * chunk_size + packet_rows
+                selected = jnp.take(grouped_slots, starts[delta] + row, mode="clip")
+                packet = _far_packet_from_slots(
+                    pmid, disp, vel, factor, selected, row < outgoing_count, mesh_shape,
+                )
+                received = jax.lax.ppermute(packet, AXIS_NAME, perm)
+                target = receive_starts[source] + row
+                target = jnp.where(row < incoming_count, target, recv_capacity)
+                return current.at[target].set(received, mode="drop")
+
+            arena = jax.lax.cond(
+                rounds > 0,
+                lambda current: jax.lax.fori_loop(0, rounds, exchange_round, current),
+                lambda current: current,
+                arena,
+            )
+        return arena
+
+    records = jax.lax.cond(
+        global_failed,
+        lambda _: jax.lax.pcast(jnp.zeros((recv_capacity, 8), dtype=jnp.uint32),
+                                (AXIS_NAME,), to="varying"),
+        transfer,
+        operand=None,
+    )
+    return records, recv_total, far_count, bad_count, global_failed
+
+
+def _hybrid_route_authoritative_fields(
+    keys, pmid, fields, valid, global_nmesh, neighbor_capacity, left_perm,
+    right_perm, num_devices, disp_size, conf,
+):
+    """Differentiable canonical route for generic mesh-halo payload fields.
+
+    The production fused drift uses the lean native route. This JAX route
+    handles LPT, auxiliary fields, saved-input transposes, and reverse-time
+    reconstruction. Only compact migration streams are exchanged and sorted.
+    """
+    rank = jax.lax.axis_index(AXIS_NAME)
+    capacity = pmid.shape[0]
+    runtime = conf.multigpu
+    if keys is None:
+        keys = _routing_keys_from_pmid(pmid, conf)
+    key_fill = _key_fill_value(conf)
+    x = pmid[:, 0].astype(fields[0].dtype) + fields[0][:, 0] * disp_size
+    finite = jnp.isfinite(x)
+    wrapped = jnp.mod(jnp.where(finite, x, 0), global_nmesh)
+    owner = jnp.floor(wrapped / (global_nmesh // num_devices)).astype(jnp.int32)
+    offset = (owner - rank) % num_devices
+    stay = valid & finite & (offset == 0)
+    send_left = valid & finite & (offset == num_devices - 1)
+    send_right = valid & finite & (offset == 1) if num_devices != 2 else jnp.zeros_like(valid)
+    far = valid & finite & ~(stay | send_left | send_right)
+    bad = valid & ~finite
+    far_count = jnp.sum(far, dtype=jnp.int32)
+    near_count = jnp.maximum(jnp.sum(send_left, dtype=jnp.int32),
+                             jnp.sum(send_right, dtype=jnp.int32))
+    _synchronized_nonzero_check(jnp.sum(bad, dtype=jnp.int32),
+                                "[ERROR] Non-finite routing coordinate count={x}.")
+    _synchronized_capacity_check(near_count, neighbor_capacity,
+                                 "[ERROR] Exceeded migration share capacity. particles_to_share={x}, "
+                                 "max_share_ptcl={y}.")
+    _synchronized_capacity_check(far_count, runtime.far_send_capacity,
+                                 "[ERROR] Exceeded far_send_capacity. far_particles={x}, capacity={y}.")
+
+    payload_width = sum(field.shape[1] for field in fields)
+    payload_dtype = fields[0].dtype
+
+    def compact(mask, size):
+        count = jnp.sum(mask, dtype=jnp.int32)
+        slots = jnp.nonzero(mask, size=size, fill_value=0)[0]
+        present = jnp.arange(size) < count
+        compact_payload = jnp.concatenate(tuple(field[slots] for field in fields), axis=1)
+        return (jnp.where(present[:, None], pmid[slots], 0),
+                jnp.where(present[:, None], compact_payload, 0), present)
+
+    left_out = compact(send_left, neighbor_capacity)
+    right_out = compact(send_right, neighbor_capacity)
+
+    def exchange_neighbor(stream, perm):
+        metadata = jnp.concatenate((stream[0], stream[2][:, None].astype(pmid.dtype)), axis=1)
+        received_metadata = jax.lax.ppermute(metadata, AXIS_NAME, perm)
+        received_payload = jax.lax.ppermute(stream[1], AXIS_NAME, perm)
+        return received_metadata[:, :3], received_payload, received_metadata[:, 3] != 0
+
+    incoming_left = exchange_neighbor(right_out, right_perm)
+    incoming_right = exchange_neighbor(left_out, left_perm)
+    need_far = jax.lax.pmax(far_count, AXIS_NAME) != 0
+
+    def far_exchange(_):
+        send_capacity = runtime.far_send_capacity
+        recv_capacity = runtime.far_recv_capacity
+        chunk_size = runtime.far_chunk_size
+        counts = jnp.bincount(offset, weights=far.astype(jnp.int32), length=num_devices).astype(jnp.int32)
+        table = jax.lax.all_gather(counts, AXIS_NAME, axis=0, tiled=False)
+        sources = jnp.arange(num_devices, dtype=jnp.int32)
+        receive_by_source = table[sources, (rank - sources) % num_devices]
+        is_far_source = ((rank - sources) % num_devices != 0) & ((rank - sources) % num_devices != 1) & (
+            (rank - sources) % num_devices != num_devices - 1)
+        receive_by_source = jnp.where(is_far_source, receive_by_source, 0)
+        recv_count = jnp.sum(receive_by_source, dtype=jnp.int32)
+        _synchronized_capacity_check(recv_count, recv_capacity,
+                                     "[ERROR] Exceeded far_recv_capacity. far_arrivals={x}, capacity={y}.")
+        source_slots = jnp.nonzero(far, size=send_capacity, fill_value=0)[0]
+        source_offset = jnp.where(jnp.arange(send_capacity) < far_count,
+                                  offset[source_slots], num_devices)
+        source_slots = source_slots[jnp.argsort(source_offset, stable=True)]
+        starts = jnp.cumsum(counts, dtype=jnp.int32) - counts
+        receive_starts = jnp.cumsum(receive_by_source, dtype=jnp.int32) - receive_by_source
+        far_pmid = jax.lax.pcast(jnp.zeros((recv_capacity, 3), pmid.dtype),
+                                  (AXIS_NAME,), to="varying")
+        far_payload = jax.lax.pcast(jnp.zeros((recv_capacity, payload_width), payload_dtype),
+                                     (AXIS_NAME,), to="varying")
+        packet_rows = jnp.arange(chunk_size, dtype=jnp.int32)
+        maximum_rounds = (send_capacity + chunk_size - 1) // chunk_size
+
+        for delta in range(2, num_devices - 1):
+            source = (rank - delta) % num_devices
+            outgoing_count = counts[delta]
+            incoming_count = table[source, delta]
+            global_outgoing = jax.lax.pmax(outgoing_count, AXIS_NAME)
+            perm = tuple((src, (src + delta) % num_devices) for src in range(num_devices))
+
+            def one_round(carry, round_index):
+                def active(current):
+                    row = round_index * chunk_size + packet_rows
+                    slots = jnp.take(source_slots, starts[delta] + row, mode="clip")
+                    selected = row < outgoing_count
+                    send_pmid = jnp.where(selected[:, None], pmid[slots], 0)
+                    send_payload = jnp.where(
+                        selected[:, None], jnp.concatenate(tuple(field[slots] for field in fields), axis=1), 0,
+                    )
+                    recv_pmid = jax.lax.ppermute(send_pmid, AXIS_NAME, perm)
+                    recv_payload = jax.lax.ppermute(send_payload, AXIS_NAME, perm)
+                    target = receive_starts[source] + row
+                    target = jnp.where(row < incoming_count, target, recv_capacity)
+                    return (current[0].at[target].set(recv_pmid, mode="drop"),
+                            current[1].at[target].set(recv_payload, mode="drop"))
+
+                updated = jax.lax.cond(round_index * chunk_size < global_outgoing,
+                                       active, lambda current: current, carry)
+                return updated, None
+
+            (far_pmid, far_payload), _ = jax.lax.scan(
+                one_round, (far_pmid, far_payload), jnp.arange(maximum_rounds, dtype=jnp.int32),
+            )
+        far_valid = jnp.arange(recv_capacity) < recv_count
+        return far_pmid, far_payload, far_valid
+
+    far_in = jax.lax.cond(
+        need_far, far_exchange,
+        lambda _: (jax.lax.pcast(jnp.zeros((runtime.far_recv_capacity, 3), pmid.dtype),
+                                  (AXIS_NAME,), to="varying"),
+                   jax.lax.pcast(jnp.zeros((runtime.far_recv_capacity, payload_width), payload_dtype),
+                                  (AXIS_NAME,), to="varying"),
+                   jax.lax.pcast(jnp.zeros((runtime.far_recv_capacity,), jnp.bool_),
+                                  (AXIS_NAME,), to="varying")),
+        operand=None,
+    )
+
+    joined_pmid = jnp.concatenate((incoming_left[0], incoming_right[0], far_in[0]), axis=0)
+    joined_payload = jnp.concatenate((incoming_left[1], incoming_right[1], far_in[1]), axis=0)
+    joined_valid = jnp.concatenate((incoming_left[2], incoming_right[2], far_in[2]), axis=0)
+    joined_keys = _fill_invalid_keys(_routing_keys_from_pmid(joined_pmid, conf), joined_valid, key_fill)
+    index = jnp.arange(joined_pmid.shape[0], dtype=jnp.int32)
+    if joined_keys.ndim == 1:
+        order = jnp.lexsort((index, joined_keys))
+    else:
+        order = jnp.lexsort((index, joined_keys[:, 0], joined_keys[:, 1]))
+    incoming_pmid = joined_pmid[order]
+    incoming_payload = joined_payload[order]
+    incoming_valid = joined_valid[order]
+    incoming_keys = joined_keys[order]
+
+    stay_count = jnp.sum(stay, dtype=jnp.int32)
+    stay_slots = jnp.nonzero(stay, size=capacity, fill_value=0)[0]
+    stay_valid = jnp.arange(capacity) < stay_count
+    stay_keys = _fill_invalid_keys(keys[stay_slots], stay_valid, key_fill)
+    _synchronized_capacity_check(stay_count + jnp.sum(incoming_valid, dtype=jnp.int32), capacity,
+                                 "[ERROR] Exceeded canonical authoritative capacity after migration. "
+                                 "required_particles={x}, max_ptcl_per_slice={y}.")
+    source, stay_index, incoming_index, out_valid, _ = _linear_merge_plan_two(
+        stay_keys, stay_valid, incoming_keys, incoming_valid, capacity, key_fill,
+    )
+    output_pmid = _zero_invalid_merge_values(
+        _linear_take_two(pmid[stay_slots], incoming_pmid, source, stay_index, incoming_index), out_valid,
+    )
+    output_keys = _fill_invalid_keys(_linear_take_two(
+        stay_keys, incoming_keys, source, stay_index, incoming_index,
+    ), out_valid, key_fill)
+    out_fields = []
+    start = 0
+    for field in fields:
+        stop = start + field.shape[1]
+        out_fields.append(_zero_invalid_merge_values(
+            _linear_take_two(field[stay_slots], incoming_payload[:, start:stop],
+                             source, stay_index, incoming_index), out_valid,
+        ))
+        start = stop
+    max_moved = jax.lax.pmax(jnp.maximum(near_count, far_count), AXIS_NAME)
+    return (output_keys, output_pmid, *out_fields, out_valid), max_moved
 
 
 def _capacity_check(count, capacity, message):
@@ -833,6 +1131,11 @@ def _canonical_route_authoritative(
     offsets, conf,
 ):
     """Route authoritative particles to their post-drift owner slabs."""
+    if _hybrid_enabled(conf, num_gpus):
+        return _hybrid_route_authoritative_fields(
+            keys, pmid, (disp, vel, acc), valid, global_nMesh, max_values_to_share,
+            left_perm, right_perm, num_gpus, disp_size, conf,
+        )
     owned_start, owned_end = _owned_slice_bounds(global_nMesh, num_gpus, offsets)
     slice_width = global_nMesh // num_gpus
     left_start = (owned_start - slice_width) % global_nMesh
@@ -892,6 +1195,11 @@ def _canonical_route_authoritative_no_acc(
     offsets, conf,
 ):
     """Route authoritative particles to post-drift owner slabs without acceleration."""
+    if _hybrid_enabled(conf, num_gpus):
+        return _hybrid_route_authoritative_fields(
+            keys, pmid, (disp, vel), valid, global_nMesh, max_values_to_share,
+            left_perm, right_perm, num_gpus, disp_size, conf,
+        )
     if cuda_routing_enabled(conf):
         return _canonical_route_authoritative_no_acc_cuda(
             keys, pmid, disp, vel, valid, global_nMesh, max_values_to_share, left_perm, right_perm, num_gpus, disp_size,
@@ -1728,6 +2036,18 @@ def halo_move_pullback_mesh_halo_from_prestate_shard_map(
         buffers before the mesh-halo move.
     """
     del halo_end, max_halo_values_to_share, max_ptcl_per_slice
+    if _hybrid_enabled(conf, num_gpus):
+        valid = ~unused_indexes
+
+        def routed_payload(carried, velocity, acceleration):
+            state, _ = _hybrid_route_authoritative_fields(
+                None, pmid, (carried, velocity, acceleration), valid, global_nMesh,
+                max_values_to_share, left_perm, right_perm, num_gpus, disp_size, conf,
+            )
+            return state[2], state[3], state[4]
+
+        _, pullback = jax.vjp(routed_payload, carried_disp, vel, acc)
+        return pullback((disp_cot, vel_cot, acc_cot))
     (auth_keys, auth_pmid, auth_disp, auth_vel, auth_acc, auth_valid,
      ) = _authoritative_prefix_from_owned_only(pmid, carried_disp, vel, acc, unused_indexes, conf,
                                                )
@@ -1982,14 +2302,6 @@ def move_particles_mesh_halo_fused_drift_low_memory_shard_map(
     incoming_from_right = jax.lax.ppermute(send_left_records, axis_name=AXIS_NAME, perm=left_perm)
     incoming_from_right_count = jax.lax.ppermute(send_left_count, axis_name=AXIS_NAME, perm=left_perm)
 
-    merged_pmid, merged_disp, merged_vel, merged_valid, _merged_count = route_merge_bidir_drift_primal_i16(
-        pmid, disp, vel, valid, drift_factor, stay_block_counts, stay_count, incoming_from_left,
-        incoming_from_left_count, incoming_from_right, incoming_from_right_count, disp_size=disp_size,
-        global_nmesh=global_nMesh, mesh_shape=mesh_shape, owned_start=owned_start, owned_end=owned_end,
-        slice_width=global_nMesh // num_gpus, num_devices=num_gpus, record_capacity=max_values_to_share,
-        capacity=pmid.shape[0],
-    )
-
     # Counts are uncapped device scalars. Check overflow without adding three
     # signed int32 values, whose mathematical sum can exceed INT32_MAX even
     # though every individual fixed-capacity stream is below that limit.
@@ -2005,17 +2317,97 @@ def move_particles_mesh_halo_fused_drift_low_memory_shard_map(
                       | (incoming_from_right_count < 0) | (send_left_count > share_capacity)
                       | (send_right_count > share_capacity) | (stay_nonnegative > output_capacity)
                       | (left_nonnegative > remaining_after_stay) | (right_nonnegative > remaining_after_left))
-    # One tiny collective carries all diagnostics. Preserve saturating invalid
-    # counts (a signed int32 psum can overflow on large multi-node runs).
-    diagnostics = jax.lax.all_gather(
-        jnp.stack((local_overflow.astype(jnp.int32), invalid_count, jnp.maximum(send_left_count, send_right_count))),
-        AXIS_NAME, axis=0, tiled=False
-    )
-    global_overflow = jnp.any(diagnostics[:, 0] != 0)
-    invalid_present = jnp.any(diagnostics[:, 1] != 0)
-    global_invalid_count = _saturating_sum_nonnegative_int32(diagnostics[:, 1])
-    global_max_moved = jnp.max(diagnostics[:, 2])
-    has_failed = global_overflow | invalid_present
+    # One ordinary-step reduction yields replicated branch predicates. Gather
+    # the exceptional count only on a failure, without overflowing int32.
+    diagnostics = jax.lax.pmax(jnp.stack((
+        local_overflow.astype(jnp.int32), (invalid_count != 0).astype(jnp.int32),
+        jnp.maximum(send_left_count, send_right_count),
+    )), AXIS_NAME)
+    global_overflow = diagnostics[0] != 0
+    candidate_present = diagnostics[1] != 0
+    global_max_moved = diagnostics[2]
+    runtime = getattr(conf, "multigpu", None)
+    hybrid = _hybrid_enabled(conf, num_gpus)
+
+    def merge(left, left_count, right, right_count, *, augmented=False):
+        return route_merge_bidir_drift_primal_i16(
+            pmid, disp, vel, valid, drift_factor, stay_block_counts, stay_count,
+            left, left_count, right, right_count, disp_size=disp_size,
+            global_nmesh=global_nMesh, mesh_shape=mesh_shape, owned_start=owned_start,
+            owned_end=owned_end, slice_width=global_nMesh // num_gpus,
+            num_devices=num_gpus, record_capacity=max_values_to_share,
+            capacity=pmid.shape[0], augmented=augmented,
+        )[:4]
+
+    def failed_output(_):
+        limbs = jax.lax.psum(jnp.stack((invalid_count & jnp.int32(0xffff),
+                                       invalid_count >> jnp.int32(16))), AXIS_NAME)
+        high = limbs[1] + (limbs[0] >> jnp.int32(16))
+        global_candidate_count = jnp.where(
+            high > jnp.int32(32767), jnp.int32(_INT32_MAX),
+            high * jnp.int32(65536) + (limbs[0] & jnp.int32(0xffff)),
+        )
+        return (jnp.zeros_like(pmid), jnp.zeros_like(disp), jnp.zeros_like(vel),
+                jnp.zeros_like(valid), jnp.bool_(True), global_candidate_count, global_max_moved)
+
+    def ordinary_output(_):
+        return (*merge(incoming_from_left, incoming_from_left_count,
+                       incoming_from_right, incoming_from_right_count),
+                jnp.bool_(False), jnp.int32(0), global_max_moved)
+
+    if hybrid:
+        def exceptional_output(_):
+            records, recv_total, far_count, bad_count, transport_failed = _exchange_far_drift_records(
+                pmid, disp, vel, valid, drift_factor, global_nmesh=global_nMesh,
+                mesh_shape=mesh_shape, disp_size=disp_size, num_devices=num_gpus,
+                send_capacity=runtime.far_send_capacity,
+                recv_capacity=runtime.far_recv_capacity,
+                chunk_size=runtime.far_chunk_size,
+            )
+            counts_match = jax.lax.pmin(
+                (far_count + bad_count == invalid_count).astype(jnp.int32), AXIS_NAME,
+            ) != 0
+            final_count = _saturating_add_nonnegative_int32(
+                stay_count, incoming_from_left_count, incoming_from_right_count, recv_total,
+            )
+            final_overflow = jax.lax.pmax(
+                (final_count > output_capacity).astype(jnp.int32), AXIS_NAME,
+            ) != 0
+            invalid_present = jax.lax.pmax((bad_count != 0).astype(jnp.int32), AXIS_NAME) != 0
+            failed = transport_failed | ~counts_match | final_overflow | invalid_present
+            moved = jnp.maximum(global_max_moved, jax.lax.pmax(far_count, AXIS_NAME))
+
+            def complete(_):
+                joined = jnp.concatenate((incoming_from_right, records), axis=0)
+                joined_valid = jnp.concatenate((
+                    jnp.arange(max_values_to_share) < incoming_from_right_count,
+                    jnp.arange(records.shape[0]) < recv_total,
+                ))
+                high = jnp.where(joined_valid, joined[:, 1], jnp.uint32(_UINT32_MAX))
+                low = jnp.where(joined_valid, joined[:, 0], jnp.uint32(_UINT32_MAX))
+                order = jnp.lexsort((jnp.arange(joined.shape[0], dtype=jnp.int32), low, high))
+                augmented_right = joined[order]
+                return (*merge(incoming_from_left, incoming_from_left_count,
+                               augmented_right, incoming_from_right_count + recv_total, augmented=True),
+                        jnp.bool_(False), jnp.int32(0), moved)
+
+            def failed_exception(_):
+                result = failed_output(None)
+                return (*result[:-1], moved)
+
+            return jax.lax.cond(failed, failed_exception, complete, operand=None)
+
+        routed = jax.lax.cond(
+            global_overflow, failed_output,
+            lambda _: jax.lax.cond(candidate_present, exceptional_output, ordinary_output, operand=None),
+            operand=None,
+        )
+    else:
+        routed = jax.lax.cond(
+            global_overflow | candidate_present, failed_output, ordinary_output, operand=None,
+        )
+
+    merged_pmid, merged_disp, merged_vel, merged_valid, has_failed, global_invalid_count, global_max_moved = routed
     halo_mask = jnp.zeros_like(merged_valid)
     return (
         merged_pmid, merged_disp, merged_vel, halo_mask, ~merged_valid, has_failed, global_max_moved,
@@ -2170,6 +2562,18 @@ def reconstruct_pre_drift_and_pullback_mesh_halo_shard_map(
         vel_cot, acc_cot)``.
     """
     del max_halo_values_to_share
+    if _hybrid_enabled(conf, num_gpus):
+        auth = _authoritative_prefix_from_owned_only(
+            pmid, disp - vel * drift_factor.astype(disp.dtype), vel, acc, unused_indexes, conf,
+        )
+        state, _ = _hybrid_route_authoritative_fields(
+            auth[0], auth[1], (auth[2], auth[3], auth[4], disp_cot, vel_cot, acc_cot),
+            auth[5], global_nMesh, max_values_to_share, left_perm, right_perm,
+            num_gpus, disp_size, conf,
+        )
+        _, pre_pmid, pre_disp, pre_vel, pre_acc, disp_pullback, vel_pullback, acc_pullback, pre_valid = state
+        return (pre_pmid, pre_disp, pre_vel, pre_acc, ~pre_valid, jnp.zeros_like(pre_valid),
+                disp_pullback, vel_pullback, acc_pullback)
     # Reversing float32 drift is not bitwise reversible. Re-drifting the
     # reconstructed positions can send a boundary particle to another slab,
     # shifting the sorted rows and attaching many cotangents to the wrong IDs.
@@ -2409,7 +2813,7 @@ def initialize_mGPU_halo_movement_low_memory(conf):
         func, mesh=conf.compute_mesh,
         in_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(), P(AXIS_NAME)), out_specs=(
             P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME, None), P(AXIS_NAME), P(AXIS_NAME), P(), P(), P(),
-        ), check_vma=False,
+        ), check_vma=True,
     )
 
 

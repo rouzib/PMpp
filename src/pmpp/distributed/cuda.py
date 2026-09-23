@@ -57,6 +57,8 @@ _FUSED_PRIMAL_FEATURE = "fused_drift_primal_i16_f32"
 _FUSED_PRIMAL_TARGETS = (
     "pmpp_route_bidir_drift_pack_primal_i16", "pmpp_route_bidir_drift_merge_primal_i16", "pmpp_route_offset_probe",
 )
+_HYBRID_FEATURE = "hybrid_fused_drift_i16_f32"
+_HYBRID_TARGET = "pmpp_route_bidir_drift_merge_hybrid_primal_i16"
 # Backward-compatible names used by diagnostics and older tests.
 _CURRENT_TARGETS = _FLOAT32_TARGETS
 _BIDIR_TARGETS = _FLOAT32_BIDIR_TARGETS
@@ -68,6 +70,7 @@ _BIDIR_REGISTERED = False
 _FLOAT64_REGISTERED = False
 _FLOAT64_BIDIR_REGISTERED = False
 _FUSED_PRIMAL_REGISTERED = False
+_HYBRID_REGISTERED = False
 _RECORD_FORMAT_VERSION = 3
 
 
@@ -156,7 +159,7 @@ def _load_library() -> ctypes.CDLL | None:
 def _register_targets(*, strict: bool = False) -> bool:
     global _REGISTERED, _BIDIR_REGISTERED
     global _FLOAT64_REGISTERED, _FLOAT64_BIDIR_REGISTERED
-    global _FUSED_PRIMAL_REGISTERED
+    global _FUSED_PRIMAL_REGISTERED, _HYBRID_REGISTERED
     manifest = _load_build_manifest()
     if manifest is None:
         if strict:
@@ -227,6 +230,16 @@ def _register_targets(*, strict: bool = False) -> bool:
                 raise
         else:
             _FUSED_PRIMAL_REGISTERED = True
+    if not _HYBRID_REGISTERED and _HYBRID_FEATURE in manifest_features and hasattr(library, _HYBRID_TARGET):
+        try:
+            jax.ffi.register_ffi_target(_HYBRID_TARGET, jax.ffi.pycapsule(getattr(library, _HYBRID_TARGET)),
+                                        platform="CUDA")
+        except (AttributeError, RuntimeError, TypeError, ValueError, OSError):
+            _HYBRID_REGISTERED = False
+            if strict:
+                raise
+        else:
+            _HYBRID_REGISTERED = True
     return _REGISTERED
 
 
@@ -253,6 +266,10 @@ def extension_status() -> dict[str, Any]:
         bool(_FLOAT64_BIDIR_REGISTERED),
         "fused_primal_registered":
         bool(_FUSED_PRIMAL_REGISTERED),
+        "hybrid_registered":
+        bool(_HYBRID_REGISTERED),
+        "hybrid_feature":
+        bool(manifest is not None and _HYBRID_FEATURE in (manifest.get("features") or ())),
         "bidir_targets":
         tuple(target for target in _BIDIR_TARGETS if library is not None and hasattr(library, target)),
         "float64_targets":
@@ -327,6 +344,11 @@ def supported_fused_primal_configuration(
         _FUSED_PRIMAL_REGISTERED and jnp.dtype(conf.float_dtype) == jnp.float32
         and jnp.dtype(conf.pmid_dtype) == jnp.int16 and all(0 < value <= 32768 for value in mesh_shape)
     )
+
+
+def supported_hybrid_configuration(conf: Any, *, num_devices: int | None = None, mode: str | None = None) -> bool:
+    """Require the augmented incoming merge symbol as well as the fused ABI."""
+    return supported_fused_primal_configuration(conf, num_devices=num_devices, mode=mode) and _HYBRID_REGISTERED
 
 
 def requested_backend(conf: Any | None = None) -> str:
@@ -539,17 +561,20 @@ def route_merge_bidir_drift_primal_i16(
     stay_block_counts: jax.Array, stay_count: jax.Array, left_records: jax.Array, left_count: jax.Array,
     right_records: jax.Array, right_count: jax.Array, *, disp_size: float, global_nmesh: int,
     mesh_shape: tuple[int, int, int], owned_start: jax.Array, owned_end: jax.Array, slice_width: int, num_devices: int,
-    record_capacity: int, capacity: int,
+    record_capacity: int, capacity: int, augmented: bool = False,
 ) -> tuple[jax.Array, ...]:
     """Merge the fused route without particle-sized class, key, or index arrays."""
     _validate_fused_primal_arrays(pmid, disp, vel, valid)
     if not _FUSED_PRIMAL_REGISTERED:
         raise RuntimeError("the loaded PM++ CUDA routing library has no fused primal drift ABI")
+    if augmented and not _HYBRID_REGISTERED:
+        raise RuntimeError("the loaded PM++ CUDA routing library has no hybrid augmented-merge ABI")
     outputs = (
         _shape_dtype((capacity, 3), jnp.int16), _shape_dtype((capacity, 3), jnp.float32),
         _shape_dtype((capacity, 3), jnp.float32), _shape_dtype((capacity, ), jnp.bool_), _shape_dtype((), jnp.int32),
     )
-    return jax.ffi.ffi_call("pmpp_route_bidir_drift_merge_primal_i16", outputs)(
+    target = _HYBRID_TARGET if augmented else "pmpp_route_bidir_drift_merge_primal_i16"
+    return jax.ffi.ffi_call(target, outputs)(
         pmid, disp, vel, valid, jnp.asarray(drift_factor, dtype=jnp.float32), jnp.asarray(disp_size, dtype=jnp.float32),
         jnp.asarray(owned_start, dtype=jnp.int32), jnp.asarray(owned_end, dtype=jnp.int32), stay_block_counts,
         stay_count.astype(jnp.int32), left_records, left_count.astype(jnp.int32), right_records,
@@ -626,5 +651,5 @@ __all__ = [
     "route_merge_bidir_cuda", "route_merge_bidir_primal_i16", "route_pack_bidir_drift_primal_i16",
     "route_merge_bidir_drift_primal_i16", "route_offset_probe", "requested_backend", "route_transpose_scatter",
     "route_transpose_split", "supported_bidir_configuration", "supported_configuration",
-    "supported_fused_primal_configuration",
+    "supported_fused_primal_configuration", "supported_hybrid_configuration",
 ]

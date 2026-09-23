@@ -503,7 +503,7 @@ def test_cuda_build_target_selection_manifest_reuse_and_atomic_copy(tmp_path, mo
     payload = {
         "record_format_version": 3,
         "routing_key_format": "uint64_le_limbs",
-        "features": [build_cuda._FUSED_PRIMAL_FEATURE],
+        "features": [build_cuda._FUSED_PRIMAL_FEATURE, build_cuda._HYBRID_FEATURE],
         "routing_targets": sorted(build_cuda._REQUIRED_ROUTING_TARGETS),
         "pmpp_version": "0.1.6",
         "jaxlib_version": "0.9.1",
@@ -515,6 +515,9 @@ def test_cuda_build_target_selection_manifest_reuse_and_atomic_copy(tmp_path, mo
     manifest.write_text(json.dumps(payload), encoding="utf-8")
     assert not build_cuda._existing_artifact_matches(target, "80;90")
     payload["features"] = [build_cuda._FUSED_PRIMAL_FEATURE]
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    assert not build_cuda._existing_artifact_matches(target, "80;90")
+    payload["features"] = [build_cuda._FUSED_PRIMAL_FEATURE, build_cuda._HYBRID_FEATURE]
     payload["routing_targets"].remove("pmpp_route_merge_bidir_primal_i16")
     manifest.write_text(json.dumps(payload), encoding="utf-8")
     assert not build_cuda._existing_artifact_matches(target, "80;90")

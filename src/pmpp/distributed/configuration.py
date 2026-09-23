@@ -11,6 +11,7 @@ from jax.sharding import Mesh
 from .fft import create_batched_transposed_real_ffts, create_ffts, create_shared_gradient_fft
 from .cuda import requested_backend as requested_cuda_routing_backend
 from .cuda import supported_bidir_configuration as cuda_bidir_routing_supported
+from .cuda import supported_hybrid_configuration as cuda_hybrid_routing_supported
 from .cuda import supported_configuration as cuda_routing_supported
 from ..cic.gather import initialize_mGPU_gather
 from .routing import (
@@ -59,6 +60,10 @@ class MultiGPUConfiguration:
     mode: str | None = "mesh_halo"
     cuda_routing: bool | None = None
     cuda_routing_backend: str = "bidir_mergepath"
+    migration_policy: str = "neighbor_only"
+    far_send_capacity: int | None = None
+    far_recv_capacity: int | None = None
+    far_chunk_size: int | None = None
     store_particle_halos: bool = False
     ptcl_halo_width: int = 0
     mesh_halo_width: int = 0
@@ -145,6 +150,22 @@ def build_multigpu_configuration(
     mode = (runtime_seed.mode if runtime_seed is not None and runtime_seed.mode is not None else conf.multigpu_mode)
     if mode not in {"particle_halo", "mesh_halo"}:
         raise ValueError(f"Unsupported multigpu_mode={mode!r}. Expected 'particle_halo' or 'mesh_halo'.")
+    migration_policy = runtime_seed.migration_policy if runtime_seed is not None else "neighbor_only"
+    if migration_policy not in {"neighbor_only", "hybrid"}:
+        raise ValueError("migration_policy must be 'neighbor_only' or 'hybrid'.")
+    if migration_policy == "hybrid" and (mode != "mesh_halo" or conf.replicated_mesh or conf.static_mesh_halo_width):
+        raise ValueError("hybrid migration requires dynamic mesh_halo mode with a decomposed mesh.")
+    far_capacities = (
+        runtime_seed.far_send_capacity if runtime_seed is not None else None,
+        runtime_seed.far_recv_capacity if runtime_seed is not None else None,
+        runtime_seed.far_chunk_size if runtime_seed is not None else None,
+    )
+    if migration_policy == "hybrid" and num_devices >= 4:
+        for name, value in zip(("far_send_capacity", "far_recv_capacity", "far_chunk_size"), far_capacities):
+            if type(value) is not int or not 0 < value <= (1 << 31) - 1:
+                raise ValueError(f"hybrid migration requires an explicit positive int32 {name}.")
+        if far_capacities[2] > far_capacities[0]:
+            raise ValueError("far_chunk_size cannot exceed far_send_capacity.")
     requested_cuda_routing = (
         runtime_seed.cuda_routing if runtime_seed is not None and runtime_seed.cuda_routing is not None else False
     )
@@ -156,6 +177,14 @@ def build_multigpu_configuration(
         cuda_bidir_routing_supported if cuda_routing_backend == "bidir_mergepath" else cuda_routing_supported
     )
     cuda_routing = bool(requested_cuda_routing and routing_supported(conf, num_devices=num_devices, mode=mode))
+    if migration_policy == "hybrid" and num_devices >= 4 and not (
+        cuda_routing and cuda_routing_backend == "bidir_mergepath"
+        and cuda_hybrid_routing_supported(conf, num_devices=num_devices, mode=mode)
+    ):
+        raise ValueError(
+            "hybrid migration requires a qualified float32/int16 bidir_mergepath CUDA library "
+            "with the hybrid augmented-merge target."
+        )
 
     local_mesh_shape = (conf.mesh_shape[0] // num_devices, conf.mesh_shape[1], conf.mesh_shape[2])
     global_nMesh = conf.mesh_shape[0]
@@ -197,6 +226,11 @@ def build_multigpu_configuration(
         max_ptcl_per_slice = min(max_ptcl_per_slice, conf.ptcl_num)
 
     max_share_ptcl = min(conf.max_share_ptcl, max_ptcl_per_slice // 2)
+    if migration_policy == "hybrid" and num_devices >= 4:
+        if far_capacities[1] > (1 << 31) - 1 - max_share_ptcl:
+            raise ValueError("far_recv_capacity + max_share_ptcl exceeds int32 merge indexing.")
+        if far_capacities[1] > ((1 << 31) - 1) // 8 or far_capacities[2] > ((1 << 31) - 1) // 8:
+            raise ValueError("hybrid record buffers exceed int32 element indexing.")
     if conf.max_halo_share_ptcl is None:
         max_halo_share_ptcl = min(
             max_ptcl_per_slice, (max_ptcl_per_slice * ptcl_halo_width + local_mesh_shape[0] - 1) // local_mesh_shape[0],
@@ -211,6 +245,8 @@ def build_multigpu_configuration(
         compute_mesh=compute_mesh, num_devices=num_devices, devices=devices, devices_index=devices_index,
         local_mesh_shape=local_mesh_shape, local_mesh_with_halo_shape=local_mesh_with_halo_shape, mode=mode,
         cuda_routing=cuda_routing, cuda_routing_backend=cuda_routing_backend, store_particle_halos=store_particle_halos,
+        migration_policy=migration_policy, far_send_capacity=far_capacities[0],
+        far_recv_capacity=far_capacities[1], far_chunk_size=far_capacities[2],
         ptcl_halo_width=ptcl_halo_width, mesh_halo_width=mesh_halo_width,
         owned_slice_start=jnp.array(owned_slice_start), owned_slice_end=jnp.array(owned_slice_end),
         slice_start=jnp.array(halo_start)[:, 0],

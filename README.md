@@ -106,6 +106,7 @@ Useful entry points:
 - [User guide](https://pmpp-docs.readthedocs.io/en/latest/user_guide/index.html)
 - [How PM++ works](https://pmpp-docs.readthedocs.io/en/latest/internals/index.html)
 - [API reference](https://pmpp-docs.readthedocs.io/en/latest/api/index.html)
+- [Hybrid nonlocal migration and four-H100 validation](docs/hybrid_migration.md)
 
 ## Repository layout
 

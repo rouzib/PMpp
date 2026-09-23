@@ -71,7 +71,8 @@ def _write_manifest(build_dir: Path, python: str, architectures: str):
         3,
         "routing_key_format":
         "uint64_le_limbs",
-        "features": ["wide_keys", "int16_bidir", "lean_primal_merge", "fused_drift_primal_i16_f32", ],
+        "features": ["wide_keys", "int16_bidir", "lean_primal_merge", "fused_drift_primal_i16_f32",
+                     "hybrid_fused_drift_i16_f32"],
         "record_words_by_dtype": {
             "float32": 8,
             "float64": 14
@@ -86,7 +87,8 @@ def _write_manifest(build_dir: Path, python: str, architectures: str):
             "pmpp_route_transpose_split", "pmpp_route_transpose_scatter", "pmpp_route_bidir_pack",
             "pmpp_route_merge_bidir", "pmpp_route_bidir_pack_i16", "pmpp_route_merge_bidir_i16",
             "pmpp_route_merge_bidir_primal_i16", "pmpp_route_bidir_drift_pack_primal_i16",
-            "pmpp_route_bidir_drift_merge_primal_i16", "pmpp_route_pack_f64", "pmpp_route_merge_f64",
+            "pmpp_route_bidir_drift_merge_primal_i16", "pmpp_route_bidir_drift_merge_hybrid_primal_i16",
+            "pmpp_route_pack_f64", "pmpp_route_merge_f64",
             "pmpp_route_merge_aux_f64", "pmpp_route_transpose_split_f64", "pmpp_route_transpose_scatter_f64",
             "pmpp_route_bidir_pack_f64", "pmpp_route_merge_bidir_f64", "pmpp_route_bidir_pack_f64_i16",
             "pmpp_route_merge_bidir_f64_i16",

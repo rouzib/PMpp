@@ -10,6 +10,7 @@
 #include <cub/cub.cuh>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -932,7 +933,8 @@ __global__ void ScatterDriftStayKernelI16(
     const int32_t* owned_start_buffer, const int32_t* owned_end_buffer,
     int slice_width, int num_devices, const float* drift_factor_buffer,
     const float* disp_size_buffer, int mesh_x, int mesh_y, int mesh_z,
-    int record_capacity, int capacity, int16_t* out_pmid, float* out_disp,
+    int left_record_capacity, int right_record_capacity, int capacity,
+    int16_t* out_pmid, float* out_disp,
     float* out_vel, bool* out_valid) {
   using BlockScan = cub::BlockScan<uint32_t, kThreads>;
   __shared__ typename BlockScan::TempStorage scan_storage;
@@ -958,11 +960,11 @@ __global__ void ScatterDriftStayKernelI16(
   uint32_t left_count = left_signed <= 0
                             ? 0u
                             : min(static_cast<uint32_t>(left_signed),
-                                  static_cast<uint32_t>(record_capacity));
+                                  static_cast<uint32_t>(left_record_capacity));
   uint32_t right_count = right_signed <= 0
                              ? 0u
                              : min(static_cast<uint32_t>(right_signed),
-                                   static_cast<uint32_t>(record_capacity));
+                                   static_cast<uint32_t>(right_record_capacity));
   uint32_t output =
       stay_rank + LowerBoundRecordKeys<float>(left_records, left_count, key) +
       LowerBoundRecordKeys<float>(right_records, right_count, key);
@@ -991,7 +993,8 @@ __global__ void ScatterDriftIncomingKernelI16(
     const int32_t* owned_start_buffer, const int32_t* owned_end_buffer,
     int slice_width, int num_devices, const float* drift_factor_buffer,
     const float* disp_size_buffer, int mesh_x, int mesh_y, int mesh_z,
-    int record_capacity, int capacity, int16_t* out_pmid, float* out_disp,
+    int left_record_capacity, int right_record_capacity, int capacity,
+    int16_t* out_pmid, float* out_disp,
     float* out_vel, bool* out_valid) {
   uint32_t rank = static_cast<uint32_t>(blockIdx.x) * blockDim.x +
                   static_cast<uint32_t>(threadIdx.x);
@@ -1000,11 +1003,11 @@ __global__ void ScatterDriftIncomingKernelI16(
   uint32_t left_count = left_signed <= 0
                             ? 0u
                             : min(static_cast<uint32_t>(left_signed),
-                                  static_cast<uint32_t>(record_capacity));
+                                  static_cast<uint32_t>(left_record_capacity));
   uint32_t right_count = right_signed <= 0
                              ? 0u
                              : min(static_cast<uint32_t>(right_signed),
-                                   static_cast<uint32_t>(record_capacity));
+                                   static_cast<uint32_t>(right_record_capacity));
   uint32_t source_count = RightStream ? right_count : left_count;
   if (rank >= source_count) return;
 
@@ -1736,14 +1739,21 @@ ffi::Error RouteBidirDriftMergePrimalI16Impl(
     ffi::ResultBuffer<ffi::S32> out_count) {
   int n = static_cast<int>(pmid.element_count() / 3);
   int num_blocks = (n + kThreads - 1) / kThreads;
+  constexpr int kRecordWords = RecordTraits<float>::kRecordWords;
   if (n <= 0 || capacity < 0 || record_capacity < 0 ||
       global_nmesh <= 0 || num_devices < 2 || mesh_x <= 0 || mesh_y <= 0 ||
       mesh_z <= 0 || mesh_x > 32768 || mesh_y > 32768 || mesh_z > 32768 ||
       drift_factor.element_count() != 1 || disp_size.element_count() != 1 ||
-      stay_block_counts.element_count() != num_blocks) {
+      stay_block_counts.element_count() != num_blocks ||
+      left_records.element_count() !=
+          static_cast<size_t>(record_capacity) * kRecordWords ||
+      right_records.element_count() % kRecordWords != 0 ||
+      right_records.element_count() / kRecordWords > INT32_MAX) {
     return ffi::Error::InvalidArgument(
         "invalid fused-drift bidirectional route-merge shape or topology");
   }
+  int right_record_capacity =
+      static_cast<int>(right_records.element_count() / kRecordWords);
   auto stay_offsets_mem = scratch.Allocate(sizeof(uint32_t) * num_blocks,
                                            alignof(uint32_t));
   if (!stay_offsets_mem) {
@@ -1802,7 +1812,8 @@ ffi::Error RouteBidirDriftMergePrimalI16Impl(
       right_records.typed_data(), right_count.typed_data(), n, global_nmesh,
       owned_start.typed_data(), owned_end.typed_data(), slice_width,
       num_devices, drift_factor.typed_data(), disp_size.typed_data(), mesh_x,
-      mesh_y, mesh_z, record_capacity, capacity, out_pmid->typed_data(),
+      mesh_y, mesh_z, record_capacity, right_record_capacity, capacity,
+      out_pmid->typed_data(),
       out_disp->typed_data(), out_vel->typed_data(), out_valid->typed_data());
   if (cudaGetLastError() != cudaSuccess) {
     return ffi::Error::Internal("fused-drift stay scatter launch failed");
@@ -1817,8 +1828,11 @@ ffi::Error RouteBidirDriftMergePrimalI16Impl(
         global_nmesh, owned_start.typed_data(), owned_end.typed_data(),
         slice_width, num_devices, drift_factor.typed_data(),
         disp_size.typed_data(), mesh_x, mesh_y, mesh_z, record_capacity,
-        capacity, out_pmid->typed_data(), out_disp->typed_data(),
+        right_record_capacity, capacity, out_pmid->typed_data(), out_disp->typed_data(),
         out_vel->typed_data(), out_valid->typed_data());
+  }
+  if (right_record_capacity > 0) {
+    blocks = dim3((right_record_capacity + kThreads - 1) / kThreads);
     ScatterDriftIncomingKernelI16<true><<<blocks, kThreads, 0, stream>>>(
         pmid.typed_data(), disp.typed_data(), vel.typed_data(),
         valid.typed_data(), stay_block_counts.typed_data(), stay_offsets,
@@ -1827,7 +1841,7 @@ ffi::Error RouteBidirDriftMergePrimalI16Impl(
         global_nmesh, owned_start.typed_data(), owned_end.typed_data(),
         slice_width, num_devices, drift_factor.typed_data(),
         disp_size.typed_data(), mesh_x, mesh_y, mesh_z, record_capacity,
-        capacity, out_pmid->typed_data(), out_disp->typed_data(),
+        right_record_capacity, capacity, out_pmid->typed_data(), out_disp->typed_data(),
         out_vel->typed_data(), out_valid->typed_data());
     if (cudaGetLastError() != cudaSuccess) {
       return ffi::Error::Internal(
@@ -2227,6 +2241,43 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
     pmpp_route_bidir_drift_merge_primal_i16,
+    RouteBidirDriftMergePrimalI16,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Ctx<ffi::ScratchAllocator>()
+        .Attr<int32_t>("global_nmesh")
+        .Attr<int32_t>("mesh_x")
+        .Attr<int32_t>("mesh_y")
+        .Attr<int32_t>("mesh_z")
+        .Attr<int32_t>("slice_width")
+        .Attr<int32_t>("num_devices")
+        .Attr<int32_t>("record_capacity")
+        .Attr<int32_t>("capacity")
+        .Arg<ffi::Buffer<ffi::S16>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::PRED>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::U32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::U32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Arg<ffi::Buffer<ffi::U32>>()
+        .Arg<ffi::Buffer<ffi::S32>>()
+        .Ret<ffi::Buffer<ffi::S16>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::PRED>>()
+        .Ret<ffi::Buffer<ffi::S32>>());
+
+// The hybrid target shares the v3 record layout. Its right incoming stream
+// may be larger than the ordinary left stream; the handler validates both
+// shapes and derives the right capacity from its buffer extent.
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    pmpp_route_bidir_drift_merge_hybrid_primal_i16,
     RouteBidirDriftMergePrimalI16,
     ffi::Ffi::Bind()
         .Ctx<ffi::PlatformStream<cudaStream_t>>()
