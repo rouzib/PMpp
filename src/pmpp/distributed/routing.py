@@ -2336,7 +2336,7 @@ def move_particles_mesh_halo_fused_drift_low_memory_shard_map(
             global_nmesh=global_nMesh, mesh_shape=mesh_shape, owned_start=owned_start,
             owned_end=owned_end, slice_width=global_nMesh // num_gpus,
             num_devices=num_gpus, record_capacity=max_values_to_share,
-            capacity=pmid.shape[0], augmented=augmented,
+            capacity=pmid.shape[0], augmented=augmented, manual_axis_name=AXIS_NAME,
         )[:4]
 
     def failed_output(_):

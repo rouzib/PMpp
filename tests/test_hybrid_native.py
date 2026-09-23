@@ -232,7 +232,7 @@ def test_native_hybrid_full_nbody_gradient_matches_strict_without_far():
     def make_conf(hybrid):
         return Configuration(
             12.5, (8, 8, 8), mesh_shape=1, float_dtype=jnp.float32,
-            cosmo_dtype=jnp.float32,
+            cosmo_dtype=jnp.float64,
             multigpu=MultiGPUConfiguration(
                 compute_mesh=mesh, mode="mesh_halo", cuda_routing=True,
                 cuda_routing_backend="bidir_mergepath",
@@ -259,8 +259,9 @@ def test_native_hybrid_full_nbody_gradient_matches_strict_without_far():
 
         return jax.jit(jax.value_and_grad(loss))(particles.disp)
 
-    strict_loss, strict_grad = evaluate(make_conf(False))
-    hybrid_loss, hybrid_grad = evaluate(make_conf(True))
+    with jax.enable_x64():
+        strict_loss, strict_grad = evaluate(make_conf(False))
+        hybrid_loss, hybrid_grad = evaluate(make_conf(True))
     np.testing.assert_allclose(np.asarray(hybrid_loss), np.asarray(strict_loss), rtol=2e-4, atol=2e-5)
     np.testing.assert_allclose(np.asarray(hybrid_grad), np.asarray(strict_grad), rtol=5e-3, atol=5e-5)
     assert np.all(np.isfinite(np.asarray(hybrid_grad)))

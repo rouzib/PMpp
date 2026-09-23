@@ -15,6 +15,7 @@ from jax.sharding import Mesh, PartitionSpec as P
 
 from src.pmpp.core.utils import AXIS_NAME, build_ring_permutations
 from src.pmpp.distributed import routing
+from src.pmpp.distributed import cuda
 
 
 def _fake_pack(pmid, disp, vel, valid, factor, *, global_nmesh, mesh_shape,
@@ -140,3 +141,51 @@ def test_fused_dispatch_skips_sparse_transport_until_globally_needed(monkeypatch
         assert len(events) == expected_events
         assert int(np.sum(~np.asarray(result[4]))) == 16
     assert mapped._cache_size() == 1
+
+
+@pytest.mark.parametrize("augmented", [False, True])
+def test_native_ffi_merge_outputs_match_varying_failure_branch(monkeypatch, augmented):
+    """FFI outputs need an explicit manual-axis type before lax.cond."""
+    devices = jax.devices("cpu")
+    if len(devices) < 4:
+        pytest.skip("needs four logical CPU devices")
+    mesh = Mesh(np.asarray(devices[:4]), (AXIS_NAME,))
+    monkeypatch.setattr(cuda, "_FUSED_PRIMAL_REGISTERED", True)
+    monkeypatch.setattr(cuda, "_HYBRID_REGISTERED", True)
+
+    def fake_ffi_call(_target, outputs):
+        return lambda *args, **kwargs: tuple(jnp.zeros(spec.shape, spec.dtype) for spec in outputs)
+
+    monkeypatch.setattr(cuda.jax.ffi, "ffi_call", fake_ffi_call)
+
+    def route(pmid, disp, vel, valid):
+        result = cuda.route_merge_bidir_drift_primal_i16(
+            pmid, disp, vel, valid, jnp.float32(0),
+            jnp.zeros((1,), jnp.uint32), jnp.int32(1),
+            jnp.zeros((1, 8), jnp.uint32), jnp.int32(0),
+            jnp.zeros((2, 8), jnp.uint32), jnp.int32(0),
+            disp_size=1, global_nmesh=16, mesh_shape=(16, 16, 16),
+            owned_start=jnp.int32(0), owned_end=jnp.int32(4), slice_width=4,
+            num_devices=4, record_capacity=1, capacity=pmid.shape[0],
+            augmented=augmented, manual_axis_name=AXIS_NAME,
+        )
+        return jax.lax.cond(
+            jnp.bool_(False),
+            lambda _: (jnp.zeros_like(pmid), jnp.zeros_like(disp),
+                       jnp.zeros_like(vel), jnp.zeros_like(valid)),
+            lambda _: result[:4],
+            operand=None,
+        )
+
+    mapped = jax.jit(shard_map(
+        route, mesh=mesh,
+        in_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None),
+                  P(AXIS_NAME, None), P(AXIS_NAME)),
+        out_specs=(P(AXIS_NAME, None), P(AXIS_NAME, None),
+                   P(AXIS_NAME, None), P(AXIS_NAME)),
+    ))
+    result = mapped(jnp.zeros((8, 3), jnp.int16),
+                    jnp.zeros((8, 3), jnp.float32),
+                    jnp.zeros((8, 3), jnp.float32),
+                    jnp.ones((8,), jnp.bool_))
+    assert all(not np.any(np.asarray(value)) for value in result)

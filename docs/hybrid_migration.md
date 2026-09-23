@@ -58,13 +58,16 @@ failure, duplicate-key ordering, route transpose, reverse reconstruction, and
 near/far/near dispatch through one compiled callable. Test instrumentation
 observed no exceptional callback in the two near calls and one on each of four
 shards in the far call. Shard-map replication checking was enabled. The focused
-hybrid suite passed 19 tests; the existing routing/capacity suite passed 21.
-The native four-GPU tests are present but have not run on this machine: it has
-two RTX 3090s and no `nvcc` on PATH. CPU tests do not establish native CUDA
-correctness, no-far overhead, scratch usage, or H100 performance. Keep hybrid
-opt-in until all target-node gates below pass. The source changes preserve
-record format v3; the new manifest feature and target prevent a stale library
-from qualifying.
+hybrid suite passed 21 logical CPU tests, including checks that native-like FFI
+merge outputs satisfy both strict and hybrid conditional axis types.
+An initial four-H100 run with JAX 0.10.2 built and registered the native ABI,
+but tests and benchmarks stopped during tracing on a manual-axis type mismatch
+in the FFI merge result. The follow-up explicitly marks that result varying;
+native execution has not yet been requalified. The local machine has two RTX
+3090s and no `nvcc` on PATH. CPU tests do not establish native CUDA correctness,
+no-far overhead, scratch usage, or H100 performance. Keep hybrid opt-in until
+all target-node gates below pass. The source changes preserve record format v3;
+the new manifest feature and target prevent a stale library from qualifying.
 
 ## Four-H100 node: build and correctness gates
 

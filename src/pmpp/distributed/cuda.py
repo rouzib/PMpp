@@ -561,9 +561,13 @@ def route_merge_bidir_drift_primal_i16(
     stay_block_counts: jax.Array, stay_count: jax.Array, left_records: jax.Array, left_count: jax.Array,
     right_records: jax.Array, right_count: jax.Array, *, disp_size: float, global_nmesh: int,
     mesh_shape: tuple[int, int, int], owned_start: jax.Array, owned_end: jax.Array, slice_width: int, num_devices: int,
-    record_capacity: int, capacity: int, augmented: bool = False,
+    record_capacity: int, capacity: int, augmented: bool = False, manual_axis_name: str | None = None,
 ) -> tuple[jax.Array, ...]:
-    """Merge the fused route without particle-sized class, key, or index arrays."""
+    """Merge the fused route without particle-sized class, key, or index arrays.
+
+    The FFI result has no manual-axis variance annotation. Mark it varying
+    when called from shard_map because every rank produces its own state.
+    """
     _validate_fused_primal_arrays(pmid, disp, vel, valid)
     if not _FUSED_PRIMAL_REGISTERED:
         raise RuntimeError("the loaded PM++ CUDA routing library has no fused primal drift ABI")
@@ -574,7 +578,7 @@ def route_merge_bidir_drift_primal_i16(
         _shape_dtype((capacity, 3), jnp.float32), _shape_dtype((capacity, ), jnp.bool_), _shape_dtype((), jnp.int32),
     )
     target = _HYBRID_TARGET if augmented else "pmpp_route_bidir_drift_merge_primal_i16"
-    return jax.ffi.ffi_call(target, outputs)(
+    result = jax.ffi.ffi_call(target, outputs)(
         pmid, disp, vel, valid, jnp.asarray(drift_factor, dtype=jnp.float32), jnp.asarray(disp_size, dtype=jnp.float32),
         jnp.asarray(owned_start, dtype=jnp.int32), jnp.asarray(owned_end, dtype=jnp.int32), stay_block_counts,
         stay_count.astype(jnp.int32), left_records, left_count.astype(jnp.int32), right_records,
@@ -582,6 +586,9 @@ def route_merge_bidir_drift_primal_i16(
         mesh_y=np.int32(mesh_shape[1]), mesh_z=np.int32(mesh_shape[2]), slice_width=np.int32(slice_width),
         num_devices=np.int32(num_devices), record_capacity=np.int32(record_capacity), capacity=np.int32(capacity),
     )
+    if manual_axis_name is not None:
+        return tuple(jax.lax.pcast(value, manual_axis_name, to="varying") for value in result)
+    return result
 
 
 def route_merge(
