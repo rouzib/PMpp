@@ -76,6 +76,22 @@ peak device memory. The four-process smoke test did not start because its Slurm
 step requested an untyped GPU within a typed H100 allocation; the command below
 now uses `h100:1`.
 
+On the same four-H100 node, JAX 0.9.1 passed the standalone JAX all-to-all check
+that failed with JAX 0.10.2. The rerun passed 18 tests in the hybrid group
+(12 skipped), 42 routing tests, six gradient tests, the N-body gradient script, and
+14 performance regression tests. The four-process smoke script stopped before
+routing because it queried FFI registration before configuration construction;
+that ordering is now corrected, but the distributed run remains unqualified.
+The JAX 0.9.1 route-only medians were 1.58 ms strict, 2.05 ms no-far hybrid,
+3.89 ms sparse hybrid, and 2.78 ms dense hybrid. The no-far case was about 30%
+slower than strict in this run and used 5.16 MB versus 0.40 MB of compiled
+temporary memory. This does not meet the ordinary-step speed target. Repeat
+measurements and full forward/gradient comparisons are needed before considering
+hybrid a production default. A follow-up keeps the no-far route at one
+conditional and places the second conditional only on exceptional or failed
+steps. It passed 45 focused logical CPU tests; its H100 latency and compiled
+memory have not yet been measured.
+
 The local machine has two RTX 3090s and no `nvcc` on PATH. CPU tests do not
 establish native CUDA correctness, no-far overhead, scratch usage, or H100
 performance. Keep hybrid opt-in until all target-node gates below pass. The

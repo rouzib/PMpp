@@ -29,8 +29,6 @@ def main():
     devices = jax.devices("gpu")
     if len(devices) != 4 or jax.local_device_count() != 1:
         raise RuntimeError(f"expected four ranks with one GPU each: {devices}")
-    if not extension_status()["hybrid_registered"]:
-        raise RuntimeError("qualified hybrid native ABI is unavailable")
     mesh = Mesh(np.asarray(devices), (AXIS_NAME,))
     conf = Configuration(
         1.0, (16, 16, 16), mesh_shape=1, float_dtype=jnp.float32,
@@ -42,6 +40,14 @@ def main():
         max_ptcl_per_slice=8, max_share_ptcl=4,
         max_halo_share_ptcl=4, max_share_gather_ptcl=4,
     )
+    # Configuration construction registers the native FFI targets. A status
+    # query before that point reports a valid but not-yet-registered library.
+    status = extension_status()
+    if not status["hybrid_registered"]:
+        raise RuntimeError(
+            "qualified hybrid native ABI is unavailable after configuration: "
+            f"library={status['library']}, hybrid_feature={status['hybrid_feature']}"
+        )
 
     pmid = np.zeros((8, 3), np.int16)
     disp = np.zeros((8, 3), np.float32)

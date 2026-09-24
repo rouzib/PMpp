@@ -2397,10 +2397,14 @@ def move_particles_mesh_halo_fused_drift_low_memory_shard_map(
 
             return jax.lax.cond(failed, failed_exception, complete, operand=None)
 
+        def exceptional_or_failed(_):
+            return jax.lax.cond(global_overflow, failed_output, exceptional_output, operand=None)
+
+        # Keep the ordinary path at one conditional, as in the strict policy.
+        # The second conditional executes only when there is an exceptional
+        # candidate or a global capacity failure.
         routed = jax.lax.cond(
-            global_overflow, failed_output,
-            lambda _: jax.lax.cond(candidate_present, exceptional_output, ordinary_output, operand=None),
-            operand=None,
+            global_overflow | candidate_present, exceptional_or_failed, ordinary_output, operand=None,
         )
     else:
         routed = jax.lax.cond(
