@@ -269,6 +269,11 @@ storage, 2,000,000 neighbor shares, 1,000,000 far sends and receives, and
 16,384-record far chunks. These are starting bounds, not claims about the
 traffic in a 5 Mpc/h box. The runner fails if routing reports invalid traffic,
 an overflow is raised, the density is nonfinite, or mass is not conserved.
+N-body routing returns one replicated failure status to the host. On failure,
+all devices skip the remaining solver work and the host raises a
+`ParticleRoutingFailure` with the failing step, migration count, invalid
+candidate count, last good occupancy, and configured capacities. A migration
+count alone does not identify which bound failed.
 It writes a phase-by-phase JSON report, a full 256-cubed density `.npy`, and
 an x-axis projection `.npy`. The density copy and file writes happen after
 the timed simulation stages. Each stage time includes its first-call JAX
@@ -285,9 +290,21 @@ export PMPP_CUDA_ROUTING_MANIFEST="$PWD/cuda/build-hybrid-h100/pmpp_cuda_routing
 mkdir -p results/hybrid
 srun --export=ALL --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
   timeout 7200 python -u scripts/run_hybrid_256_box5.py \
+  --npart 256 --box-size 5 --nbody-steps 63 --seed 0 \
+  --sigma8 0.80 --n-s 0.96 --omega-m 0.30 --omega-b 0.05 --h 0.70 \
+  --max-ptcl-factor 1.5 --max-share-ptcl 2000000 \
+  --far-send-capacity 1000000 --far-recv-capacity 1000000 \
+  --far-chunk-size 16384 \
   --output results/hybrid/full256-box5-hybrid.json \
   2>&1 | tee results/hybrid/full256-box5-hybrid.log
 ```
+
+All values above are command-line options. To specify an exact per-GPU
+particle slot count, use `--max-ptcl-per-slice N`; it overrides
+`--max-ptcl-factor`. Other adjustable bounds are `--max-halo-share-ptcl`,
+`--max-share-gather-ptcl`, and `--lpt-share-multiplier`. The scale-factor
+interval (`--a-start`, `--a-stop`), `--lpt-order`, and `--mesh-shape` are also
+configurable. Keep the output name unique between runs.
 
 The result must report `"status": "ok"`, zero LPT and N-body invalid counts,
 finite density, and mass within tolerance. A capacity failure requires a new

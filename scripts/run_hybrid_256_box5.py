@@ -40,7 +40,16 @@ def arguments():
     parser.add_argument("--a-stop", type=float, default=1.0)
     parser.add_argument("--nbody-steps", type=int, default=63)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--sigma8", type=float, default=0.80)
+    parser.add_argument("--n-s", type=float, default=0.96)
+    parser.add_argument("--omega-m", type=float, default=0.30)
+    parser.add_argument("--omega-b", type=float, default=0.05)
+    parser.add_argument("--h", type=float, default=0.70)
+    parser.add_argument("--lpt-order", type=int, choices=(1, 2), default=2)
+    parser.add_argument("--mesh-shape", type=int, default=1)
     parser.add_argument("--max-ptcl-factor", type=float, default=1.5)
+    parser.add_argument("--max-ptcl-per-slice", type=int, default=None,
+                        help="Explicit particle slots per GPU; overrides --max-ptcl-factor")
     parser.add_argument("--max-share-ptcl", type=int, default=2_000_000)
     parser.add_argument("--lpt-share-multiplier", type=float, default=1.5)
     parser.add_argument("--max-halo-share-ptcl", type=int, default=1_000_000)
@@ -54,6 +63,13 @@ def arguments():
         parser.error("npart must be positive, fit int16, and be divisible by devices")
     if args.devices < 1 or args.box_size <= 0 or args.max_ptcl_factor < 1:
         parser.error("devices and box-size must be positive; max-ptcl-factor must be >= 1")
+    if args.max_ptcl_per_slice is not None and args.max_ptcl_per_slice < args.npart**3 // args.devices:
+        parser.error("max-ptcl-per-slice must hold at least the initial particles per GPU")
+    if not (args.sigma8 > 0 and args.n_s > 0 and args.h > 0 and
+            0 < args.omega_b < args.omega_m < 1):
+        parser.error("require sigma8, n-s, h > 0 and 0 < omega-b < omega-m < 1")
+    if args.mesh_shape < 1:
+        parser.error("mesh-shape must be positive")
     if not 0 < args.a_start < args.a_stop or args.nbody_steps < 1:
         parser.error("require 0 < a-start < a-stop and positive nbody-steps")
     if args.max_share_ptcl < 1 or args.max_halo_share_ptcl < 1 or args.max_share_gather_ptcl < 1:
@@ -141,15 +157,15 @@ def run(args, report):
 
     mesh = create_compute_mesh(devices)
     local_particles = args.npart**3 // args.devices
-    capacity = math.ceil(local_particles * args.max_ptcl_factor)
+    capacity = args.max_ptcl_per_slice or math.ceil(local_particles * args.max_ptcl_factor)
     enable_x64 = getattr(jax, "enable_x64", None)
     if enable_x64 is None:
         enable_x64 = jax.experimental.enable_x64
     with enable_x64():
         conf = Configuration(
             args.box_size / args.npart, (args.npart,) * 3,
-            mesh_shape=1, float_dtype=jnp.float32, cosmo_dtype=jnp.float64,
-            lpt_order=2, lpt_cache_strains=False,
+            mesh_shape=args.mesh_shape, float_dtype=jnp.float32, cosmo_dtype=jnp.float64,
+            lpt_order=args.lpt_order, lpt_cache_strains=False,
             a_start=args.a_start, a_stop=args.a_stop,
             a_nbody_maxstep=(args.a_stop - args.a_start) / args.nbody_steps,
             nbody_cosmo_grad=False, pallas_cic=args.pallas_cic,
@@ -196,8 +212,8 @@ def run(args, report):
             "max_halo_share_ptcl_actual": int(conf.max_halo_share_ptcl),
             "max_share_gather_ptcl_actual": int(conf.max_share_gather_ptcl),
             "particle_spacing_mpc_h": float(conf.ptcl_spacing),
-            "cosmology": {"sigma8": 0.80, "n_s": 0.96, "Omega_m": 0.30,
-                          "Omega_b": 0.05, "h": 0.70},
+            "cosmology": {"sigma8": args.sigma8, "n_s": args.n_s, "Omega_m": args.omega_m,
+                          "Omega_b": args.omega_b, "h": args.h},
         }
         save_report(args.output, report)
 
@@ -215,8 +231,8 @@ def run(args, report):
             return value
 
         cosmo = stage("cosmology", lambda: boltzmann(Cosmology.from_sigma8(
-            conf, sigma8=0.80, n_s=0.96, Omega_m=0.30,
-            Omega_b=0.05, h=0.70), conf))
+            conf, sigma8=args.sigma8, n_s=args.n_s, Omega_m=args.omega_m,
+            Omega_b=args.omega_b, h=args.h), conf))
         seed = jax.device_put(jnp.asarray(args.seed, dtype=jnp.int32), NamedSharding(mesh, P()))
         modes = stage("white_noise", lambda: white_noise(seed, conf))
         modes = stage("linear_modes", lambda: linear_modes(modes, cosmo, conf))

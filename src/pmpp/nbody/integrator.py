@@ -377,8 +377,8 @@ def drift_for_force(
     return ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=acc, halo_mask=halo_mask, unused_index=unused_indexes)
 
 
-def drift_for_force_low_memory(a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configuration):
-    """Apply one production fused drift-route and return scalar diagnostics.
+def _drift_for_force_low_memory_status(a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configuration):
+    """Apply one fused drift-route and return its replicated failure status.
 
     The distributed path accepts the pre-drift displacement, velocity, and a
     scalar drift factor.  CUDA therefore computes both ownership and the
@@ -389,7 +389,7 @@ def drift_for_force_low_memory(a_vel, a_prev, a_next, ptcl: Particles, cosmo, co
     factor = drift_factor(a_vel, a_prev, a_next, cosmo, conf).astype(conf.float_dtype)
     mover = getattr(conf, "mGPU_halo_moving_low_memory", None)
     if not conf.use_mGPU:
-        return ptcl.replace(disp=ptcl.disp + ptcl.vel * factor), jnp.int32(0), jnp.int32(0)
+        return ptcl.replace(disp=ptcl.disp + ptcl.vel * factor), jnp.int32(0), jnp.int32(0), jnp.bool_(False)
     if mover is None:
         raise RuntimeError(
             "distributed low-memory N-body requires the fused native drift-route target; fallback is disabled"
@@ -398,15 +398,23 @@ def drift_for_force_low_memory(a_vel, a_prev, a_next, ptcl: Particles, cosmo, co
     pmid, disp, vel, halo_mask, unused_indexes, has_failed, max_ptcl_moved, invalid_count = mover(
         ptcl.pmid, ptcl.disp, ptcl.vel, factor, ptcl.unused_index,
     )
-    _assert_halo_move_succeeded(has_failed, max_ptcl_moved)
     # Acceleration is dead at this point and every component is overwritten by
     # the immediately following streamed force.  Carrying the old allocation
     # lets the force loop reuse it without routing or zero-filling 3*capacity
     # floating-point values.
     return (
         ptcl.replace(pmid=pmid, disp=disp, vel=vel, acc=ptcl.acc, halo_mask=halo_mask, unused_index=unused_indexes,
-                     ), max_ptcl_moved, invalid_count,
+                     ), max_ptcl_moved, invalid_count, has_failed,
     )
+
+
+def drift_for_force_low_memory(a_vel, a_prev, a_next, ptcl: Particles, cosmo, conf: Configuration):
+    """Apply one fused drift-route, preserving the direct-call failure contract."""
+    ptcl, moved, invalid, failed = _drift_for_force_low_memory_status(
+        a_vel, a_prev, a_next, ptcl, cosmo, conf,
+    )
+    _assert_halo_move_succeeded(failed, moved)
+    return ptcl, moved, invalid
 
 
 def drift_adj(a_vel, a_prev, a_next, ptcl, ptcl_cot, cosmo, cosmo_cot, conf):
@@ -776,29 +784,48 @@ def integrate(a_prev, a_next, ptcl, cosmo, conf, correction=None, *, streamed_gr
 
 
 def integrate_low_memory(a_prev, a_next, ptcl, cosmo, conf):
-    """Advance one uncorrected macro-step through the fused forward path."""
+    """Advance one macro-step, skipping later collectives after route failure."""
     D = K = 0
     a_disp = a_vel = a_acc = a_prev
     max_particles_moved = jnp.int32(0)
     max_invalid_count = jnp.int32(0)
+    failed = jnp.bool_(False)
     for d, k in conf.symp_splits:
         if d != 0:
             D += d
             a_disp_next = a_prev * (1 - D) + a_next * D
-            ptcl, moved, invalid = drift_for_force_low_memory(a_vel, a_disp, a_disp_next, ptcl, cosmo, conf, )
-            max_particles_moved = jnp.maximum(max_particles_moved, moved)
-            max_invalid_count = jnp.maximum(max_invalid_count, invalid)
+
+            def advance(state):
+                current, max_moved, max_invalid, _ = state
+                routed, moved, invalid, route_failed = _drift_for_force_low_memory_status(
+                    a_vel, a_disp, a_disp_next, current, cosmo, conf,
+                )
+                # Every shard receives the same route_failed predicate. No
+                # force collective can start after a failed route on any GPU.
+                next_ptcl = jax.lax.cond(
+                    route_failed, lambda value: value,
+                    lambda value: force(a_disp_next, value, cosmo, conf, streamed_gravity=True), routed,
+                )
+                return (next_ptcl, jnp.maximum(max_moved, moved),
+                        jnp.maximum(max_invalid, invalid), route_failed)
+
+            ptcl, max_particles_moved, max_invalid_count, failed = jax.lax.cond(
+                failed, lambda state: state, advance,
+                (ptcl, max_particles_moved, max_invalid_count, failed),
+            )
             a_disp = a_disp_next
-            ptcl = force(a_disp, ptcl, cosmo, conf, streamed_gravity=True)
             a_acc = a_disp
 
         if k != 0:
             K += k
             a_vel_next = a_prev * (1 - K) + a_next * K
-            ptcl = kick(a_acc, a_vel, a_vel_next, ptcl, cosmo, conf)
+            ptcl = jax.lax.cond(
+                failed, lambda value: value,
+                lambda value: kick(a_acc, a_vel, a_vel_next, value, cosmo, conf), ptcl,
+            )
             a_vel = a_vel_next
 
-    return ptcl, max_particles_moved, max_invalid_count
+    return ptcl, max_particles_moved, max_invalid_count, failed
 
 
 def _integrate_stage_schedule(a_prev, a_next, conf):

@@ -279,21 +279,37 @@ def _nbody_low_memory_impl(ptcl, cosmo, conf, reverse=False, correction=None):
     max_occupancy = _max_authoritative_occupancy(ptcl, conf)
     max_migration = jnp.int32(0)
     max_invalid_count = jnp.int32(0)
+    failed = jnp.bool_(False)
+    failed_step = jnp.int32(-1)
     ptcl = force(a[0], ptcl, cosmo, conf, correction=correction, streamed_gravity=True)
 
     def body(carry, ab):
-        ptcl_state, high_water, migration_high_water, invalid_high_water = carry
-        a_prev, a_next = ab
-        ptcl_state, moved, invalid = integrate_low_memory(a_prev, a_next, ptcl_state, cosmo, conf)
-        high_water = jnp.maximum(high_water, _max_authoritative_occupancy(ptcl_state, conf))
-        migration_high_water = jnp.maximum(migration_high_water, moved)
-        invalid_high_water = jnp.maximum(invalid_high_water, invalid)
-        return (ptcl_state, high_water, migration_high_water, invalid_high_water), None
+        a_prev, a_next, step_index = ab
 
-    (ptcl, max_occupancy, max_migration,
-     max_invalid_count), _ = lax.scan(body, (ptcl, max_occupancy, max_migration, max_invalid_count), (a[:-1], a[1:]),
-                                      )
-    return ptcl, max_occupancy, max_migration, max_invalid_count
+        def advance(state):
+            ptcl_state, high_water, migration_high_water, invalid_high_water, _, _ = state
+            ptcl_state, moved, invalid, step_failed = integrate_low_memory(
+                a_prev, a_next, ptcl_state, cosmo, conf,
+            )
+            # The failure result is a sentinel, so do not measure its occupancy.
+            high_water = lax.cond(
+                step_failed, lambda _: high_water,
+                lambda _: jnp.maximum(high_water, _max_authoritative_occupancy(ptcl_state, conf)),
+                operand=None,
+            )
+            return (ptcl_state, high_water, jnp.maximum(migration_high_water, moved),
+                    jnp.maximum(invalid_high_water, invalid), step_failed,
+                    jnp.where(step_failed, step_index, jnp.int32(-1)))
+
+        # Every shard sees the same failure flag. Once set, all remaining scan
+        # iterations skip routing and force collectives together.
+        return lax.cond(carry[4], lambda state: state, advance, carry), None
+
+    (ptcl, max_occupancy, max_migration, max_invalid_count, failed, failed_step), _ = lax.scan(
+        body, (ptcl, max_occupancy, max_migration, max_invalid_count, failed, failed_step),
+        (a[:-1], a[1:], jnp.arange(a.shape[0] - 1, dtype=jnp.int32)),
+    )
+    return ptcl, max_occupancy, max_migration, max_invalid_count, failed, failed_step
 
 
 def _nbody_remat_impl(ptcl, cosmo, conf, reverse=False, correction=None):
@@ -376,10 +392,10 @@ def _nbody_low_memory_flat_impl(
     """Jitted flat bridge for the forward-only low-memory solver."""
     cosmo = _state_to_cosmo(conf, cosmo_state)
     ptcl_in = _state_to_ptcl(conf, (pmid, disp, vel, acc, unused_index, halo_mask, attr))
-    ptcl_out, max_occupancy, max_migration, max_invalid_count = _nbody_low_memory_impl(
+    ptcl_out, max_occupancy, max_migration, max_invalid_count, failed, failed_step = _nbody_low_memory_impl(
         ptcl_in, cosmo, conf, reverse=reverse, correction=correction,
     )
-    return _ptcl_state(ptcl_out), max_occupancy, max_migration, max_invalid_count
+    return _ptcl_state(ptcl_out), max_occupancy, max_migration, max_invalid_count, failed, failed_step
 
 
 def nbody_adj(ptcl, ptcl_cot, cosmo, conf, reverse=False, correction=None):
@@ -556,6 +572,10 @@ def _nbody_low_memory_state_bwd(conf, reverse, _res, _cotangents):
 _nbody_low_memory_state.defvjp(_nbody_low_memory_state_fwd, _nbody_low_memory_state_bwd)
 
 
+class ParticleRoutingFailure(RuntimeError):
+    """A replicated route failure reported after all N-body devices finish."""
+
+
 def nbody_low_memory(ptcl, cosmo, conf, reverse=False, correction=None):
     """Advance particles with sequential component FFTs and no AD contract.
 
@@ -578,13 +598,33 @@ def nbody_low_memory_with_occupancy(ptcl, cosmo, conf, reverse=False, correction
 
 
 def nbody_low_memory_with_telemetry(ptcl, cosmo, conf, reverse=False, correction=None):
-    """Run low-memory N-body and return occupancy and routing high-waters."""
+    """Run low-memory N-body and report routing failure after device sync."""
     _validate_low_memory_nbody(conf, reverse, correction)
     cosmo_state = _cosmo_state(cosmo)
-    state_out, max_occupancy, max_migration, max_invalid_count = _nbody_low_memory_state(
+    state_out, max_occupancy, max_migration, max_invalid_count, failed, failed_step = _nbody_low_memory_state(
         conf, reverse, ptcl.pmid, ptcl.unused_index, ptcl.halo_mask, ptcl.attr, ptcl.disp, ptcl.vel, ptcl.acc,
         cosmo_state, correction,
     )
+    if isinstance(failed, jax.core.Tracer):
+        raise RuntimeError(
+            "nbody_low_memory must be called outside an outer JAX transform so all devices can "
+            "synchronize routing status before a host exception"
+        )
+    failed_host, step_host, occupancy_host, moved_host, invalid_host = jax.device_get(
+        (failed, failed_step, max_occupancy, max_migration, max_invalid_count),
+    )
+    if bool(failed_host):
+        runtime = getattr(conf, "multigpu", None)
+        raise ParticleRoutingFailure(
+            "Particle routing failed after synchronized N-body step "
+            f"{int(step_host) + 1}; max_particles_moved={int(moved_host)}, "
+            f"invalid_candidates={int(invalid_host)}, "
+            f"last_good_max_occupancy={int(occupancy_host)}; "
+            f"max_ptcl_per_slice={conf.max_ptcl_per_slice}, max_share_ptcl={conf.max_share_ptcl}, "
+            f"far_send_capacity={getattr(runtime, 'far_send_capacity', None)}, "
+            f"far_recv_capacity={getattr(runtime, 'far_recv_capacity', None)}. "
+            "The route may have exceeded a capacity or encountered invalid destinations."
+        )
     return _state_to_ptcl(conf, state_out), max_occupancy, max_migration, max_invalid_count
 
 
