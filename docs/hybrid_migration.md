@@ -89,8 +89,13 @@ temporary memory. This does not meet the ordinary-step speed target. Repeat
 measurements and full forward/gradient comparisons are needed before considering
 hybrid a production default. A follow-up keeps the no-far route at one
 conditional and places the second conditional only on exceptional or failed
-steps. It passed 45 focused logical CPU tests; its H100 latency and compiled
-memory have not yet been measured.
+steps. It passed 45 focused logical CPU tests. On a different four-H100 node,
+100-iteration medians were 2.73 ms strict and 2.01 ms no-far hybrid. The strict
+median changed substantially between nodes, so the speed difference is not yet
+a stable conclusion. Compiled temporary memory remained 0.40 MB strict versus
+5.16 MB hybrid. The four-process smoke now reaches routing, but fails in NCCL
+with `invalid device ordinal`. A standalone four-process JAX collective
+diagnostic is provided below to isolate the launcher/runtime from native routing.
 
 The local machine has two RTX 3090s and no `nvcc` on PATH. CPU tests do not
 establish native CUDA correctness, no-far overhead, scratch usage, or H100
@@ -146,6 +151,18 @@ export PMPP_COORDINATOR_ADDRESS="$(hostname -s):12355"
 srun --ntasks=4 --gpus-per-task=h100:1 --gpu-bind=single:1 --kill-on-bad-exit=0 \
   timeout 300 python scripts/test_hybrid_distributed.py
 ```
+
+If that step fails in NCCL, run the same four-process launcher without PM++:
+
+```bash
+srun --ntasks=4 --gpus-per-task=h100:1 --gpu-bind=single:1 --kill-on-bad-exit=0 \
+  timeout 300 python scripts/diagnose_jax_distributed.py
+```
+
+The diagnostic prints each rank's visible devices and tests a JAX ring
+permutation and all-to-all. A failure there indicates that the launcher or JAX
+collective runtime needs attention before the PM++ distributed smoke can
+qualify. A pass narrows the remaining issue to the PM++ route or native ABI.
 
 Use a free coordinator port and adjust the GPU binding flag if the site's
 Slurm configuration requires it. A single process over four GPUs cannot
