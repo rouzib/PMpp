@@ -61,13 +61,26 @@ shards in the far call. Shard-map replication checking was enabled. The focused
 hybrid suite passed 21 logical CPU tests, including checks that native-like FFI
 merge outputs satisfy both strict and hybrid conditional axis types.
 An initial four-H100 run with JAX 0.10.2 built and registered the native ABI,
-but tests and benchmarks stopped during tracing on a manual-axis type mismatch
-in the FFI merge result. The follow-up explicitly marks that result varying;
-native execution has not yet been requalified. The local machine has two RTX
-3090s and no `nvcc` on PATH. CPU tests do not establish native CUDA correctness,
-no-far overhead, scratch usage, or H100 performance. Keep hybrid opt-in until
-all target-node gates below pass. The source changes preserve record format v3;
-the new manifest feature and target prevent a stale library from qualifying.
+but stopped during tracing on a manual-axis type mismatch in the FFI merge
+result. The follow-up explicitly marks that result varying. A subsequent H100
+run passed 16 hybrid tests, failed one capacity test because its requested chunk
+exceeded its send capacity, and failed the full N-body test with an NCCL
+`ncclAlltoAll` runtime error. The capacity test setup is now corrected. The
+same NCCL error affected separate LPT, gravity, N-body, and FFT tests, so its
+cause remains unresolved. The four routing microbenchmarks completed; their
+single-run medians were 3.12 ms for strict, 2.43 ms for hybrid with no far
+particles, 3.42 ms for sparse far traffic, and 2.83 ms for dense far traffic.
+Compiled temporary memory was 0.40 MB for strict and 5.16 MB for hybrid in this
+small case. These measurements do not establish full-simulation performance or
+peak device memory. The four-process smoke test did not start because its Slurm
+step requested an untyped GPU within a typed H100 allocation; the command below
+now uses `h100:1`.
+
+The local machine has two RTX 3090s and no `nvcc` on PATH. CPU tests do not
+establish native CUDA correctness, no-far overhead, scratch usage, or H100
+performance. Keep hybrid opt-in until all target-node gates below pass. The
+source changes preserve record format v3; the new manifest feature and target
+prevent a stale library from qualifying.
 
 ## Four-H100 node: build and correctness gates
 
@@ -114,7 +127,7 @@ above in the batch job, then run:
 
 ```bash
 export PMPP_COORDINATOR_ADDRESS="$(hostname -s):12355"
-srun --ntasks=4 --gpus-per-task=1 --gpu-bind=single:1 --kill-on-bad-exit=1 \
+srun --ntasks=4 --gpus-per-task=h100:1 --gpu-bind=single:1 --kill-on-bad-exit=0 \
   timeout 300 python scripts/test_hybrid_distributed.py
 ```
 
@@ -125,6 +138,20 @@ gradient and LPT tests in that distributed setup as well. If the
 scientific workflow uses 16 or 32 GPUs, repeat the small sparse case there
 before the 1024-cubed run. Test a reordered logical device mesh and asymmetric
 source/receiver counts at the target topology.
+
+If the LPT, gravity, or FFT tests fail with an NCCL `ncclAlltoAll` error, run a
+standalone four-device JAX collective in the same allocation to separate the
+collective runtime from PM++ code:
+
+```bash
+export NCCL_DEBUG=INFO
+srun --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
+  python scripts/diagnose_jax_alltoall.py
+```
+
+Keep the NCCL log and the test log. A failing standalone collective does not
+qualify the FFT or full N-body path; a passing one narrows the issue to the
+distributed FFT or its sharding configuration.
 
 ## Four-H100 node: performance and memory gates
 

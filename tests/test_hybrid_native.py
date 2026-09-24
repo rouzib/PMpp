@@ -47,7 +47,7 @@ def _configuration(*, hybrid, far_send_capacity=8, far_recv_capacity=8):
             migration_policy="hybrid" if hybrid else "neighbor_only",
             far_send_capacity=far_send_capacity if hybrid else None,
             far_recv_capacity=far_recv_capacity if hybrid else None,
-            far_chunk_size=2 if hybrid else None,
+            far_chunk_size=min(2, far_send_capacity) if hybrid else None,
         ),
         max_ptcl_per_slice=8, max_share_ptcl=4,
         max_halo_share_ptcl=4, max_share_gather_ptcl=4,
