@@ -1,4 +1,4 @@
-"""Reproducible four-GPU fused-route latency and compiled-memory benchmark.
+"""Reproducible four-GPU fused-route latency and memory benchmark.
 
 Run each policy/traffic case in a fresh process. This driver does not turn an
 isolated route result into a full N-body performance claim.
@@ -65,6 +65,15 @@ def _device_memory(devices):
     return per_device
 
 
+def _peak_by_phase(phases):
+    result = {}
+    for phase, devices in phases.items():
+        peaks = [stats["peak_bytes_in_use"] for stats in devices.values()
+                 if stats is not None and "peak_bytes_in_use" in stats]
+        result[phase] = max(peaks) if peaks else None
+    return result
+
+
 def main():
     args = _args()
     devices = jax.devices("gpu")
@@ -116,19 +125,24 @@ def main():
     inputs = (jnp.asarray(pmid.reshape(-1, 3)), jnp.asarray(disp.reshape(-1, 3)),
               jnp.asarray(vel.reshape(-1, 3)), jnp.float32(0),
               jnp.asarray(unused.reshape(-1)))
+    jax.block_until_ready(inputs)
+    allocator_phases = {"after_inputs": _device_memory(devices[:args.devices])}
     route = jax.jit(conf.mGPU_halo_moving_low_memory)
     start = time.perf_counter()
     compiled = route.lower(*inputs).compile()
     compile_seconds = time.perf_counter() - start
+    allocator_phases["after_compile"] = _device_memory(devices[:args.devices])
 
     for _ in range(args.warmups):
         jax.block_until_ready(compiled(*inputs))
+    allocator_phases["after_warmups"] = _device_memory(devices[:args.devices])
     times = []
     for _ in range(args.iterations):
         start = time.perf_counter()
         result = compiled(*inputs)
         jax.block_until_ready(result)
         times.append(time.perf_counter() - start)
+    allocator_phases["after_timed_runs"] = _device_memory(devices[:args.devices])
     if bool(result[5]) or int(result[7]):
         raise RuntimeError(f"routing failed: has_failed={bool(result[5])}, invalid={int(result[7])}")
     output_active = ~np.asarray(result[4])
@@ -146,6 +160,7 @@ def main():
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     except (OSError, subprocess.CalledProcessError):
         commit = None
+    allocator_phases["after_validation"] = _device_memory(devices[:args.devices])
     report = {
         "git_commit": commit,
         "jax_version": jax.__version__, "jaxlib_version": jaxlib.__version__,
@@ -164,6 +179,8 @@ def main():
         "p95_seconds": float(np.percentile(times, 95)),
         "compiled_memory_bytes": _memory(compiled.memory_analysis()),
         "device_allocator_memory_bytes": _device_memory(devices[:args.devices]),
+        "device_allocator_phases_bytes": allocator_phases,
+        "max_device_allocator_peak_by_phase_bytes": _peak_by_phase(allocator_phases),
         "max_particles_moved": int(result[6]),
         "valid_particles": int(output_active.sum()),
     }
@@ -171,6 +188,7 @@ def main():
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({key: report[key] for key in ("policy", "median_seconds", "p95_seconds",
                                                     "compiled_memory_bytes", "device_allocator_memory_bytes",
+                                                    "max_device_allocator_peak_by_phase_bytes",
                                                     "valid_particles")}, indent=2))
 
 

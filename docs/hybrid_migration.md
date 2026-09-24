@@ -104,6 +104,18 @@ listed CUDA devices 0 through 3, passed the standalone four-device JAX
 all-to-all, and passed all nine native hybrid tests in 122.84 seconds. This
 qualifies the tested small native routing, capacity, and N-body gradient cases
 on one four-H100 node; full-scale speed and peak device memory remain unmeasured.
+With the benchmark's initial far capacities of 65,536 records and 100 timed
+iterations on the same node, strict no-far routing took 2.150 ms median and
+hybrid no-far took 2.912 ms median, a 35.4 percent regression in that run.
+Compiled temporary storage was 0.397 MB versus 5.156 MB. The highest reported
+JAX allocator peak was 2.411 MB for strict and 34.585 MB for hybrid; on each
+other device it was 1.322 MB versus 9.313 MB. These peaks include input setup,
+compilation, execution, and validation. Final bytes in use were much closer,
+so the large peaks are transient. This run misses the ordinary-path speed and
+memory targets. Earlier timings differed substantially, so repeat on the same
+node before claiming a stable latency ratio. The 65,536-record far buffer is
+over ten times the 6,144 active particles per device in this synthetic case;
+capacity sensitivity and the phase of the allocator peak need measurement.
 
 The local machine has two RTX 3090s and no `nvcc` on PATH. CPU tests do not
 establish native CUDA correctness, no-far overhead, scratch usage, or H100
@@ -212,6 +224,25 @@ compare complete forward steps and full value-and-gradient simulations in
 fresh processes; isolated routing speed is not sufficient. Record valid and
 padded bytes, collective counts, fallback frequency, and maximum per-device
 send and receive traffic. Aggregate multi-process time by the slowest rank.
+
+For a capacity sensitivity check, keep the same no-far input and rerun hybrid
+with 256-record far send/receive buffers and 64-record chunks. The benchmark
+now records allocator peaks after input setup, compilation, warmups, timed
+runs, and validation, so the phase where the peak rises is visible. A separate
+sparse case with 64 far particles per device checks that this smaller capacity
+can actually carry the synthetic exceptional traffic. These values are for
+diagnosis; production capacities must cover observed worst-case traffic.
+
+```bash
+srun --export=ALL --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
+  timeout 1800 python scripts/benchmark_hybrid_route.py --policy hybrid --far-per-device 0 \
+  --far-send-capacity 256 --far-recv-capacity 256 --far-chunk-size 64 \
+  --iterations 100 --output results/hybrid/hybrid-zero-cap256.json
+srun --export=ALL --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
+  timeout 1800 python scripts/benchmark_hybrid_route.py --policy hybrid --far-per-device 64 \
+  --far-send-capacity 256 --far-recv-capacity 256 --far-chunk-size 64 \
+  --iterations 100 --output results/hybrid/hybrid-sparse-cap256.json
+```
 
 The acceptance target is approximately at most 1–2 percent regression on
 ordinary steps, with no unexplained peak-memory increase. Sparse exceptional
