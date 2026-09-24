@@ -99,7 +99,11 @@ diagnostic fails at its first ring permutation with the same error, before
 importing PM++. In that Slurm step, every task reports `CUDA_VISIBLE_DEVICES=0`;
 the failure therefore belongs to the four-process GPU visibility/collective
 setup, not the hybrid route. The target single-node qualification uses one task
-that sees all four H100s.
+that sees all four H100s. On `tg11101`, that layout with JAX/jaxlib 0.9.1
+listed CUDA devices 0 through 3, passed the standalone four-device JAX
+all-to-all, and passed all nine native hybrid tests in 122.84 seconds. This
+qualifies the tested small native routing, capacity, and N-body gradient cases
+on one four-H100 node; full-scale speed and peak device memory remain unmeasured.
 
 The local machine has two RTX 3090s and no `nvcc` on PATH. CPU tests do not
 establish native CUDA correctness, no-far overhead, scratch usage, or H100
@@ -186,19 +190,24 @@ Run these in separate fresh processes, with identical input shapes and the
 same integration state for strict and no-far hybrid. Save JSON results.
 
 ```bash
-python scripts/benchmark_hybrid_route.py --policy neighbor_only --far-per-device 0 --output results/hybrid/strict.json
-python scripts/benchmark_hybrid_route.py --policy hybrid --far-per-device 0 --output results/hybrid/hybrid-zero.json
-python scripts/benchmark_hybrid_route.py --policy hybrid --far-per-device 64 --output results/hybrid/hybrid-sparse.json
-python scripts/benchmark_hybrid_route.py --policy hybrid --far-per-device 4096 --output results/hybrid/hybrid-dense.json
+srun --export=ALL --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
+  python scripts/benchmark_hybrid_route.py --policy neighbor_only --far-per-device 0 --output results/hybrid/strict.json
+srun --export=ALL --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
+  python scripts/benchmark_hybrid_route.py --policy hybrid --far-per-device 0 --output results/hybrid/hybrid-zero.json
+srun --export=ALL --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
+  python scripts/benchmark_hybrid_route.py --policy hybrid --far-per-device 64 --output results/hybrid/hybrid-sparse.json
+srun --export=ALL --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
+  python scripts/benchmark_hybrid_route.py --policy hybrid --far-per-device 4096 --output results/hybrid/hybrid-dense.json
 ```
 
 Use additional cases varying `--far-chunk-size`, active offsets, per-device
 concentration, and `--particles-per-device`. The driver records compilation,
 median and p95 synchronized route latency, compiled buffer estimates, JAX
-versions, device identities, manifest, capacities, and particle conservation.
-Compiled memory estimates do not include every CUDA scratch or allocator peak.
-Collect device peak memory with Nsight Systems or an equivalent profiler during
-the steady-state run, including FFI scratch and communication buffers. Also
+allocator peak bytes per device, JAX versions, device identities, manifest,
+capacities, and particle conservation. The allocator peak includes compilation
+and execution in each fresh process. It may not include all external CUDA
+allocations, so collect total device peak memory with Nsight Systems or an
+equivalent profiler during the steady-state run. Also
 compare complete forward steps and full value-and-gradient simulations in
 fresh processes; isolated routing speed is not sufficient. Record valid and
 padded bytes, collective counts, fallback frequency, and maximum per-device

@@ -51,6 +51,20 @@ def _memory(analysis):
     return {field: int(getattr(analysis, field)) for field in fields if getattr(analysis, field, None) is not None}
 
 
+def _device_memory(devices):
+    per_device = {}
+    for device in devices:
+        stats = device.memory_stats()
+        if stats is None:
+            per_device[str(device)] = None
+            continue
+        per_device[str(device)] = {
+            field: int(stats[field]) for field in
+            ("bytes_in_use", "peak_bytes_in_use", "bytes_limit") if field in stats
+        }
+    return per_device
+
+
 def main():
     args = _args()
     devices = jax.devices("gpu")
@@ -149,13 +163,15 @@ def main():
         "median_seconds": statistics.median(times),
         "p95_seconds": float(np.percentile(times, 95)),
         "compiled_memory_bytes": _memory(compiled.memory_analysis()),
+        "device_allocator_memory_bytes": _device_memory(devices[:args.devices]),
         "max_particles_moved": int(result[6]),
         "valid_particles": int(output_active.sum()),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({key: report[key] for key in ("policy", "median_seconds", "p95_seconds",
-                                                    "compiled_memory_bytes", "valid_particles")}, indent=2))
+                                                    "compiled_memory_bytes", "device_allocator_memory_bytes",
+                                                    "valid_particles")}, indent=2))
 
 
 if __name__ == "__main__":
