@@ -22,8 +22,9 @@ def test_low_memory_uniform_grid_completes_without_failure():
                          a_start=0.1, a_stop=0.2, a_nbody_maxstep=0.1)
     cosmo = boltzmann(SimpleLCDM(conf), conf)
     particles = Particles.gen_grid(conf, vel=True, acc=True)
+    compiled = solver.lower_nbody_low_memory(particles, cosmo, conf).compile()
     result, occupancy, moved, invalid = solver.nbody_low_memory_with_telemetry(
-        particles, cosmo, conf,
+        particles, cosmo, conf, compiled=compiled,
     )
     assert int(occupancy) == 64
     assert int(moved) == 0

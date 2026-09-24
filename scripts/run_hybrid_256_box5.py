@@ -2,8 +2,8 @@
 """Run a full, forward PM++ simulation in a 5 Mpc/h box on four H100s.
 
 The default is 256^3 particles, 2LPT, 63 N-body steps from a=0.1 to 1,
-hybrid mesh-halo routing, and the low-memory forward solver. The full density
-and an x-axis projection are saved after the timed simulation. Capacity or
+hybrid mesh-halo routing, and the low-memory forward solver. The full density,
+three axis projections, and a projection PNG are saved after the simulation. Capacity or
 mass-conservation failures leave a JSON report with status="failed".
 """
 
@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parent.parent
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--plot-dir", type=Path, default=None,
+                        help="Directory for the density-projection PNG; defaults to the JSON directory")
     parser.add_argument("--npart", type=int, default=256)
     parser.add_argument("--box-size", type=float, default=5.0,
                         help="Comoving box length in Mpc/h")
@@ -39,6 +41,8 @@ def arguments():
     parser.add_argument("--a-start", type=float, default=0.1)
     parser.add_argument("--a-stop", type=float, default=1.0)
     parser.add_argument("--nbody-steps", type=int, default=63)
+    parser.add_argument("--execution-runs", type=int, default=1,
+                        help="Run twice to record a compile-free full-forward execution time")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--sigma8", type=float, default=0.80)
     parser.add_argument("--n-s", type=float, default=0.96)
@@ -65,13 +69,15 @@ def arguments():
         parser.error("devices and box-size must be positive; max-ptcl-factor must be >= 1")
     if args.max_ptcl_per_slice is not None and args.max_ptcl_per_slice < args.npart**3 // args.devices:
         parser.error("max-ptcl-per-slice must hold at least the initial particles per GPU")
+    if args.max_ptcl_per_slice is not None and args.max_ptcl_per_slice > args.npart**3:
+        parser.error("max-ptcl-per-slice exceeds the total particle count; check for an extra digit")
     if not (args.sigma8 > 0 and args.n_s > 0 and args.h > 0 and
             0 < args.omega_b < args.omega_m < 1):
         parser.error("require sigma8, n-s, h > 0 and 0 < omega-b < omega-m < 1")
     if args.mesh_shape < 1:
         parser.error("mesh-shape must be positive")
-    if not 0 < args.a_start < args.a_stop or args.nbody_steps < 1:
-        parser.error("require 0 < a-start < a-stop and positive nbody-steps")
+    if not 0 < args.a_start < args.a_stop or args.nbody_steps < 1 or args.execution_runs < 1:
+        parser.error("require 0 < a-start < a-stop and positive nbody-steps and execution-runs")
     if args.max_share_ptcl < 1 or args.max_halo_share_ptcl < 1 or args.max_share_gather_ptcl < 1:
         parser.error("share capacities must be positive")
     if args.lpt_share_multiplier < 1 or args.mass_relative_tolerance <= 0:
@@ -113,6 +119,41 @@ def block_tree(jax, value):
     return value
 
 
+def plot_density_projections(projections, box_size, output):
+    """Render the three mean-density projections with one logarithmic scale."""
+    import matplotlib
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    axes = (("x", "y", "z"), ("y", "x", "z"), ("z", "x", "y"))
+    display = {
+        axis: np.log10(1.0 + np.maximum(np.asarray(projections[axis]), 0.0))
+        for axis, _, _ in axes
+    }
+    upper = max(0.1, float(np.percentile(np.concatenate(
+        [values.ravel() for values in display.values()]), 99.9)))
+    fig, panels = plt.subplots(1, 3, figsize=(12, 3.8), layout="constrained")
+    try:
+        for panel, (axis, horizontal, vertical) in zip(panels, axes):
+            image = panel.imshow(
+                display[axis].T, origin="lower", extent=(0, box_size, 0, box_size),
+                cmap="inferno", vmin=0, vmax=upper, interpolation="nearest",
+            )
+            panel.set_title(f"{axis}-axis projection")
+            panel.set_xlabel(f"{horizontal} [Mpc/h]")
+            panel.set_ylabel(f"{vertical} [Mpc/h]")
+            panel.set_aspect("equal")
+        colorbar = fig.colorbar(image, ax=panels, shrink=0.82)
+        colorbar.set_label("log10(1 + density / mean density)")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output.with_name(output.name + ".tmp")
+        fig.savefig(temporary, format="png", dpi=170)
+        temporary.replace(output)
+    finally:
+        plt.close(fig)
+
+
 def run(args, report):
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     if args.platform == "cpu":
@@ -134,7 +175,7 @@ def run(args, report):
     from src.pmpp.initial_conditions import linear_modes, white_noise
     from src.pmpp.initial_conditions.lpt import lpt_low_memory_with_telemetry
     from src.pmpp.nbody import nbody
-    from src.pmpp.nbody.solver import nbody_low_memory_with_telemetry
+    from src.pmpp.nbody.solver import lower_nbody_low_memory, nbody_low_memory_with_telemetry
 
     if Path(pmpp.__file__).resolve().parent != (ROOT / "src" / "pmpp").resolve():
         raise RuntimeError("PM++ was not imported from this checkout")
@@ -158,6 +199,8 @@ def run(args, report):
     mesh = create_compute_mesh(devices)
     local_particles = args.npart**3 // args.devices
     capacity = args.max_ptcl_per_slice or math.ceil(local_particles * args.max_ptcl_factor)
+    if capacity > args.npart**3:
+        raise ValueError("particle capacity per GPU exceeds the total particle count")
     enable_x64 = getattr(jax, "enable_x64", None)
     if enable_x64 is None:
         enable_x64 = jax.experimental.enable_x64
@@ -234,34 +277,63 @@ def run(args, report):
             conf, sigma8=args.sigma8, n_s=args.n_s, Omega_m=args.omega_m,
             Omega_b=args.omega_b, h=args.h), conf))
         seed = jax.device_put(jnp.asarray(args.seed, dtype=jnp.int32), NamedSharding(mesh, P()))
-        modes = stage("white_noise", lambda: white_noise(seed, conf))
-        modes = stage("linear_modes", lambda: linear_modes(modes, cosmo, conf))
-        particles, lpt_moved, lpt_invalid = stage(
-            "lpt", lambda: lpt_low_memory_with_telemetry(modes, cosmo, conf_lpt))
-        del modes
-        report["telemetry"]["lpt_max_moved"] = int(jax.device_get(lpt_moved))
-        report["telemetry"]["lpt_invalid"] = int(jax.device_get(lpt_invalid))
-        if report["telemetry"]["lpt_invalid"]:
-            raise RuntimeError("LPT reported invalid or overflowed particle routing")
-        if args.native_routing:
-            particles, occupancy, moved, invalid = stage(
-                "nbody", lambda: nbody_low_memory_with_telemetry(particles, cosmo, conf))
-            report["telemetry"].update({
-                "nbody_max_occupancy": int(jax.device_get(occupancy)),
-                "nbody_max_moved": int(jax.device_get(moved)),
-                "nbody_invalid": int(jax.device_get(invalid)),
-            })
-            if report["telemetry"]["nbody_invalid"]:
-                raise RuntimeError("N-body reported invalid or overflowed particle routing")
-        else:
-            # The portable path is used only for a local CPU smoke run.
-            particles = stage("nbody", lambda: nbody(particles, cosmo, conf))
-            report["telemetry"].update({
-                "nbody_max_occupancy": None, "nbody_max_moved": None,
-                "nbody_invalid": None,
-            })
-        density = stage("scatter", lambda: scatter(particles, conf))
-        del particles
+        compiled_nbody = None
+
+        def forward(prefix):
+            nonlocal compiled_nbody
+            modes = stage(prefix + "white_noise", lambda: white_noise(seed, conf))
+            modes = stage(prefix + "linear_modes", lambda: linear_modes(modes, cosmo, conf))
+            particles, lpt_moved, lpt_invalid = stage(
+                prefix + "lpt", lambda: lpt_low_memory_with_telemetry(modes, cosmo, conf_lpt))
+            del modes
+            report["telemetry"]["lpt_max_moved"] = int(jax.device_get(lpt_moved))
+            report["telemetry"]["lpt_invalid"] = int(jax.device_get(lpt_invalid))
+            if report["telemetry"]["lpt_invalid"]:
+                raise RuntimeError("LPT reported invalid or overflowed particle routing")
+            if args.native_routing:
+                if compiled_nbody is None:
+                    compiled_nbody = stage(
+                        "nbody_compile", lambda: lower_nbody_low_memory(particles, cosmo, conf).compile())
+                    report["nbody_timing_excludes_compilation"] = True
+                    analysis = compiled_nbody.memory_analysis()
+                    if analysis is not None:
+                        report["nbody_compiled_memory_bytes"] = {
+                            name: int(getattr(analysis, name))
+                            for name in ("argument_size_in_bytes", "output_size_in_bytes",
+                                         "temp_size_in_bytes", "alias_size_in_bytes")
+                            if getattr(analysis, name, None) is not None
+                        }
+                    save_report(args.output, report)
+                particles, occupancy, moved, invalid = stage(
+                    prefix + "nbody", lambda: nbody_low_memory_with_telemetry(
+                        particles, cosmo, conf, compiled=compiled_nbody))
+                report["telemetry"].update({
+                    "nbody_max_occupancy": int(jax.device_get(occupancy)),
+                    "nbody_max_moved": int(jax.device_get(moved)),
+                    "nbody_invalid": int(jax.device_get(invalid)),
+                })
+                if report["telemetry"]["nbody_invalid"]:
+                    raise RuntimeError("N-body reported invalid or overflowed particle routing")
+            else:
+                # The portable path is used only for a local CPU smoke run.
+                particles = stage(prefix + "nbody", lambda: nbody(particles, cosmo, conf))
+                report["telemetry"].update({
+                    "nbody_max_occupancy": None, "nbody_max_moved": None,
+                    "nbody_invalid": None,
+                })
+            density = stage(prefix + "scatter", lambda: scatter(particles, conf))
+            del particles
+            return density
+
+        for run_index in range(args.execution_runs):
+            prefix = "" if run_index == args.execution_runs - 1 else f"warmup_{run_index + 1}_"
+            density = forward(prefix)
+            if prefix:
+                del density
+        forward_stages = ("white_noise", "linear_modes", "lpt", "nbody", "scatter")
+        report["forward_execution_seconds"] = sum(report["timings_seconds"][name] for name in forward_stages)
+        report["forward_execution_excludes_compilation"] = args.execution_runs > 1
+        save_report(args.output, report)
 
     density_host = stage("density_to_host", lambda: np.asarray(jax.device_get(density), dtype=np.float32))
     if density_host.shape != (args.npart,) * 3:
@@ -282,12 +354,24 @@ def run(args, report):
         raise RuntimeError("final density failed finite-value or mass-conservation check")
 
     density_path = args.output.with_name(args.output.stem + "_density.npy")
-    projection_path = args.output.with_name(args.output.stem + "_projection_x.npy")
+    projections = {
+        axis: density_host.mean(axis=index, dtype=np.float64).astype(np.float32)
+        for index, axis in enumerate("xyz")
+    }
+    projection_paths = {
+        axis: args.output.with_name(args.output.stem + f"_projection_{axis}.npy")
+        for axis in "xyz"
+    }
+    plot_path = (args.plot_dir or args.output.parent) / (args.output.stem + "_projections.png")
     np.save(density_path, density_host, allow_pickle=False)
-    np.save(projection_path, density_host.mean(axis=0, dtype=np.float64).astype(np.float32),
-            allow_pickle=False)
+    for axis in "xyz":
+        np.save(projection_paths[axis], projections[axis], allow_pickle=False)
     report["artifacts"] = {"density": str(density_path.resolve()),
-                           "projection_x": str(projection_path.resolve())}
+                           **{f"projection_{axis}": str(projection_paths[axis].resolve())
+                              for axis in "xyz"}}
+    save_report(args.output, report)
+    stage("render_density_plot", lambda: plot_density_projections(projections, args.box_size, plot_path))
+    report["artifacts"]["projections_png"] = str(plot_path.resolve())
     report["status"] = "ok"
     report["phase"] = "complete"
     save_report(args.output, report)
@@ -299,6 +383,7 @@ def main():
     report = {
         "status": "running", "phase": "setup", "host": socket.gethostname(),
         "timings_include_first_call_compilation": True,
+        "timing_note": "N-body compilation is timed separately; other first-call stages may compile",
         "settings": {key: str(value) if isinstance(value, Path) else value
                      for key, value in vars(args).items()},
         "timings_seconds": {}, "memory_after_phase": {}, "telemetry": {},

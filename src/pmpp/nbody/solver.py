@@ -597,14 +597,21 @@ def nbody_low_memory_with_occupancy(ptcl, cosmo, conf, reverse=False, correction
     return ptcl, max_occupancy
 
 
-def nbody_low_memory_with_telemetry(ptcl, cosmo, conf, reverse=False, correction=None):
-    """Run low-memory N-body and report routing failure after device sync."""
+def nbody_low_memory_with_telemetry(ptcl, cosmo, conf, reverse=False, correction=None, *, compiled=None):
+    """Run low-memory N-body and report routing failure after device sync.
+
+    ``compiled`` may be an executable from :func:`lower_nbody_low_memory`
+    for measuring execution separately from compilation.
+    """
     _validate_low_memory_nbody(conf, reverse, correction)
     cosmo_state = _cosmo_state(cosmo)
-    state_out, max_occupancy, max_migration, max_invalid_count, failed, failed_step = _nbody_low_memory_state(
-        conf, reverse, ptcl.pmid, ptcl.unused_index, ptcl.halo_mask, ptcl.attr, ptcl.disp, ptcl.vel, ptcl.acc,
-        cosmo_state, correction,
-    )
+    flat_args = (ptcl.pmid, ptcl.unused_index, ptcl.halo_mask, ptcl.attr, ptcl.disp,
+                 ptcl.vel, ptcl.acc, cosmo_state, correction)
+    if compiled is None:
+        result = _nbody_low_memory_state(conf, reverse, *flat_args)
+    else:
+        result = compiled(*flat_args)
+    state_out, max_occupancy, max_migration, max_invalid_count, failed, failed_step = result
     if isinstance(failed, jax.core.Tracer):
         raise RuntimeError(
             "nbody_low_memory must be called outside an outer JAX transform so all devices can "

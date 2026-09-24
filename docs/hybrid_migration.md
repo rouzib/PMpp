@@ -274,11 +274,14 @@ all devices skip the remaining solver work and the host raises a
 `ParticleRoutingFailure` with the failing step, migration count, invalid
 candidate count, last good occupancy, and configured capacities. A migration
 count alone does not identify which bound failed.
-It writes a phase-by-phase JSON report, a full 256-cubed density `.npy`, and
-an x-axis projection `.npy`. The density copy and file writes happen after
-the timed simulation stages. Each stage time includes its first-call JAX
-compilation, so this one-run record is a functional and memory test rather
-than a steady-state speed comparison.
+It writes a phase-by-phase JSON report, a full density `.npy`, three axis
+projections `.npy`, and a projection PNG. The density copy and plotting happen
+after the timed simulation stages. `nbody_compile` and `nbody` are measured
+separately. Use `--execution-runs 2` to warm the remaining forward stages and
+record `forward_execution_seconds` for a second execution; this includes
+white noise, linear modes, LPT, N-body, and scatter, but excludes cosmology
+setup, density transfer, and plotting. With one execution, the other forward
+stage timers still include first-call compilation.
 
 ```bash
 cd /home/r/rouzib/links/scratch/pmpp_repo/PMpp
@@ -292,9 +295,10 @@ srun --export=ALL --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
   timeout 7200 python -u scripts/run_hybrid_256_box5.py \
   --npart 256 --box-size 5 --nbody-steps 63 --seed 0 \
   --sigma8 0.80 --n-s 0.96 --omega-m 0.30 --omega-b 0.05 --h 0.70 \
-  --max-ptcl-factor 1.5 --max-share-ptcl 2000000 \
+  --max-ptcl-per-slice 9000000 --max-share-ptcl 2000000 \
   --far-send-capacity 1000000 --far-recv-capacity 1000000 \
-  --far-chunk-size 16384 \
+  --far-chunk-size 16384 --execution-runs 2 \
+  --plot-dir /project/6112408/rouzib/PMpp/results \
   --output results/hybrid/full256-box5-hybrid.json \
   2>&1 | tee results/hybrid/full256-box5-hybrid.log
 ```
@@ -305,6 +309,30 @@ particle slot count, use `--max-ptcl-per-slice N`; it overrides
 `--max-share-gather-ptcl`, and `--lpt-share-multiplier`. The scale-factor
 interval (`--a-start`, `--a-stop`), `--lpt-order`, and `--mesh-shape` are also
 configurable. Keep the output name unique between runs.
+The runner rejects a per-GPU particle capacity larger than the total number
+of particles; this catches an extra digit before allocating large buffers.
+
+To plot the already saved successful 256-cubed density without repeating the
+simulation:
+
+```bash
+python scripts/plot_hybrid_density.py \
+  results/hybrid/full256-box5-hybrid-cap8m_density.npy \
+  --box-size 5 --output-dir /project/6112408/rouzib/PMpp/results
+```
+
+The 256-cubed H100 report supplied on 2026-09-23 recorded a peak occupancy of
+8,438,611 particles per GPU, but its configured slot count was 89,388,608,
+not approximately nine million. Its 12.56-second N-body phase included JIT
+compilation. Do not extrapolate that phase time or its 13.88-GB allocator peak
+to 1024 cubed without a correctly sized, compile-separated run.
+For the same 5 Mpc/h box on four GPUs, naive particle-count scaling predicts
+about 540 million occupied slots per GPU at 1024 cubed and roughly 576 million
+slots with the 256-cubed headroom. Scaling the observed allocator peak by slot
+count alone gives about 89 GB/GPU, above the reported 63.8-GB H100 allocator
+limit; the larger mesh adds further memory. This is an estimate, not a
+qualified 1024-cubed run. A 512-cubed measurement with correct capacities is
+the next useful memory check before considering a memory rewrite or more GPUs.
 
 The result must report `"status": "ok"`, zero LPT and N-body invalid counts,
 finite density, and mass within tolerance. A capacity failure requires a new
