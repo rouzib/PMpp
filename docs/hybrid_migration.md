@@ -95,7 +95,11 @@ median changed substantially between nodes, so the speed difference is not yet
 a stable conclusion. Compiled temporary memory remained 0.40 MB strict versus
 5.16 MB hybrid. The four-process smoke now reaches routing, but fails in NCCL
 with `invalid device ordinal`. A standalone four-process JAX collective
-diagnostic is provided below to isolate the launcher/runtime from native routing.
+diagnostic fails at its first ring permutation with the same error, before
+importing PM++. In that Slurm step, every task reports `CUDA_VISIBLE_DEVICES=0`;
+the failure therefore belongs to the four-process GPU visibility/collective
+setup, not the hybrid route. The target single-node qualification uses one task
+that sees all four H100s.
 
 The local machine has two RTX 3090s and no `nvcc` on PATH. CPU tests do not
 establish native CUDA correctness, no-far overhead, scratch usage, or H100
@@ -141,36 +145,26 @@ far particles. Extend native qualification with
 asymmetric neighbor stream limits and intentionally stale or absent libraries.
 A failure must be global and must not yield a usable partial state.
 
-Run the actual four-process smoke job in a four-H100 Slurm allocation, with one
-visible GPU per task. It injects exceptional traffic on rank 0 only and checks
-the final state on every rank. Export the library and manifest paths shown
-above in the batch job, then run:
+For the target single-node mode, give one task all four H100s. Do not bind each
+task to a single GPU. Export the library and manifest paths shown above, then
+run the standalone JAX collective and the native hybrid tests from the same
+interactive allocation:
 
 ```bash
-export PMPP_COORDINATOR_ADDRESS="$(hostname -s):12355"
-srun --ntasks=4 --gpus-per-task=h100:1 --gpu-bind=single:1 --kill-on-bad-exit=0 \
-  timeout 300 python scripts/test_hybrid_distributed.py
+srun --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
+  timeout 300 python scripts/diagnose_jax_alltoall.py
+srun --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
+  timeout 900 python -m pytest tests/test_hybrid_native.py -q
 ```
 
-If that step fails in NCCL, run the same four-process launcher without PM++:
-
-```bash
-srun --ntasks=4 --gpus-per-task=h100:1 --gpu-bind=single:1 --kill-on-bad-exit=0 \
-  timeout 300 python scripts/diagnose_jax_distributed.py
-```
-
-The diagnostic prints each rank's visible devices and tests a JAX ring
-permutation and all-to-all. A failure there indicates that the launcher or JAX
-collective runtime needs attention before the PM++ distributed smoke can
-qualify. A pass narrows the remaining issue to the PM++ route or native ABI.
-
-Use a free coordinator port and adjust the GPU binding flag if the site's
-Slurm configuration requires it. A single process over four GPUs cannot
-establish matching collectives across processes. Run the relevant full N-body
-gradient and LPT tests in that distributed setup as well. If the
-scientific workflow uses 16 or 32 GPUs, repeat the small sparse case there
-before the 1024-cubed run. Test a reordered logical device mesh and asymmetric
-source/receiver counts at the target topology.
+The native tests include far migration, capacity failure, and a complete small
+N-body/gradient comparison in this one-process topology. The four-process
+scripts exercise a different runtime mode and are only needed if that mode is
+deployed. Its current Slurm launcher fails in a pure JAX collective, so it does
+not provide evidence about the PM++ route. If the scientific workflow uses 16
+or 32 GPUs, qualify that separate process topology before the 1024-cubed run.
+Test a reordered logical device mesh and asymmetric source/receiver counts at
+the target topology.
 
 If the LPT, gravity, or FFT tests fail with an NCCL `ncclAlltoAll` error, run a
 standalone four-device JAX collective in the same allocation to separate the
