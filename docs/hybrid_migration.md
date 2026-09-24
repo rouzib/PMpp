@@ -116,6 +116,15 @@ memory targets. Earlier timings differed substantially, so repeat on the same
 node before claiming a stable latency ratio. The 65,536-record far buffer is
 over ten times the 6,144 active particles per device in this synthetic case;
 capacity sensitivity and the phase of the allocator peak need measurement.
+With 256-record far buffers and 64-record chunks on the same node, the no-far
+hybrid median was 2.122 ms and the 64-far-particle median was 2.839 ms.
+Compiled temporary storage dropped to 0.422 MB. Devices 1 through 3 peaked
+at 1.346 MB, close to the previous strict 1.322 MB. GPU 0 still reported a
+34.585 MB cumulative peak, reached immediately after compilation; it did not
+increase during warmups, timed execution, or validation. That peak therefore
+does not measure steady-state routing memory. The smaller capacity removes the
+large persistent compiler buffer estimate, but the near-equal no-far latency
+needs paired repeat runs to establish a stable ratio.
 
 The local machine has two RTX 3090s and no `nvcc` on PATH. CPU tests do not
 establish native CUDA correctness, no-far overhead, scratch usage, or H100
@@ -249,3 +258,40 @@ ordinary steps, with no unexplained peak-memory increase. Sparse exceptional
 traffic must conserve particles and beat or justify the alternatives at the
 measured production distribution. Report any missed target; do not change the
 workload or capacities between baseline and candidate to hide it.
+
+## Full 256-cubed forward run in a 5 Mpc/h box
+
+`scripts/run_hybrid_256_box5.py` runs 2LPT followed by 63 N-body steps from
+`a=0.1` to `a=1.0` with seed 0 and four H100s in one task. It uses hybrid
+native routing, Pallas CIC, and the forward-only low-memory LPT/N-body paths.
+The initial capacities are 1.5 times the mean local particle count for final
+storage, 2,000,000 neighbor shares, 1,000,000 far sends and receives, and
+16,384-record far chunks. These are starting bounds, not claims about the
+traffic in a 5 Mpc/h box. The runner fails if routing reports invalid traffic,
+an overflow is raised, the density is nonfinite, or mass is not conserved.
+It writes a phase-by-phase JSON report, a full 256-cubed density `.npy`, and
+an x-axis projection `.npy`. The density copy and file writes happen after
+the timed simulation stages. Each stage time includes its first-call JAX
+compilation, so this one-run record is a functional and memory test rather
+than a steady-state speed comparison.
+
+```bash
+cd /home/r/rouzib/links/scratch/pmpp_repo/PMpp
+source ../ENV_2/bin/activate
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export PYTHONPATH="$PWD:$PWD/tests"
+export PMPP_CUDA_ROUTING_LIBRARY="$PWD/cuda/build-hybrid-h100/libpmpp_cuda_routing.so"
+export PMPP_CUDA_ROUTING_MANIFEST="$PWD/cuda/build-hybrid-h100/pmpp_cuda_routing.manifest.json"
+mkdir -p results/hybrid
+srun --export=ALL --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
+  timeout 7200 python -u scripts/run_hybrid_256_box5.py \
+  --output results/hybrid/full256-box5-hybrid.json \
+  2>&1 | tee results/hybrid/full256-box5-hybrid.log
+```
+
+The result must report `"status": "ok"`, zero LPT and N-body invalid counts,
+finite density, and mass within tolerance. A capacity failure requires a new
+run with larger explicit bounds; do not use its partial density. The small
+four-logical-CPU portable smoke completed with one N-body step and conserved
+512 particles to float32 precision. That check does not qualify the CUDA
+hybrid run or its full 256-cubed performance.
