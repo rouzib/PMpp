@@ -262,8 +262,15 @@ workload or capacities between baseline and candidate to hide it.
 ## Full 256-cubed forward run in a 5 Mpc/h box
 
 `scripts/run_hybrid_256_box5.py` runs 2LPT followed by 63 N-body steps from
-`a=0.1` to `a=1.0` with seed 0 and four H100s in one task. It uses hybrid
-native routing, Pallas CIC, and the forward-only low-memory LPT/N-body paths.
+`a=0.1` to `a=1.0` with seed 0 and four H100s in one task. By default it uses
+hybrid native routing for LPT and strict neighbor-only native routing for
+N-body, with Pallas CIC and the forward-only low-memory LPT/N-body paths.
+`--lpt-policy` and `--nbody-policy` select the phases independently. The older
+`--policy hybrid` still selects hybrid for both phases unless a phase-specific
+option overrides it. Strict N-body fails after a synchronized step if any
+particle needs a non-neighbor destination; it does not silently discard that
+particle or switch to hybrid. The JSON report records both active policies and
+their far-buffer capacities. The far buffers belong only to a hybrid phase.
 The initial capacities are 1.5 times the mean local particle count for final
 storage, 2,000,000 neighbor shares, 1,000,000 far sends and receives, and
 16,384-record far chunks. These are starting bounds, not claims about the
@@ -294,6 +301,7 @@ mkdir -p results/hybrid
 srun --export=ALL --ntasks=1 --gpus-per-task=h100:4 --kill-on-bad-exit=0 \
   timeout 7200 python -u scripts/run_hybrid_256_box5.py \
   --npart 256 --box-size 5 --nbody-steps 63 --seed 0 \
+  --lpt-policy hybrid --nbody-policy neighbor_only \
   --sigma8 0.80 --n-s 0.96 --omega-m 0.30 --omega-b 0.05 --h 0.70 \
   --max-ptcl-per-slice 9000000 --max-share-ptcl 2000000 \
   --far-send-capacity 1000000 --far-recv-capacity 1000000 \

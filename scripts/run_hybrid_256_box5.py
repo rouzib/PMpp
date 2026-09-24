@@ -2,9 +2,10 @@
 """Run a full, forward PM++ simulation in a 5 Mpc/h box on four H100s.
 
 The default is 256^3 particles, 2LPT, 63 N-body steps from a=0.1 to 1,
-hybrid mesh-halo routing, and the low-memory forward solver. The full density,
-three axis projections, and a projection PNG are saved after the simulation. Capacity or
-mass-conservation failures leave a JSON report with status="failed".
+hybrid LPT routing, strict neighbor-only N-body routing, and the low-memory
+forward solver. The full density, three axis projections, and a projection PNG
+are saved after the simulation. Capacity or mass-conservation failures leave a
+JSON report with status="failed".
 """
 
 from __future__ import annotations
@@ -34,7 +35,12 @@ def arguments():
                         help="Comoving box length in Mpc/h")
     parser.add_argument("--devices", type=int, default=4)
     parser.add_argument("--platform", choices=("gpu", "cpu"), default="gpu")
-    parser.add_argument("--policy", choices=("hybrid", "neighbor_only"), default="hybrid")
+    parser.add_argument("--policy", choices=("hybrid", "neighbor_only"), default=None,
+                        help="Set both phase policies; phase-specific options take precedence")
+    parser.add_argument("--lpt-policy", choices=("hybrid", "neighbor_only"), default=None,
+                        help="LPT routing policy (default: hybrid)")
+    parser.add_argument("--nbody-policy", choices=("hybrid", "neighbor_only"), default=None,
+                        help="N-body routing policy (default: neighbor_only)")
     parser.add_argument("--require-gpu-model", default="H100")
     parser.add_argument("--native-routing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--pallas-cic", action=argparse.BooleanOptionalAction, default=True)
@@ -63,6 +69,8 @@ def arguments():
     parser.add_argument("--far-chunk-size", type=int, default=16_384)
     parser.add_argument("--mass-relative-tolerance", type=float, default=2e-6)
     args = parser.parse_args()
+    args.lpt_policy = args.lpt_policy or args.policy or "hybrid"
+    args.nbody_policy = args.nbody_policy or args.policy or "neighbor_only"
     if args.npart <= 0 or args.npart > 32767 or args.npart % args.devices:
         parser.error("npart must be positive, fit int16, and be divisible by devices")
     if args.devices < 1 or args.box_size <= 0 or args.max_ptcl_factor < 1:
@@ -82,7 +90,7 @@ def arguments():
         parser.error("share capacities must be positive")
     if args.lpt_share_multiplier < 1 or args.mass_relative_tolerance <= 0:
         parser.error("lpt-share-multiplier must be >= 1 and mass tolerance positive")
-    if args.policy == "hybrid":
+    if "hybrid" in (args.lpt_policy, args.nbody_policy):
         if args.platform != "gpu" or not args.native_routing or args.devices < 4:
             parser.error("hybrid requires at least four GPUs and native routing")
         if min(args.far_send_capacity, args.far_recv_capacity, args.far_chunk_size) < 1:
@@ -186,7 +194,7 @@ def run(args, report):
         kinds = [getattr(device, "device_kind", "") for device in devices]
         if any(args.require_gpu_model.lower() not in kind.lower() for kind in kinds):
             raise RuntimeError(f"expected {args.require_gpu_model} GPUs, found {kinds}")
-    if args.policy == "hybrid" and not os.environ.get("PMPP_CUDA_ROUTING_LIBRARY"):
+    if "hybrid" in (args.lpt_policy, args.nbody_policy) and not os.environ.get("PMPP_CUDA_ROUTING_LIBRARY"):
         raise RuntimeError("set PMPP_CUDA_ROUTING_LIBRARY to the qualified native library")
     try:
         commit = subprocess.check_output(
@@ -205,6 +213,17 @@ def run(args, report):
     if enable_x64 is None:
         enable_x64 = jax.experimental.enable_x64
     with enable_x64():
+        def routing_seed(policy):
+            return MultiGPUConfiguration(
+                compute_mesh=mesh, mode="mesh_halo",
+                cuda_routing=args.native_routing,
+                cuda_routing_backend="bidir_mergepath",
+                migration_policy=policy,
+                far_send_capacity=args.far_send_capacity if policy == "hybrid" else None,
+                far_recv_capacity=args.far_recv_capacity if policy == "hybrid" else None,
+                far_chunk_size=args.far_chunk_size if policy == "hybrid" else None,
+            )
+
         conf = Configuration(
             args.box_size / args.npart, (args.npart,) * 3,
             mesh_shape=args.mesh_shape, float_dtype=jnp.float32, cosmo_dtype=jnp.float64,
@@ -212,27 +231,22 @@ def run(args, report):
             a_start=args.a_start, a_stop=args.a_stop,
             a_nbody_maxstep=(args.a_stop - args.a_start) / args.nbody_steps,
             nbody_cosmo_grad=False, pallas_cic=args.pallas_cic,
-            multigpu=MultiGPUConfiguration(
-                compute_mesh=mesh, mode="mesh_halo",
-                cuda_routing=args.native_routing,
-                cuda_routing_backend="bidir_mergepath",
-                migration_policy=args.policy,
-                far_send_capacity=args.far_send_capacity if args.policy == "hybrid" else None,
-                far_recv_capacity=args.far_recv_capacity if args.policy == "hybrid" else None,
-                far_chunk_size=args.far_chunk_size if args.policy == "hybrid" else None,
-            ),
+            multigpu=routing_seed(args.nbody_policy),
             max_ptcl_per_slice=capacity,
             max_share_ptcl=args.max_share_ptcl,
             max_halo_share_ptcl=args.max_halo_share_ptcl,
             max_share_gather_ptcl=args.max_share_gather_ptcl,
         )
-        conf_lpt = conf.replace(max_share_ptcl=math.ceil(
-            args.max_share_ptcl * args.lpt_share_multiplier))
+        conf_lpt = conf.replace(
+            multigpu=routing_seed(args.lpt_policy),
+            max_share_ptcl=math.ceil(args.max_share_ptcl * args.lpt_share_multiplier),
+        )
         native = enabled_for_configuration(conf)
+        native_lpt = enabled_for_configuration(conf_lpt)
         status = extension_status()
-        if args.native_routing and not native:
+        if args.native_routing and (not native or not native_lpt):
             raise RuntimeError("requested native routing is inactive")
-        if args.policy == "hybrid" and not status.get("hybrid_registered", False):
+        if "hybrid" in (args.lpt_policy, args.nbody_policy) and not status.get("hybrid_registered", False):
             raise RuntimeError("native hybrid FFI target is not registered")
         if args.pallas_cic and not pallas_cic_supported(conf.float_dtype):
             raise RuntimeError("requested Pallas CIC is unavailable")
@@ -245,7 +259,15 @@ def run(args, report):
             "device_kinds": [getattr(d, "device_kind", "") for d in devices],
             "routing_library": os.environ.get("PMPP_CUDA_ROUTING_LIBRARY"),
             "routing_manifest": os.environ.get("PMPP_CUDA_ROUTING_MANIFEST"),
-            "native_routing_active": bool(native),
+            "native_routing_active": bool(native and native_lpt),
+            "native_routing_lpt_active": bool(native_lpt),
+            "native_routing_nbody_active": bool(native),
+            "lpt_policy": conf_lpt.multigpu.migration_policy,
+            "nbody_policy": conf.multigpu.migration_policy,
+            "lpt_far_send_capacity_actual": conf_lpt.multigpu.far_send_capacity,
+            "lpt_far_recv_capacity_actual": conf_lpt.multigpu.far_recv_capacity,
+            "nbody_far_send_capacity_actual": conf.multigpu.far_send_capacity,
+            "nbody_far_recv_capacity_actual": conf.multigpu.far_recv_capacity,
             "hybrid_registered": bool(status.get("hybrid_registered", False)),
             "pallas_cic_active": bool(args.pallas_cic),
             "nbody_steps_actual": int(conf.a_nbody_num),
