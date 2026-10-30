@@ -27,10 +27,10 @@ def _mark_varying(value):
             # ``distribute_ptcl_pos`` is also used directly by host-side test
             # and conversion helpers, where no shard-map axis is bound.
             return value
-    return jax.lax.pvary(value, (AXIS_NAME, ))
+    return jax.lax.pvary(value, (AXIS_NAME,))
 
 
-@partial(pytree_dataclass, aux_fields=("conf", ), frozen=True, eq=False)
+@partial(pytree_dataclass, aux_fields=("conf",), frozen=True, eq=False)
 class Particles:
     """Particle state.
 
@@ -173,7 +173,7 @@ class Particles:
     @staticmethod
     def _shard_host_slices(conf, slices: List[np.ndarray], dtype):
         slices = [jnp.asarray(s, dtype=dtype) for s in slices]
-        total_shape = (conf.num_devices * slices[0].shape[0], ) + slices[0].shape[1:]
+        total_shape = (conf.num_devices * slices[0].shape[0],) + slices[0].shape[1:]
         partition = P(AXIS_NAME, *([None] * (slices[0].ndim - 1)))
         sharding = NamedSharding(conf.compute_mesh, partition)
         mesh_devices = list(conf.compute_mesh.devices.flat)
@@ -245,7 +245,7 @@ class Particles:
                 pmid_slice[:count] = pmid_host[selected]
                 disp_slice[:count] = disp_host[selected]
 
-            unused_index = np.ones((capacity, ), dtype=np.bool_)
+            unused_index = np.ones((capacity,), dtype=np.bool_)
             unused_index[:count] = False
             if store_particle_halos:
                 x_mod_local = (pmid_slice[:, 0] + disp_slice[:, 0] * conf.disp_size) % conf.nMesh
@@ -253,7 +253,7 @@ class Particles:
                     x_mod_local, halo_start[slice_idx], halo_end[slice_idx], unused_index,
                 )
             else:
-                halo_mask = np.zeros((capacity, ), dtype=np.bool_)
+                halo_mask = np.zeros((capacity,), dtype=np.bool_)
 
             pmid_slices.append(pmid_slice)
             disp_slices.append(disp_slice)
@@ -345,25 +345,25 @@ class Particles:
             """
             pmid_sliced = jax.lax.gather(
                 pmid, indices[:, None], dimension_numbers=jax.lax.GatherDimensionNumbers(
-                    offset_dims=(1, ), collapsed_slice_dims=(0, ), start_index_map=(0, )
+                    offset_dims=(1,), collapsed_slice_dims=(0,), start_index_map=(0,)
                 ), slice_sizes=(1, pmid.shape[1])
             )  # Output shape: (indices.shape[0], pmid.shape[1])
 
             disp_sliced = jax.lax.gather(
                 disp, indices[:, None], dimension_numbers=jax.lax.GatherDimensionNumbers(
-                    offset_dims=(1, ), collapsed_slice_dims=(0, ), start_index_map=(0, )
+                    offset_dims=(1,), collapsed_slice_dims=(0,), start_index_map=(0,)
                 ), slice_sizes=(1, disp.shape[1])
             )  # Output shape: (indices.shape[0], disp.shape[1])
 
             vel_sliced = jax.lax.gather(
                 vel, indices[:, None], dimension_numbers=jax.lax.GatherDimensionNumbers(
-                    offset_dims=(1, ), collapsed_slice_dims=(0, ), start_index_map=(0, )
+                    offset_dims=(1,), collapsed_slice_dims=(0,), start_index_map=(0,)
                 ), slice_sizes=(1, vel.shape[1])
             )  # Output shape: (indices.shape[0], vel.shape[1])
 
             acc_sliced = jax.lax.gather(
                 acc, indices[:, None], dimension_numbers=jax.lax.GatherDimensionNumbers(
-                    offset_dims=(1, ), collapsed_slice_dims=(0, ), start_index_map=(0, )
+                    offset_dims=(1,), collapsed_slice_dims=(0,), start_index_map=(0,)
                 ), slice_sizes=(1, acc.shape[1])
             )  # Output shape: (indices.shape[0], acc.shape[1])
 
@@ -689,7 +689,7 @@ class Particles:
                 unused_index = jnp.zeros_like(
                     disp[:, 0], dtype=jnp.bool_, device=NamedSharding(conf.compute_mesh, P(AXIS_NAME))
                 )
-            unused_index = unused_index.at[n_ptcl * sp * sp:].set(True)
+            unused_index = unused_index.at[n_ptcl * np.prod(conf.ptcl_grid_shape[1:]):].set(True)
 
             if runtime is None or not store_particle_halos:
                 halo_mask = jnp.zeros_like(unused_index)
@@ -764,7 +764,7 @@ class Particles:
         if wrap:
             pmid = pmid % jnp.array(conf.mesh_shape, dtype=conf.pmid_dtype)
 
-        strides = tuple(accumulate((1, ) + conf.mesh_shape[:0:-1], mul))[::-1]
+        strides = tuple(accumulate((1,) + conf.mesh_shape[:0:-1], mul))[::-1]
 
         raveled_id = sum(i.astype(canonical_dtype) * s for i, s in zip(pmid.T, strides))
 
@@ -887,7 +887,7 @@ class Particles:
     @staticmethod
     @partial(jax.jit, static_argnames=["max_values_to_add"])
     def add_particles(
-        pmid, disp, vel, acc, unused_indexes, new_pmid, new_disp, new_vel, new_acc, new_valid, max_values_to_add,
+            pmid, disp, vel, acc, unused_indexes, new_pmid, new_disp, new_vel, new_acc, new_valid, max_values_to_add,
     ):
         """Append incoming particles into the unused slots of a padded particle buffer.
 
