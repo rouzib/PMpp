@@ -46,11 +46,11 @@ def E2(a, cosmo):
     """
     a = jnp.asarray(a, dtype=cosmo.conf.cosmo_dtype)
 
-    de_a = a**(-3 * (1 + cosmo.w_0 + cosmo.w_a)) * jnp.exp(-3 * cosmo.w_a * (1 - a))
-    return cosmo.Omega_m * a**-3 + cosmo.Omega_k * a**-2 + cosmo.Omega_de * de_a
+    de_a = a ** (-3 * (1 + cosmo.w_0 + cosmo.w_a)) * jnp.exp(-3 * cosmo.w_a * (1 - a))
+    return cosmo.Omega_m * a ** -3 + cosmo.Omega_k * a ** -2 + cosmo.Omega_de * de_a
 
 
-@partial(jnp.vectorize, excluded=(1, ))
+@partial(jnp.vectorize, excluded=(1,))
 def H_deriv(a, cosmo):
     r"""Hubble parameter derivatives, :math:`\mathrm{d}\ln H / \mathrm{d}\ln a`, at
     given scale factors.
@@ -97,7 +97,7 @@ def Omega_m_a(a, cosmo):
     """
     a = jnp.asarray(a, dtype=cosmo.conf.cosmo_dtype)
 
-    return cosmo.Omega_m / (a**3 * E2(a, cosmo))
+    return cosmo.Omega_m / (a ** 3 * E2(a, cosmo))
 
 
 @partial(pytree_dataclass, aux_fields="conf", frozen=True)
@@ -198,7 +198,7 @@ class Cosmology:
         cosmo = cls(conf, 1, *args, **kwargs)
         cosmo = boltzmann(cosmo, conf)
 
-        A_s_1e9 = (sigma8 / cosmo.sigma8)**2
+        A_s_1e9 = (sigma8 / cosmo.sigma8) ** 2
 
         return cls(conf, A_s_1e9, *args, **kwargs)
 
@@ -260,8 +260,9 @@ class Cosmology:
 
 
 SimpleLCDM = partial(Cosmology, A_s_1e9=2.0, n_s=0.96, Omega_m=0.3, Omega_b=0.05, h=0.7, )
+Planck18Cosmology = partial(Cosmology, A_s_1e9=2.0989, n_s=0.9649, Omega_m=0.3153, Omega_b=0.04930, h=0.6736, )
 
-_COSMO_PARAM_FIELDS = ("A_s_1e9", "n_s", "Omega_m", "Omega_b", "h", "Omega_k_", "w_0_", "w_a_", )
+_COSMO_PARAM_FIELDS = ("A_s_1e9", "n_s", "Omega_m", "Omega_b", "h", "Omega_k_", "w_0_", "w_a_",)
 
 
 def cosmology_param_names(cosmo):
